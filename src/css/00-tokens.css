@@ -1,0 +1,331 @@
+/* ==========================================================================
+   00-tokens.css - design tokens (custom properties only, no selectors that
+   style elements). Light is the default; dark is applied either by the OS
+   (prefers-color-scheme, unless the user forced light) or by
+   <html data-theme="dark">.  CSS cannot share one block between a media
+   query and an attribute selector, so the dark block is written twice -
+   keep both copies identical (build.mjs --check verifies it).
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* ---- surfaces & ink ------------------------------------------------- */
+  --bg: #f3f6fb;
+  --surface: #ffffff;
+  --surface-2: #f7f9fc;          /* inset / subtle raised areas */
+  --surface-3: #eef2f8;          /* hover wash */
+  --ink: #13233a;
+  --ink-2: #33445c;              /* strong secondary text */
+  --muted: #5b6a80;              /* >= 4.5:1 on bg, surface and surface-2 */
+  --line: #e2e8f1;
+  --line-strong: #cdd6e3;
+  --control-line: #7d8ca3;        /* borders of inputs / off-state of switches: >= 3:1 on surfaces */
+  --scrim: rgba(12, 20, 36, .52);
+
+  /* ---- brand / semantic ----------------------------------------------- */
+  --accent: #0f766e;
+  --accent-hover: #0b5f58;
+  --accent-ink: #ffffff;          /* text on --accent */
+  --accent-soft: #e0f2ef;
+  --accent-soft-ink: #0b5f58;
+  --warn: #b45309;
+  --warn-soft: #fef3c7;
+  --warn-ink: #7c3a06;
+  --danger: #c2410c;
+  --danger-hover: #9a3412;
+  --danger-soft: #ffedd5;
+  --danger-ink: #8a2c08;
+  --on-danger: #ffffff;           /* text on solid --danger */
+  --ok: #15803d;
+  --ok-soft: #dcfce7;
+  --ok-ink: #14532d;
+  --info: #1d4ed8;
+  --info-soft: #dbeafe;
+  --info-ink: #1e3a8a;
+  --focus: #2563eb;
+
+  /* ---- tooltip (inverse of the page) ---------------------------------- */
+  --tip-bg: #13233a;
+  --tip-ink: #f3f6fb;
+  --tip-line: rgba(255, 255, 255, .14);
+
+  /* ---- map / canvas colours (read by canvas code via WH.ui.cssVar) ----- */
+  /* the stage is a design canvas (SPEC 7.5): a world-space dot grid on --stage-bg, every 5th dot --stage-dot-major,
+     the plan reads as a sheet lying on it (--stage-sheet-shadow), optional soft edge (--stage-vignette). DESIGN.md 4.1 */
+  --stage-bg: #eef2f8;
+  --stage-dot: rgba(19, 35, 58, .13);
+  --stage-dot-major: rgba(19, 35, 58, .21);
+  --stage-sheet-shadow: rgba(19, 35, 58, .16);
+  --stage-vignette: rgba(19, 35, 58, .05);
+  --stage-grid: rgba(19, 35, 58, .07);
+  --map-wall: #1e2a3d;
+  --map-wall-soft: #5b6a80;
+  --map-room: rgba(255, 255, 255, .88);
+  --map-room-line: rgba(19, 35, 58, .35);
+  --map-label: #13233a;
+  --map-halo: rgba(255, 255, 255, .92);
+  --map-furniture: #7b8aa3;
+  --map-marker-ring: #ffffff;
+  --map-selection: #2563eb;
+
+  /* ---- heat palette, default (dBm stops -85 .. -30) ------------------- */
+  --heat-1: rgb(228, 60, 46);
+  --heat-2: rgb(238, 109, 48);
+  --heat-3: rgb(239, 181, 76);
+  --heat-4: rgb(183, 186, 71);
+  --heat-5: rgb(114, 183, 85);
+  --heat-6: rgb(100, 174, 181);
+  /* colour-blind friendly palette (viridis-like) */
+  --heat-cb-1: rgb(68, 1, 84);
+  --heat-cb-2: rgb(59, 82, 139);
+  --heat-cb-3: rgb(33, 145, 140);
+  --heat-cb-4: rgb(94, 201, 98);
+  --heat-cb-5: rgb(189, 223, 38);
+  --heat-cb-6: rgb(253, 231, 37);
+  /* difference palette (delta dB) */
+  --diff-neg: rgb(214, 69, 65);
+  --diff-zero: rgb(170, 178, 190);
+  --diff-pos: rgb(46, 160, 110);
+  /* quality words (fixed dBm cut-offs) */
+  --q-excellent: rgb(100, 174, 181);
+  --q-veryGood: rgb(114, 183, 85);
+  --q-good: rgb(183, 186, 71);
+  --q-weak: rgb(239, 181, 76);
+  --q-veryWeak: rgb(238, 109, 48);
+  --q-unusable: rgb(228, 60, 46);
+
+  /* ---- typography ----------------------------------------------------- */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-xs: .8rem;     /* 12px */
+  --fs-sm: .8667rem;  /* 13px */
+  --fs-md: 1rem;      /* 15px */
+  --fs-lg: 1.1333rem; /* 17px */
+  --fs-xl: 1.4rem;    /* 21px */
+  --fs-2xl: 1.8667rem;/* 28px */
+  --fs-hero: 2.8rem;  /* 42px - big result numbers */
+
+  /* ---- spacing (8-pt grid with a 4 half-step) ------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ---- shape, depth, motion ------------------------------------------- */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(19, 35, 58, .06), 0 1px 1px rgba(19, 35, 58, .04);
+  --shadow-2: 0 4px 14px rgba(19, 35, 58, .09), 0 1px 3px rgba(19, 35, 58, .06);
+  --shadow-pop: 0 10px 30px rgba(19, 35, 58, .20), 0 2px 6px rgba(19, 35, 58, .10);
+  --t-fast: 120ms;
+  --t-med: 200ms;
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* ---- layout --------------------------------------------------------- */
+  --header-h: 56px;
+  --sidebar-w: 360px;
+  --inspector-w: 320px;
+  --rail-w: 56px;
+  --gutter: 16px;
+  --stage-pad: 12px;              /* inset of floating stage controls */
+
+  /* ---- z-index scale -------------------------------------------------- */
+  --z-stage-ui: 5;
+  --z-header: 50;
+  --z-drawer: 250;
+  --z-menu: 280;
+  --z-modal: 300;
+  --z-welcome: 400;
+  --z-drop: 450;
+  --z-popover: 500;
+  --z-toast: 600;
+  --z-tour: 700;
+
+  /* ---- derived tints (precomputed so the CSS never depends on color-mix()) ---- */
+  --glass: rgba(255, 255, 255, .94);
+  --stage-veil: rgba(238, 242, 248, .82);
+  --accent-line: rgba(15, 118, 110, .40);
+  --accent-glow: rgba(15, 118, 110, .24);
+  --accent-wash: #e9f5f3;
+  --accent-soft-hover: #cfe9e5;
+  --focus-glow: rgba(37, 99, 235, .35);
+  --danger-line: rgba(194, 65, 12, .45);
+  --hover-wash: rgba(255, 255, 255, .6);
+  --mark: rgba(180, 83, 9, .30);
+  --drop-scrim: rgba(10, 62, 58, .60);
+  --welcome-glow-1: rgba(15, 118, 110, .16);
+  --welcome-glow-2: rgba(29, 78, 216, .12);
+}
+
+/* Dark - follows the OS unless the user forced light ... */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0c1424;
+    --surface: #142038;
+    --surface-2: #101a2e;
+    --surface-3: #1b2a47;
+    --ink: #e7eefa;
+    --ink-2: #c3d0e4;
+    --muted: #9fb0c8;
+    --line: #24344f;
+    --line-strong: #344868;
+    --control-line: #5d7194;
+    --scrim: rgba(3, 7, 14, .66);
+    --accent: #3fd0bf;
+    --accent-hover: #6fe0d2;
+    --accent-ink: #06201d;
+    --accent-soft: #12383a;
+    --accent-soft-ink: #8ae8dc;
+    --warn: #f5b14a;
+    --warn-soft: #3a2a0c;
+    --warn-ink: #fcd38a;
+    --danger: #fb8a5c;
+    --danger-hover: #fdab88;
+    --danger-soft: #3d1c10;
+    --danger-ink: #fdc2a8;
+    --on-danger: #2a0e03;
+    --ok: #4ade80;
+    --ok-soft: #10301d;
+    --ok-ink: #a7f0c1;
+    --info: #7aa7ff;
+    --info-soft: #142a52;
+    --info-ink: #bcd2ff;
+    --focus: #7aa7ff;
+    --tip-bg: #e7eefa;
+    --tip-ink: #0c1424;
+    --tip-line: rgba(12, 20, 36, .18);
+    --stage-bg: #0b1322;
+    --stage-dot: rgba(231, 238, 250, .10);
+    --stage-dot-major: rgba(231, 238, 250, .16);
+    --stage-sheet-shadow: rgba(0, 0, 0, .50);
+    --stage-vignette: rgba(0, 0, 0, .22);
+    --stage-grid: rgba(231, 238, 250, .07);
+    --map-wall: #c7d3e6;
+    --map-wall-soft: #8a9bb5;
+    --map-room: rgba(20, 32, 56, .92);
+    --map-room-line: rgba(199, 211, 230, .38);
+    --map-label: #e7eefa;
+    --map-halo: rgba(11, 19, 34, .92);
+    --map-furniture: #7388a8;
+    --map-marker-ring: #ffffff;
+    --map-selection: #7aa7ff;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+    --shadow-2: 0 4px 14px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .3);
+    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .35);
+
+      /* ---- derived tints ---- */
+      --glass: rgba(20, 32, 56, .94);
+      --stage-veil: rgba(11, 19, 34, .82);
+      --accent-line: rgba(63, 208, 191, .40);
+      --accent-glow: rgba(63, 208, 191, .24);
+      --accent-wash: #143339;
+      --accent-soft-hover: #1a4a4c;
+      --focus-glow: rgba(122, 167, 255, .35);
+      --danger-line: rgba(251, 138, 92, .45);
+      --hover-wash: rgba(20, 32, 56, .6);
+      --mark: rgba(245, 177, 74, .30);
+      --drop-scrim: rgba(3, 44, 41, .78);
+      --welcome-glow-1: rgba(63, 208, 191, .16);
+      --welcome-glow-2: rgba(122, 167, 255, .12);
+  }
+}
+
+/* ... or the user forced dark with the header button. Keep in sync with the block above. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0c1424;
+  --surface: #142038;
+  --surface-2: #101a2e;
+  --surface-3: #1b2a47;
+  --ink: #e7eefa;
+  --ink-2: #c3d0e4;
+  --muted: #9fb0c8;
+  --line: #24344f;
+  --line-strong: #344868;
+  --control-line: #5d7194;
+  --scrim: rgba(3, 7, 14, .66);
+  --accent: #3fd0bf;
+  --accent-hover: #6fe0d2;
+  --accent-ink: #06201d;
+  --accent-soft: #12383a;
+  --accent-soft-ink: #8ae8dc;
+  --warn: #f5b14a;
+  --warn-soft: #3a2a0c;
+  --warn-ink: #fcd38a;
+  --danger: #fb8a5c;
+  --danger-hover: #fdab88;
+  --danger-soft: #3d1c10;
+  --danger-ink: #fdc2a8;
+  --on-danger: #2a0e03;
+  --ok: #4ade80;
+  --ok-soft: #10301d;
+  --ok-ink: #a7f0c1;
+  --info: #7aa7ff;
+  --info-soft: #142a52;
+  --info-ink: #bcd2ff;
+  --focus: #7aa7ff;
+  --tip-bg: #e7eefa;
+  --tip-ink: #0c1424;
+  --tip-line: rgba(12, 20, 36, .18);
+  --stage-bg: #0b1322;
+  --stage-dot: rgba(231, 238, 250, .10);
+  --stage-dot-major: rgba(231, 238, 250, .16);
+  --stage-sheet-shadow: rgba(0, 0, 0, .50);
+  --stage-vignette: rgba(0, 0, 0, .22);
+  --stage-grid: rgba(231, 238, 250, .07);
+  --map-wall: #c7d3e6;
+  --map-wall-soft: #8a9bb5;
+  --map-room: rgba(20, 32, 56, .92);
+  --map-room-line: rgba(199, 211, 230, .38);
+  --map-label: #e7eefa;
+  --map-halo: rgba(11, 19, 34, .92);
+  --map-furniture: #7388a8;
+  --map-marker-ring: #ffffff;
+  --map-selection: #7aa7ff;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .3);
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .35);
+
+    /* ---- derived tints ---- */
+    --glass: rgba(20, 32, 56, .94);
+    --stage-veil: rgba(11, 19, 34, .82);
+    --accent-line: rgba(63, 208, 191, .40);
+    --accent-glow: rgba(63, 208, 191, .24);
+    --accent-wash: #143339;
+    --accent-soft-hover: #1a4a4c;
+    --focus-glow: rgba(122, 167, 255, .35);
+    --danger-line: rgba(251, 138, 92, .45);
+    --hover-wash: rgba(20, 32, 56, .6);
+    --mark: rgba(245, 177, 74, .30);
+    --drop-scrim: rgba(3, 44, 41, .78);
+    --welcome-glow-1: rgba(63, 208, 191, .16);
+    --welcome-glow-2: rgba(122, 167, 255, .12);
+}
+
+/* Roomier layout on large screens */
+@media (min-width: 1440px) {
+  :root {
+    --sidebar-w: 400px;
+    --inspector-w: 340px;
+    --gutter: 20px;
+    --stage-pad: 16px;
+  }
+}
+
+/* Tablets and phones */
+@media (max-width: 899px) {
+  :root {
+    --gutter: 12px;
+    --stage-pad: 8px;
+  }
+}

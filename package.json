@@ -1,0 +1,25 @@
+{
+  "name": "wifi-heatmap-architect",
+  "version": "3.0.0",
+  "description": "Wi-Fi coverage planner: draw your floor plan, move the router and see where the signal is good. Single-file web app, works offline and on the phone.",
+  "private": false,
+  "license": "MIT",
+  "author": "Zizlik",
+  "homepage": "https://zizlik.github.io/WiFi-Heatmap-Architect/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zizlik/WiFi-Heatmap-Architect.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Zizlik/WiFi-Heatmap-Architect/issues"
+  },
+  "keywords": ["wifi", "heatmap", "coverage", "floor-plan", "router", "speed-test", "pwa", "offline"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs --check",
+    "test": "node tests/engine/run-all.mjs"
+  }
+}

@@ -1,0 +1,24 @@
+# --- private: never publish -------------------------------------------------------------------------------------
+# private floor plans (load them in the app from disk; they are not part of the app). The engine tests can use one
+# via WH_PRIVATE_PLAN=/path/to/plan.svg - keep it here or anywhere outside the repository.
+/muj-*.svg
+/private/
+# the previous app, kept locally for comparison only
+puvodni-verze/
+
+# --- tooling ------------------------------------------------------------------------------------------------------
+node_modules/
+.claude/
+*.log
+npm-debug.log*
+
+# --- scratch / local outputs --------------------------------------------------------------------------------------
+# any folder starting with "_" (local experiments, isolated builds: node build.mjs --out=_build)
+_*/
+/build-*/
+/tmp/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,51 @@
+WiFi Heatmap Architect - plánovač pokrytí Wi-Fi (verze 3)
+Aplikace:     https://zizlik.github.io/WiFi-Heatmap-Architect/
+Zdrojový kód: https://github.com/Zizlik/WiFi-Heatmap-Architect
+
+CO TO JE
+Aplikace ukáže, kde je v bytě dobrý signál Wi-Fi a kam nejlépe dát router.
+Je to orientační odhad podle půdorysu (zdi, dveře, nábytek); změřením signálu
+nebo rychlosti telefonem ho zpřesníš.
+
+JAK JI OTEVŘÍT
+Na počítači dvakrát klikni na index.cs.html (česky; index.html je anglicky),
+nic se neinstaluje a internet není potřeba. Nebo otevři odkaz nahoře.
+
+NA TELEFONU
+1. Otevři v telefonu odkaz nahoře a přidej si aplikaci na plochu (Android: menu
+   prohlížeče → Přidat na plochu; iPhone: Safari → Sdílet → Přidat na plochu).
+   Pak funguje i bez internetu a novou verzi ti nabídne sama.
+2. Měřicí režim: projdi byt, klepni do mapy tam, kde stojíš, a spusť test
+   rychlosti (běží přes servery Cloudflare, stáhne pár desítek MB dat).
+3. Projekt z počítače přeneseš jako soubor: Soubor → Uložit projekt jako SVG.
+
+JAK NAČÍST MŮJ PŮDORYS
+Na úvodní obrazovce klikni na „Nahrát můj půdorys“ a vyber svůj uložený
+půdorys (SVG uložené z této aplikace), nebo soubor jen přetáhni myší kamkoli
+do okna aplikace. Později to jde přes
+Soubor → Otevřít soubor… (Ctrl+O). Obrázek PNG/JPG/WebP se otevře jako
+podklad, který si v režimu Půdorys obkreslíš.
+
+BĚŽNÉ POUŽITÍ (režim Wi-Fi, klávesa 2)
+1. Přetáhni červené R (router) jinam - mapa signálu se hned přepočítá.
+2. Nebo klikni na „Najít nejlepší místo“ (F). „Vrátit na dnešní místo“ (D)
+   vrátí router tam, kde doma opravdu stojí.
+3. Pro přesnější odhad změř signál nebo rychlost: „Měřit“ (M), klikni na
+   místo, kde jsi měřil, a zadej hodnotu nebo spusť test rychlosti. Model se
+   podle měření doladí.
+
+NEJUŽITEČNĚJŠÍ KLÁVESY
+1 Půdorys · 2 Wi-Fi · F nejlepší místo · D zpět na dnešní místo · M měření
+B pásmo 2,4/5/6 GHz · V signál/rychlost/změna · + − 0 přiblížení · Ctrl+Z zpět
+Ctrl+S uložit · ? přehled všech zkratek · kroužek „?“ u volby = krátká nápověda
+
+UKLÁDÁNÍ A SOUKROMÍ
+Práce se ukládá průběžně sama do tohoto prohlížeče; zálohou je Soubor →
+Uložit projekt jako SVG (Ctrl+S). Výpočty běží jen v prohlížeči, půdorys ani
+měření se nikam neodesílají; síť se použije jen při testu rychlosti, který
+spustíš sám. Tvůj vlastní půdorys v aplikaci vložený není a na GitHub nepatří.
+
+PŮVODNÍ VERZE A VÝVOJ
+Předchozí verze 2 je v historii repozitáře (první commit); SVG uložené novou
+verzí otevře i ta stará. Zdrojové kódy jsou v src/: „node build.mjs“ sestaví aplikaci,
+„node build.mjs --check“ ji zkontroluje, „node tests/engine/run-all.mjs“ testy.

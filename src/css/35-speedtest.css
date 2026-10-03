@@ -1,0 +1,79 @@
+/* ==========================================================================
+   35-speedtest.css - the built-in speed test widget (WH.speedtest.widget):
+   start button, inline one-time consent, live gauge, result tiles, errors.
+   Colours only from tokens; the gauge arc is download = accent, upload = info.
+   ========================================================================== */
+.st { display: flex; flex-direction: column; gap: 10px; min-width: 0; container-type: inline-size; }
+.st [hidden] { display: none !important; }
+.st__idle, .st__res, .st__err { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.st__go { justify-content: center; }
+.st__opts { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.st__opts .seg { flex: 0 1 auto; }
+.st__note { font-size: var(--fs-sm); }
+
+/* consent (shown once, inline) */
+.st__consent {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border: 1px solid var(--accent-line); border-radius: var(--r-md);
+  background: var(--accent-wash);
+}
+.st__consent-t { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.st__consent-t .icon { color: var(--accent); }
+.st__consent-b { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.45; }
+.st__consent-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* running: gauge on the left, phase + progress + cancel on the right (keeps a bottom sheet low) */
+.st__run { display: flex; align-items: center; gap: 14px; }
+.st__runside { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.st__runside > .progress { width: 100%; }
+.st__gauge { position: relative; width: 150px; aspect-ratio: 120 / 96; flex: none; }
+.st--compact .st__gauge { width: 132px; }
+.st__gauge > svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.st__track { stroke: var(--line); }
+.st__arc { stroke: var(--accent); transition: stroke-dasharray var(--t-med) linear; }
+.st[data-phase="up"] .st__arc { stroke: var(--info); }
+/* the readout is centred on the ring centre (60, 60) of the 120 x 96 viewBox */
+.st__readout {
+  position: absolute; left: 50%; top: 62.5%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  line-height: 1; text-align: center; white-space: nowrap;
+}
+.st__num { font-size: 28px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.st--compact .st__num { font-size: 25px; }
+.st__unit { color: var(--muted); font-size: var(--fs-xs); font-weight: 650; }
+.st__phase { display: inline-flex; align-items: center; gap: 6px; min-height: 20px; color: var(--ink-2); font-size: var(--fs-sm); font-weight: 650; }
+.st__phase-ico { display: grid; place-items: center; width: 18px; height: 18px; flex: none; color: var(--accent); }
+.st[data-phase="up"] .st__phase-ico { color: var(--info); }
+.st[data-phase="ping"] .st__phase-ico { color: var(--muted); }
+.st[data-phase="up"] .progress__bar { background: var(--info); }
+
+/* result: download / upload tiles, then ping and jitter on one line */
+.st__tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.st__tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0;
+  padding: 8px 12px 9px; border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.st__tile-l { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; color: var(--muted); font-size: var(--fs-xs); font-weight: 650; line-height: 16px; }
+.st__tile-l > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st__tile--down .icon { color: var(--accent); }
+.st__tile--up .icon { color: var(--info); }
+.st__tile-n { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; }
+.st__tile-v { font-size: var(--fs-xl); font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.st__tile-u { color: var(--muted); font-size: var(--fs-xs); font-weight: 600; }
+.st__lat { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; color: var(--ink-2); font-size: var(--fs-sm); }
+.st__stat b { font-variant-numeric: tabular-nums; }
+.st__dot { width: 4px; height: 4px; border-radius: 50%; background: var(--line-strong); }
+.st__resfoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); }
+.st__resfoot .btn { flex: none; }
+
+/* error */
+.st__err > .btn { align-self: flex-start; }
+
+@media (pointer: coarse) {
+  .st__go { min-height: 52px; }
+  .st .seg__item { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .st__arc { transition: none; }
+}

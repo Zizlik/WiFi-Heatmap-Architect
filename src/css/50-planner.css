@@ -1,0 +1,459 @@
+/* ==========================================================================
+   50-planner.css - Wi-Fi view (planner): map stage, markers, legend, sidebar.
+   Planner-only colour tokens live here (range lines per band, node, inlet);
+   they are read by canvas code through WH.ui.cssVar, so they sit on :root.
+   ========================================================================== */
+:root {
+  --pl-range-24: #0e7490;
+  --pl-range-5: #4338ca;
+  --pl-range-6: #be185d;
+  --pl-node: #2563eb;
+  --pl-node-ink: #ffffff;
+  --pl-inlet: #b45309;
+  --pl-inlet-ink: #ffffff;
+  --pl-unknown: rgb(113, 126, 148);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --pl-range-24: #67e8f9;
+    --pl-range-5: #a5b4fc;
+    --pl-range-6: #f9a8d4;
+    --pl-node: #60a5fa;
+    --pl-node-ink: #0c1424;
+    --pl-inlet: #f5b14a;
+    --pl-inlet-ink: #2a1a03;
+  }
+}
+:root[data-theme="dark"] {
+  --pl-range-24: #67e8f9;
+  --pl-range-5: #a5b4fc;
+  --pl-range-6: #f9a8d4;
+  --pl-node: #60a5fa;
+  --pl-node-ink: #0c1424;
+  --pl-inlet: #f5b14a;
+  --pl-inlet-ink: #2a1a03;
+}
+
+/* ---- stage ---------------------------------------------------------------- */
+.pl-stage { container-type: inline-size; }
+/* design-canvas edge (SPEC 7.5, optional vignette): under the canvas, so dots and plan sit on top of it */
+.pl-stage::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 75% 70% at 50% 50%, transparent 55%, var(--stage-vignette, transparent));
+}
+.pl-stage:has(> .stage__canvas:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pl-stage .toolbar .hint { margin: 0 4px; }
+.pl-views .pl-short { display: none; }
+
+.pl-bottom {
+  position: absolute; left: var(--stage-pad); right: var(--stage-pad); bottom: var(--stage-pad);
+  z-index: var(--z-stage-ui);
+  display: flex; align-items: flex-end; gap: 8px;
+  pointer-events: none;
+}
+.pl-bottom > * { pointer-events: auto; }
+.pl-bottom > .pl-legend { flex: 0 1 420px; min-width: 0; margin: 0 auto; }
+.pl-tools, .pl-zoom { flex: none; }
+.pl-tools .btn { padding: 0 12px; }
+.pl-tools .btn--ghost[aria-pressed="true"] { --btn-bg: var(--accent-soft); }
+
+/* legend */
+.pl-legend__head { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.pl-legend__head > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-legend__thr { margin-left: auto; padding-left: 8px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+.pl-ticks { position: relative; display: block; height: 1.35em; }
+.pl-ticks > span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.pl-ticks > span:first-child { transform: none; }
+.pl-ticks > span:last-child { transform: translateX(-100%); }
+.pl-words { position: relative; display: block; height: 1.4em; }
+.pl-words > span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.pl-words > span:first-child { transform: none; }
+.pl-words > span:last-child { transform: translateX(-100%); }
+.pl-legend--speed .legend__bar { --legend-gradient: linear-gradient(90deg, var(--heat-1), var(--heat-3) 33.3%, var(--heat-5) 66.7%, var(--heat-6)); }
+.pl-legend__extra { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; margin-top: 4px; }
+.pl-legend__extra > span { display: inline-flex; align-items: center; gap: 4px; }
+.pl-dash { display: inline-block; width: 18px; height: 0; border-top: 2.5px dashed; }
+.pl-dash--b6 { border-top-style: dotted; border-top-width: 3px; }
+.pl-dash--b24 { width: 22px; }
+.pl-sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
+.pl-sw--unknown { background: var(--pl-unknown); margin-right: 4px; }
+
+/* markers (DOM over the canvas; the 44 px box is centred on the anchor point) */
+.pl-mk {
+  position: absolute; left: 0; top: 0; z-index: 1;
+  display: grid; place-items: center;
+  width: 44px; height: 44px; margin: 0; padding: 0;
+  border: 0; border-radius: 50%; background: none; color: inherit;
+  cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.pl-mk:focus-visible { outline: none; }
+.pl-mk__dot {
+  display: grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid var(--map-marker-ring);
+  box-shadow: var(--shadow-2);
+  font-size: 14px; font-weight: 800; line-height: 1;
+  pointer-events: none;
+  transition: transform var(--t-fast) var(--ease);
+}
+.pl-mk__dot > .icon { display: block; }
+/* the letter is moved by its measured ink box (PL.centerGlyph), so it is centred whatever the font's metrics */
+.pl-mk__txt { display: block; line-height: 1; }
+.pl-mk:hover .pl-mk__dot { transform: scale(1.08); }
+.pl-mk:focus-visible .pl-mk__dot { box-shadow: 0 0 0 3px var(--focus), var(--shadow-2); }
+.pl-mk--router { z-index: 4; }
+.pl-mk--router .pl-mk__dot { width: 34px; height: 34px; background: var(--danger); color: var(--on-danger); }
+.pl-mk--node { z-index: 3; }
+.pl-mk--node .pl-mk__dot { background: var(--pl-node); color: var(--pl-node-ink); }
+.pl-mk--inlet { z-index: 2; }
+.pl-mk--inlet .pl-mk__dot { width: 26px; height: 26px; border-width: 2.5px; background: var(--pl-inlet); color: var(--pl-inlet-ink); }
+.pl-mk--ghost { z-index: 2; }
+.pl-mk--ghost .pl-mk__dot { width: 28px; height: 28px; border: 2.5px dashed var(--ink-2); background: var(--glass); box-shadow: none; }
+.pl-mk__label, .pl-mk__val {
+  position: absolute; padding: 1px 6px; border-radius: var(--r-pill);
+  background: var(--glass); color: var(--ink); box-shadow: var(--shadow-1);
+  font-size: 11px; font-weight: 700; line-height: 1.4; white-space: nowrap; pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.pl-mk__label { left: 50%; top: calc(50% + 17px); transform: translateX(-50%); color: var(--ink-2); }
+.pl-mk--meas { width: 32px; height: 32px; }
+.pl-mk--meas .pl-mk__dot { width: 15px; height: 15px; border-width: 2px; box-shadow: 0 0 0 1px var(--map-wall), var(--shadow-1); }
+.pl-mk__val { left: calc(50% + 10px); top: 50%; transform: translateY(-50%); }
+.pl-mk--meas.is-other { opacity: .5; }
+.pl-mk--meas.is-other .pl-mk__val { display: none; }
+@media (pointer: coarse) { .pl-mk--meas { width: 44px; height: 44px; } }
+.pl-stage.is-dragging, .pl-stage.is-dragging .pl-mk { cursor: grabbing; }
+.pl-stage.is-dragging .pl-mk__dot { transition: none; }
+.pl-anchor {
+  position: absolute; left: 0; top: 0; z-index: 5;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--map-marker-ring);
+  box-shadow: 0 0 0 6px var(--accent-glow);
+  pointer-events: none !important;
+}
+
+/* hover tooltip (one element, follows the pointer) */
+.pl-tip {
+  position: absolute; left: 0; top: 0; z-index: 7;
+  max-width: 270px; padding: 8px 10px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-pop);
+  font-size: var(--fs-sm); line-height: 1.4; pointer-events: none;
+}
+.pl-tip > div { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
+.pl-tip__title { font-weight: 700; }
+.pl-tip__warn { color: var(--warn); font-weight: 600; }
+.pl-tip__speed .icon { color: var(--muted); }
+
+/* states over the map */
+.pl-noplan p { max-width: 380px; }
+.pl-progress {
+  position: absolute; left: 50%; top: calc(var(--stage-pad) + 58px); z-index: 6;
+  display: flex; flex-direction: column; gap: 8px;
+  width: min(340px, calc(100% - 24px)); padding: 8px 10px 10px 12px; transform: translateX(-50%);
+  border: 1px solid var(--line); border-radius: var(--r-md); background: var(--glass); box-shadow: var(--shadow-2);
+}
+.pl-progress .icon { color: var(--accent); }
+
+/* measurement popover + layers popover */
+.pl-mform { display: flex; flex-direction: column; gap: 10px; }
+.pl-mform .input--num { max-width: 92px; }
+.pl-mform .field__row .seg { flex: none; }
+.pl-mform__where { display: flex; align-items: center; gap: 6px; margin-top: -4px; }
+.pl-mform__foot { display: flex; align-items: center; gap: 8px; }
+.pl-mnote { padding: 8px 10px; }
+.pl-ico { display: grid; place-items: center; flex: none; color: var(--muted); }
+.pl-layers .switch { width: 100%; }
+.pl-kbdchip { margin-left: auto; }
+
+/* responsive stage chrome (the stage is a size container) */
+@container (max-width: 760px) {
+  .pl-views .pl-long { display: none; }
+  .pl-views .pl-short { display: inline; }
+}
+@container (max-width: 640px) {
+  .pl-tools .btn__label, .pl-tools .btn__kbd { display: none; }
+  .pl-tools .btn { width: 36px; padding: 0; }
+  .pl-legend__thr { display: none; }
+}
+@container (max-width: 560px) {
+  .pl-views .seg__item > span { display: none; }
+  .pl-views .seg__item { padding: 0 9px; }
+  .pl-bottom { flex-wrap: wrap; }
+  .pl-bottom > .pl-legend { order: -1; flex: 1 1 100%; margin: 0; }
+  .pl-zoom { flex-direction: row; margin-left: auto; border-radius: var(--r-pill); }
+}
+@container (max-width: 420px) {
+  .pl-legend .legend__ticks, .pl-legend__extra .hint { display: none; }
+  .pl-legend { padding: 6px 10px; }
+}
+@media (pointer: coarse) { .pl-tools .btn { min-height: 44px; } }
+/* touch: the view / band switches at the top get the full 44 px height (their width is what fits a 360 px phone) */
+@media (pointer: coarse) { .pl-stage > .stage__tl .seg > button, .pl-stage > .stage__tr .seg > button, .pl-stage > .stage__tl .seg__item, .pl-stage > .stage__tr .seg__item { min-height: 44px; } }
+@media (pointer: coarse) and (max-width: 899px) { .pl-tools .btn__label, .pl-tools .btn__kbd { display: none; } .pl-tools .btn { width: 44px; padding: 0; } }
+
+/* ---- sidebar ---------------------------------------------------------------- */
+/* absolutely positioned bits (sr-only live region, switch inputs) must be clipped by the scrolling sidebar */
+/* (infra's .sidebar is position:relative now; kept for clarity) */
+.pl-side { position: relative; }
+.pl-side .card-body__inner > * + * { margin-top: 10px; }
+/* key router actions: pinned to the top of the scrolling sidebar so they never fall below the fold */
+.pl-actions {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
+}
+.pl-actions .btn { justify-content: center; }
+@media (max-width: 899px) { .pl-actions { position: static; } }
+/* while the sidebar scrolls under the pinned bar: nothing peeks out above it or behind its rounded corners (a square
+   of page background behind the bar), and the cards slide out of sight under a short fade instead of a hard cut.
+   The sticky bar is its own stacking context, so a negative z-index pseudo-element paints OVER the bar's own
+   background: the card surface therefore moves to ::after (z -1) and the page-background mask + fade go below it in
+   ::before (z -2) - otherwise the mask hides the upper half of the card. */
+@media (min-width: 900px) {
+  .pl-actions { background: transparent; border-color: transparent; box-shadow: none; }
+  .pl-actions::before {
+    content: ''; position: absolute; z-index: -2; left: -6px; right: -8px; top: -6px; bottom: -11px; pointer-events: none;
+    background:
+      linear-gradient(var(--bg), var(--bg)) top / 100% 50% no-repeat,
+      linear-gradient(var(--bg), transparent) bottom / 100% 11px no-repeat;
+  }
+  .pl-actions::after {
+    content: ''; position: absolute; z-index: -1; inset: -1px; pointer-events: none;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-1);
+  }
+}
+.pl-side h4 { margin-top: 16px; }
+.pl-cap { display: flex; align-items: center; gap: 2px; font-size: var(--fs-sm); font-weight: 650; color: var(--ink-2); }
+.pl-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.pl-step { display: flex; align-items: flex-start; gap: 10px; }
+.pl-step__ico { display: grid; place-items: center; flex: none; color: var(--muted); }
+.pl-step.is-done .pl-step__ico { color: var(--ok); }
+.pl-step__main { flex: 1 1 auto; min-width: 0; }
+.pl-step__t { font-size: var(--fs-sm); font-weight: 650; line-height: 20px; }
+.pl-step.is-done .pl-step__t { color: var(--muted); font-weight: 600; }
+.pl-step__b { color: var(--muted); font-size: var(--fs-xs); line-height: 1.4; }
+.pl-step .btn { flex: none; }
+.pl-target > .field__row { flex: 0 1 auto; min-width: 0; }
+.pl-target .select { width: auto; max-width: 200px; }
+.pl-hero { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); align-items: baseline; gap: 2px 12px; margin-top: 4px !important; }
+.pl-a1 { grid-area: 1 / 1; } .pl-a3 { grid-area: 1 / 3; } .pl-b1 { grid-area: 2 / 1; } .pl-b2 { grid-area: 2 / 2; align-self: center; } .pl-b3 { grid-area: 2 / 3; }
+.pl-hero > .pl-delta { grid-area: 2 / 4; justify-self: start; align-self: center; }
+.pl-hero__cap { color: var(--muted); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.pl-hero__old { color: var(--muted); font-size: var(--fs-2xl); font-weight: 700; line-height: 1; }
+.pl-hero__arrow { display: grid; place-items: center; color: var(--muted); }
+.pl-kv dd { display: inline-flex; align-items: center; }
+.pl-sentence, .pl-speedline, .pl-status, .pl-limit { color: var(--ink-2); font-size: var(--fs-sm); }
+.pl-subhead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--fs-xs); }
+.pl-subhead > span:first-child { font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.pl-rooms { display: flex; flex-direction: column; gap: 1px; margin-top: 4px !important; }
+/* the last column holds "↑ 18 dB" (16 px arrow + number + unit): wide enough that it never runs into the dBm column */
+.pl-room { display: grid; grid-template-columns: minmax(0, 1fr) 40px 42px 62px 56px; align-items: center; gap: 6px; min-height: 32px; padding: 3px 6px; font-size: var(--fs-sm); }
+.pl-room .num { text-align: right; white-space: nowrap; }
+.pl-room__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.pl-room__delta { justify-content: flex-end; font-size: var(--fs-xs); }
+.pl-room[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
+.pl-room.is-excluded { opacity: .5; }
+.pl-inlet { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); font-size: var(--fs-sm); }
+.pl-inlet__ico { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--pl-inlet); color: var(--pl-inlet-ink); }
+.pl-inlet__t { display: flex; align-items: center; font-weight: 650; }
+.pl-mlist { display: flex; flex-direction: column; gap: 2px; }
+.pl-mrow { display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 6px; border-radius: var(--r-sm); }
+.pl-mrow:hover { background: var(--surface-3); }
+.pl-mrow.is-other { opacity: .7; }
+.pl-mdot { flex: none; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--line-strong); }
+.pl-mrow__main { flex: 1 1 auto; min-width: 0; }
+.pl-mrow__t { font-size: var(--fs-sm); font-weight: 600; }
+.pl-mrow__s { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; color: var(--muted); font-size: var(--fs-xs); }
+.pl-sp { display: inline-flex; align-items: center; gap: 2px; }
+.pl-cal { display: flex; flex-direction: column; gap: 6px; }
+.pl-calrow { display: flex; align-items: flex-start; gap: 6px; color: var(--ink-2); font-size: var(--fs-sm); }
+.pl-calrow .icon { margin-top: calc((1.45 * var(--fs-sm) - 16px) / 2); color: var(--ok); }
+.pl-nbands { --gap: 4px 14px; }
+.pl-nsub { padding-top: 2px; }
+.pl-disc > summary { font-weight: 650; }
+.pl-disc > summary .hint { margin-left: 0; }
+.pl-roomchecks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px; }
+.pl-roomchecks .check { min-width: 0; }
+.pl-inlet__d { display: flex; align-items: center; flex-wrap: wrap; color: var(--muted); }
+/* phones / tablets: the map is the main thing, give it most of the screen (the sidebar follows below) */
+@media (max-width: 899px) { .pl-layout > .pl-stage { height: clamp(340px, 68dvh, 680px); } }
+
+/* ---- measuring with the phone (SPEC 6.2): speed-only dots, the measurement sheet, the measuring mode ---------- */
+/* measurement dots: no measured signal = neutral dot; Speed view (and speed-only points) label "↓ 245 / ↑ 38" */
+.pl-mk--meas.is-nosig .pl-mk__dot { background: var(--pl-unknown); }
+.pl-mk--meas.is-speed:not(.is-other) .pl-mk__val { display: inline-flex; align-items: center; gap: 1px; padding: 0 6px 0 2px; line-height: 16px; }
+.pl-mk--meas.is-speed .pl-mk__val > .icon { color: var(--muted); }
+.pl-mk__sep { margin: 0 3px; color: var(--muted); font-weight: 600; }
+.pl-mdot.is-nosig { background: var(--pl-unknown); }
+.pl-est { font-style: italic; }
+
+/* the form: speed test block, the optional-signal note */
+.pl-mform__test { display: flex; flex-direction: column; gap: 6px; }
+.pl-mform__sig .field__hint { font-size: var(--fs-xs); line-height: 1.4; }
+.pl-mmore > summary { font-weight: 650; }
+
+/* bottom sheet (phones): fixed to the bottom of the screen, the map stays visible above it */
+.pl-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: calc(var(--z-header) + 20);
+  display: flex; flex-direction: column;
+  max-height: min(80dvh, 680px);
+  padding-bottom: env(safe-area-inset-bottom);
+  border: 1px solid var(--line-strong); border-bottom: 0; border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-pop);
+  transform: translateY(100%); transition: transform var(--t-med) var(--ease);
+}
+.pl-sheet.is-open { transform: none; }
+.pl-sheet__grip { flex: none; width: 40px; height: 4px; margin: 8px auto 0; border-radius: 2px; background: var(--line-strong); }
+.pl-sheet__head { flex: none; display: flex; align-items: center; gap: 8px; padding: 2px 8px 2px 16px; }
+.pl-sheet__title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: var(--fs-lg); font-weight: 700; line-height: 1.3; }
+.pl-sheet__title:focus { outline: none; }
+.pl-sheet__title:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
+.pl-mform--sheet { flex: 1 1 auto; min-height: 0; gap: 0; }
+.pl-sheet__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 12px; padding: 6px 16px 14px; }
+.pl-sheet__foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px; border-top: 1px solid var(--line); }
+.pl-sheet__foot .btn--lg { min-width: 148px; justify-content: center; }
+.pl-sheet .input { min-height: 44px; }
+@media (min-width: 640px) {
+  .pl-sheet { left: 50%; right: auto; width: 560px; transform: translate(-50%, 100%); }
+  .pl-sheet.is-open { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) { .pl-sheet { transition: none; } }
+
+/* the measuring-mode entry in the tool palette: phones only */
+.pl-tools .pl-tool--mm { display: none; }
+@media (max-width: 639px), (pointer: coarse) {
+  .pl-tools .pl-tool--mm { display: inline-flex; }
+  /* an accent OUTLINE, not the filled accent-soft of the selected tool: it opens a mode, it is not a second active tool */
+  .pl-tools .btn.pl-tool--mm { --btn-ink: var(--accent); --btn-line: var(--accent-line); --btn-hover: var(--accent-soft); }
+}
+
+/* measuring mode: the map takes the whole screen, only the mode's own controls stay */
+body.pl-measuring { overflow: hidden; }
+body.pl-measuring #app-header, body.pl-measuring .pl-side { visibility: hidden; }
+.pl-layout > .pl-stage.is-mm {
+  position: fixed; inset: 0; z-index: calc(var(--z-header) + 10);
+  height: auto; min-height: 0; border: 0; border-radius: 0; box-shadow: none;
+}
+.pl-stage.is-mm > .stage__tl, .pl-stage.is-mm > .stage__tr, .pl-stage.is-mm > .pl-bottom,
+.pl-stage.is-mm > .pl-sbslot, .pl-stage.is-mm > .pl-noplan, .pl-stage.is-mm > .pl-progress { display: none; }
+/* markers cannot be dragged by accident while measuring; measurement dots stay tappable (edit) */
+.pl-stage.is-mm .pl-mk:not(.pl-mk--meas) { pointer-events: none; }
+.pl-mmslot { display: none; }
+.pl-stage.is-mm > .pl-mmslot { display: flex; max-width: none; flex-wrap: nowrap; left: var(--stage-pad); right: var(--stage-pad); }
+.pl-mmslot--top { top: max(var(--stage-pad), env(safe-area-inset-top)); justify-content: space-between; }
+.pl-mmslot--bottom { bottom: max(var(--stage-pad), env(safe-area-inset-bottom)); justify-content: center; }
+.pl-stage.is-mm > .pl-mmslot--bottom.is-covered { visibility: hidden; }
+.pl-mmbar { flex: 0 1 auto; min-width: 0; }
+.pl-mmbar .seg__item { min-width: 48px; min-height: 44px; padding: 0 10px; font-size: var(--fs-md); }
+.pl-mm__done { flex: none; min-height: 48px; padding: 0 18px; border-radius: var(--r-pill); box-shadow: var(--shadow-2); }
+.pl-mmbar--hint {
+  display: inline-flex; align-items: center; gap: 10px;
+  min-height: 48px; max-width: 100%; padding: 6px 8px 6px 14px;
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+  background: var(--glass); color: var(--ink); box-shadow: var(--shadow-2);
+  font-weight: 650; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.pl-mm__ico { display: grid; place-items: center; flex: none; width: 20px; height: 20px; color: var(--accent); }
+.pl-mm__count { flex: none; }
+/* bottom sheet: compact rows so the map keeps most of the screen */
+.pl-mform__place.field--inline > .field__label { flex: none; min-width: 52px; }
+.pl-mform--sheet .pl-mform__sig .field__hint { margin-top: 2px; }
+.pl-mform__test--sheet > .pl-cap { display: none; }
+.pl-mform__place.field--inline > .field__row { flex: 1 1 auto; min-width: 0; }
+.pl-mform__place .input { width: 100%; }
+/* narrow stage: the palette drops its separators so tools + zoom (4 + 3 buttons of 44 px) stay on one row */
+@container (max-width: 560px) {
+  .pl-tools .toolbar__sep { display: none; }
+}
+/* a dot label that would leave the stage on the right goes to the left of the dot */
+.pl-mk--meas.is-flip .pl-mk__val { left: auto; right: calc(50% + 10px); }
+
+/* ---- stage 5 (SPEC 7) ------------------------------------------------------------------------------------------- */
+/* speed view without a speed curve: slim banner under the top toolbars (never over them, never blocking the map) */
+.pl-sbslot { left: var(--stage-pad); right: var(--stage-pad); max-width: none; justify-content: center; }
+.pl-sbslot.is-covered { visibility: hidden; }   /* a measurement popover / sheet is open: keep the space, show nothing */
+.pl-sb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px;
+  width: min(720px, 100%); min-width: 0; padding: 7px 6px 7px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--glass); color: var(--ink); box-shadow: var(--shadow-2);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+.pl-sb__ico { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-soft-ink); }
+.pl-sb__text { flex: 1 1 260px; min-width: 0; }
+.pl-sb__head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); font-weight: 700; line-height: 20px; }
+.pl-sb__steps { display: inline-flex; gap: 3px; }
+.pl-sb__steps > i { display: block; width: 14px; height: 6px; border-radius: 3px; background: var(--line-strong); }
+.pl-sb__steps > i.is-on { background: var(--accent); }
+.pl-sb__n { color: var(--ink-2); font-weight: 700; }
+.pl-sb__b { color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.4; }
+.pl-sb__short { display: none; }   /* phones: see the 480 px container query */
+.pl-sb__acts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: none; }
+.pl-sb__acts .hint { margin: 0 2px; }
+.pl-sb__x { flex: none; align-self: center; }
+@container (max-width: 640px) {
+  .pl-sb { padding: 6px 4px 8px 10px; gap: 6px 8px; }
+  .pl-sb__text { flex: 1 1 0; }
+  .pl-sb__acts { order: 3; flex: 1 1 100%; }
+  .pl-sb__ico { width: 28px; height: 28px; }
+  .pl-sb__x { align-self: flex-start; }
+}
+
+/* device picker (SPEC 7.4): a select-looking button that opens a menu with icons */
+.pl-dev { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1 1 auto; }
+.pl-dev__btn {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 36px; padding: 0 8px 0 10px;
+  border: 1px solid var(--control-line); border-radius: var(--r-sm); background: var(--surface); color: var(--ink);
+  font: inherit; font-size: .9333rem; text-align: left; cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.pl-dev__btn:hover { border-color: var(--muted); }
+.pl-dev__btn[aria-expanded="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.pl-dev__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pl-dev__ico { display: grid; place-items: center; flex: none; width: 20px; height: 20px; color: var(--accent); }
+.pl-dev__lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-dev__chev { display: grid; place-items: center; flex: none; width: 20px; height: 20px; color: var(--muted); }
+.pl-dev__custom { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pl-dev__custom .input { flex: 1 1 auto; min-width: 0; }
+.pl-dev__on { display: grid; place-items: center; flex: none; margin-left: 8px; color: var(--accent); }
+.pl-dev__menu .menu__icon { display: grid; place-items: center; width: 20px; height: 20px; }
+@media (pointer: coarse) { .pl-dev__btn { min-height: 44px; font-size: 1rem; } .pl-dev__menu .menu__item { min-height: 44px; } }
+.pl-mdev { display: inline-flex; align-items: center; gap: 3px; }
+.pl-mdev .icon { color: var(--muted); }
+
+/* measurement popover (desktop): compact; the body scrolls when it must, Save / Cancel always visible */
+.pop-panel.pl-mpop { display: flex; flex-direction: column; padding: 12px 0 0; overflow: hidden; max-height: calc(100dvh - 16px); }
+.pl-mpop > .pop-panel__title { flex: none; padding: 0 14px; margin-bottom: 6px; }
+.pl-mform--pop { flex: 1 1 auto; min-height: 0; gap: 0; }
+.pl-mform__body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 10px; padding: 0 14px 12px; }
+.pl-mform--pop > .pl-mform__foot { flex: none; padding: 10px 14px 12px; border-top: 1px solid var(--line); }
+.pl-mmore { border-top: 1px solid var(--line); }
+.pl-mmore > summary { min-height: 36px; padding: 6px 2px; gap: 8px; }
+.pl-mmore__sum { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-xs); font-weight: 600; }
+.pl-mmore[open] > summary .pl-mmore__sum { display: none; }
+.pl-mmore > .disclosure__body { padding-bottom: 4px; }
+.pl-mform--sheet .pl-mmore > summary { min-height: 44px; }
+
+/* toasts never cover the phone measurement sheet: while it is open they sit at the top (below the header / mode bar) */
+body.pl-has-sheet #toast-root { top: var(--pl-toast-top, calc(var(--header-h, 56px) + 8px)) !important; bottom: auto !important; }
+
+/* Advanced: band power + the per-band wall loss */
+.pl-bphead { margin-top: 4px; }
+.pl-wallbands { margin-top: -2px; }
+@media (pointer: coarse) { .pl-sb .btn__kbd { display: none; } }
+/* very narrow stages (360 px phones): the two top toolbars must not touch - "GHz" goes (the hint explains the band),
+   the banner drops its icon so its sentence keeps two lines */
+@container (max-width: 350px) {
+  .pl-stage > .stage__tr .toolbar__label { display: none; }
+  /* tools + zoom stay on one row (40 x 44 px targets) */
+  .pl-tools .btn, .pl-zoom .btn { width: 40px; }
+}
+@container (max-width: 480px) {
+  .pl-sb__ico { display: none; }
+  .pl-sb { padding-left: 12px; }
+  .pl-sb__long { display: none; }
+  .pl-sb__short { display: inline; }
+}
+.pl-tip__dot { color: var(--muted); }

@@ -1,0 +1,417 @@
+{
+ "format": "wifi-floor-v2",
+ "plan": {
+  "rooms": [
+   {
+    "id": "room-1",
+    "type": "room",
+    "roomId": 1,
+    "name": "Living room",
+    "points": [
+     {
+      "x": 0.08,
+      "y": 0.12
+     },
+     {
+      "x": 0.55,
+      "y": 0.12
+     },
+     {
+      "x": 0.55,
+      "y": 0.56
+     },
+     {
+      "x": 0.08,
+      "y": 0.56
+     }
+    ],
+    "color": "#8eadd2"
+   },
+   {
+    "id": "room-2",
+    "type": "room",
+    "roomId": 2,
+    "name": "Kitchen",
+    "points": [
+     {
+      "x": 0.55,
+      "y": 0.12
+     },
+     {
+      "x": 0.92,
+      "y": 0.12
+     },
+     {
+      "x": 0.92,
+      "y": 0.56
+     },
+     {
+      "x": 0.55,
+      "y": 0.56
+     }
+    ],
+    "color": "#deb879"
+   },
+   {
+    "id": "room-3",
+    "type": "room",
+    "roomId": 3,
+    "name": "Office",
+    "points": [
+     {
+      "x": 0.08,
+      "y": 0.7
+     },
+     {
+      "x": 0.55,
+      "y": 0.7
+     },
+     {
+      "x": 0.55,
+      "y": 0.88
+     },
+     {
+      "x": 0.08,
+      "y": 0.88
+     }
+    ],
+    "color": "#9e9ccb"
+   },
+   {
+    "id": "room-4",
+    "type": "room",
+    "roomId": 4,
+    "name": "Hall",
+    "points": [
+     {
+      "x": 0.08,
+      "y": 0.56
+     },
+     {
+      "x": 0.92,
+      "y": 0.56
+     },
+     {
+      "x": 0.92,
+      "y": 0.7
+     },
+     {
+      "x": 0.08,
+      "y": 0.7
+     }
+    ],
+    "color": "#97bbad"
+   }
+  ],
+  "walls": [
+   {
+    "id": "wall-1",
+    "type": "wall",
+    "name": "North exterior",
+    "a": {
+     "x": 0.08,
+     "y": 0.12
+    },
+    "b": {
+     "x": 0.92,
+     "y": 0.12
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-2",
+    "type": "wall",
+    "name": "East exterior",
+    "a": {
+     "x": 0.92,
+     "y": 0.12
+    },
+    "b": {
+     "x": 0.92,
+     "y": 0.7
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-3",
+    "type": "wall",
+    "name": "Hall south exterior",
+    "a": {
+     "x": 0.92,
+     "y": 0.7
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.7
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-4",
+    "type": "wall",
+    "name": "Office east exterior",
+    "a": {
+     "x": 0.55,
+     "y": 0.7
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.88
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-5",
+    "type": "wall",
+    "name": "Office south exterior",
+    "a": {
+     "x": 0.55,
+     "y": 0.88
+    },
+    "b": {
+     "x": 0.08,
+     "y": 0.88
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-6",
+    "type": "wall",
+    "name": "West exterior",
+    "a": {
+     "x": 0.08,
+     "y": 0.88
+    },
+    "b": {
+     "x": 0.08,
+     "y": 0.12
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-7",
+    "type": "wall",
+    "name": "Living room / kitchen",
+    "a": {
+     "x": 0.55,
+     "y": 0.12
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.56
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-8",
+    "type": "wall",
+    "name": "Living room / hall",
+    "a": {
+     "x": 0.08,
+     "y": 0.56
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.56
+    },
+    "material": "drywall",
+    "loss": 3
+   },
+   {
+    "id": "wall-9",
+    "type": "wall",
+    "name": "Kitchen / hall",
+    "a": {
+     "x": 0.55,
+     "y": 0.56
+    },
+    "b": {
+     "x": 0.92,
+     "y": 0.56
+    },
+    "material": "masonry",
+    "loss": 8
+   },
+   {
+    "id": "wall-10",
+    "type": "wall",
+    "name": "Office / hall",
+    "a": {
+     "x": 0.08,
+     "y": 0.7
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.7
+    },
+    "material": "drywall",
+    "loss": 3
+   }
+  ],
+  "doors": [
+   {
+    "id": "door-1",
+    "type": "door",
+    "name": "Living room to kitchen",
+    "a": {
+     "x": 0.55,
+     "y": 0.3
+    },
+    "b": {
+     "x": 0.55,
+     "y": 0.38
+    },
+    "wallId": "wall-7",
+    "loss": 0
+   },
+   {
+    "id": "door-2",
+    "type": "door",
+    "name": "Living room to hall",
+    "a": {
+     "x": 0.27,
+     "y": 0.56
+    },
+    "b": {
+     "x": 0.35,
+     "y": 0.56
+    },
+    "wallId": "wall-8",
+    "loss": 0
+   },
+   {
+    "id": "door-3",
+    "type": "door",
+    "name": "Kitchen to hall",
+    "a": {
+     "x": 0.67,
+     "y": 0.56
+    },
+    "b": {
+     "x": 0.75,
+     "y": 0.56
+    },
+    "wallId": "wall-9",
+    "loss": 0
+   },
+   {
+    "id": "door-4",
+    "type": "door",
+    "name": "Office to hall",
+    "a": {
+     "x": 0.27,
+     "y": 0.7
+    },
+    "b": {
+     "x": 0.35,
+     "y": 0.7
+    },
+    "wallId": "wall-10",
+    "loss": 0
+   }
+  ],
+  "furniture": [
+   {
+    "id": "furniture-1",
+    "type": "furniture",
+    "name": "Sofa",
+    "points": [
+     {
+      "x": 0.14,
+      "y": 0.19
+     },
+     {
+      "x": 0.33,
+      "y": 0.19
+     },
+     {
+      "x": 0.33,
+      "y": 0.25
+     },
+     {
+      "x": 0.14,
+      "y": 0.25
+     }
+    ],
+    "loss": 3
+   },
+   {
+    "id": "furniture-2",
+    "type": "furniture",
+    "name": "Kitchen counter",
+    "points": [
+     {
+      "x": 0.68,
+      "y": 0.17
+     },
+     {
+      "x": 0.86,
+      "y": 0.17
+     },
+     {
+      "x": 0.86,
+      "y": 0.21
+     },
+     {
+      "x": 0.72,
+      "y": 0.21
+     },
+     {
+      "x": 0.72,
+      "y": 0.36
+     },
+     {
+      "x": 0.68,
+      "y": 0.36
+     }
+    ],
+    "loss": 3
+   },
+   {
+    "id": "furniture-3",
+    "type": "furniture",
+    "name": "Desk",
+    "points": [
+     {
+      "x": 0.18,
+      "y": 0.76
+     },
+     {
+      "x": 0.4,
+      "y": 0.76
+     },
+     {
+      "x": 0.4,
+      "y": 0.82
+     },
+     {
+      "x": 0.18,
+      "y": 0.82
+     }
+    ],
+    "loss": 3
+   }
+  ],
+  "background": null
+ },
+ "width": 12,
+ "router": {
+  "x": 0.48,
+  "y": 0.63
+ },
+ "original": {
+  "x": 0.48,
+  "y": 0.63
+ },
+ "optic": {
+  "x": 0.1,
+  "y": 0.62
+ }
+}

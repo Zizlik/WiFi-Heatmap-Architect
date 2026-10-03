@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="{{LANG}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="{{DESCRIPTION}}">
+<meta name="color-scheme" content="light dark">
+<!-- Browser/status-bar colour = header surface; WH.pwa keeps it in sync with a manually chosen theme. -->
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" data-scheme="light">
+<meta name="theme-color" content="#142038" media="(prefers-color-scheme: dark)" data-scheme="dark">
+<!-- Home-screen app (PWA). The manifest + apple-touch-icon links are added by JS on http(s) only, never on file://. -->
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Wi-Fi Heatmap">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="application-name" content="WiFi Heatmap Architect">
+<title>{{TITLE}}</title>
+<link rel="icon" href="{{FAVICON}}">
+<style>
+{{CSS}}
+</style>
+<script>
+/* Apply a manually chosen theme before first paint (no flash). Full logic lives in WH.ui.theme. */
+try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if (p && (p.theme === 'light' || p.theme === 'dark')) document.documentElement.setAttribute('data-theme', p.theme); } catch (e) {}
+</script>
+</head>
+<body>
+<a class="skip-link" href="#app-main" data-i18n="shell.skip"></a>
+
+<header id="app-header">
+  <a class="brand" href="#" id="brand" data-i18n-aria="shell.brand.aria">
+    <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#0f766e"/><path d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="22" r="2.2" fill="#fff"/></svg>
+    <span class="brand__text"><span class="brand__name">WiFi Heatmap Architect</span><span class="brand__sub" data-i18n="shell.subtitle"></span></span>
+  </a>
+
+  <div class="seg seg--mode" id="mode-switch" role="radiogroup" data-i18n-aria="shell.mode.aria">
+    <button type="button" id="mode-plan" role="radio" aria-checked="false" data-view="editor" data-tip="shell.mode.plan.tip" data-kbd="1"><span data-icon="plan" data-size="18"></span><span class="lbl-long" data-i18n="shell.mode.plan"></span><span class="lbl-short" data-i18n="shell.mode.plan.short"></span></button>
+    <button type="button" id="mode-wifi" role="radio" aria-checked="false" data-view="planner" data-tip="shell.mode.wifi.tip" data-kbd="2"><span data-icon="wifi" data-size="18"></span><span data-i18n="shell.mode.wifi"></span></button>
+  </div>
+  <span class="header-hint" data-hint="mode"></span>
+
+  <div class="app-header__spacer"></div>
+
+  <span class="badge badge--estimate" id="estimate-badge"><span data-icon="info" data-size="16"></span><span class="badge__text" data-i18n="shell.estimate"></span><span data-hint="estimate"></span></span>
+
+  <div class="app-header__group">
+    <button type="button" id="btn-file" class="btn btn--ghost" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="shell.file" data-tip="shell.file.tip" data-kbd="Ctrl+O"><span data-icon="folder-open" data-size="18"></span><span class="btn__label" data-i18n="shell.file"></span><span class="icon-chevron" data-icon="chevron-down" data-size="16"></span></button>
+    <button type="button" id="btn-keys" class="btn btn--icon btn--ghost" data-tip="shell.keys.tip" data-kbd="?"><span data-icon="keyboard"></span></button>
+    <button type="button" id="btn-theme" class="btn btn--icon btn--ghost" data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
+    <div class="seg seg--sm" id="lang-switch" role="radiogroup" data-lang-switch data-i18n-aria="shell.lang.aria">
+      <button type="button" role="radio" aria-checked="false" data-lang="cs" lang="cs" title="Čeština"><span>CS</span></button>
+      <button type="button" role="radio" aria-checked="false" data-lang="en" lang="en" title="English"><span>EN</span></button>
+    </div>
+    <button type="button" id="btn-help" class="btn btn--secondary" aria-haspopup="dialog" data-tip="shell.help.tip" data-kbd="F1"><span data-icon="help" data-size="18"></span><span class="btn__label" data-i18n="shell.help"></span></button>
+  </div>
+</header>
+
+<main id="app-main" tabindex="-1">
+  <div class="app-loading" id="app-loading"><span class="spinner" role="status" data-i18n-aria="shell.loading"></span></div>
+  <section id="view-planner" class="view" data-i18n-aria="shell.mode.wifi" hidden></section>
+  <section id="view-editor" class="view" data-i18n-aria="shell.mode.plan" hidden></section>
+</main>
+
+<!-- First-run welcome (logic: WH.shell, src/js/20-ui/shell.js) -->
+<div id="welcome" class="welcome" role="dialog" aria-modal="true" aria-labelledby="welcome-title" hidden>
+  <div class="welcome__top">
+    <div class="seg seg--sm" role="radiogroup" data-lang-switch data-i18n-aria="shell.lang.aria">
+      <button type="button" role="radio" aria-checked="false" data-lang="cs" lang="cs" title="Čeština"><span>CS</span></button>
+      <button type="button" role="radio" aria-checked="false" data-lang="en" lang="en" title="English"><span>EN</span></button>
+    </div>
+    <button type="button" id="welcome-theme" class="btn btn--icon btn--ghost" data-theme-cycle data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
+  </div>
+  <div class="welcome__inner">
+    <div class="welcome__brand">
+      <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#0f766e"/><path d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="22" r="2.2" fill="#fff"/></svg>
+      <span>WiFi Heatmap Architect</span>
+    </div>
+    <h1 id="welcome-title" class="welcome__title" data-i18n="welcome.title"></h1>
+    <p class="welcome__lead" data-i18n="welcome.lead"></p>
+
+    <div class="welcome__cards">
+      <button type="button" class="welcome-card welcome-card--primary" id="welcome-demo">
+        <span class="welcome-card__icon"><span data-icon="home" data-size="24"></span></span>
+        <span class="welcome-card__title" data-i18n="welcome.demo.t"></span>
+        <span class="welcome-card__body" data-i18n="welcome.demo.b"></span>
+        <span class="welcome-card__go"><span data-i18n="welcome.demo.go"></span><span data-icon="arrow-right" data-size="16"></span></span>
+      </button>
+      <button type="button" class="welcome-card" id="welcome-upload">
+        <span class="welcome-card__icon"><span data-icon="upload" data-size="24"></span></span>
+        <span class="welcome-card__title" data-i18n="welcome.upload.t"></span>
+        <span class="welcome-card__body" data-i18n="welcome.upload.b"></span>
+        <span class="welcome-card__go"><span data-i18n="welcome.upload.go"></span><span data-icon="arrow-right" data-size="16"></span></span>
+      </button>
+      <button type="button" class="welcome-card" id="welcome-blank">
+        <span class="welcome-card__icon"><span data-icon="rect" data-size="24"></span></span>
+        <span class="welcome-card__title" data-i18n="welcome.blank.t"></span>
+        <span class="welcome-card__body" data-i18n="welcome.blank.b"></span>
+        <span class="welcome-card__go"><span data-i18n="welcome.blank.go"></span><span data-icon="arrow-right" data-size="16"></span></span>
+      </button>
+    </div>
+
+    <div class="welcome__drop">
+      <button type="button" class="dropzone" id="welcome-drop">
+        <span data-icon="upload" data-size="24"></span>
+        <strong data-i18n="welcome.drop"></strong>
+        <span class="text-sm" data-i18n="welcome.dropHint"></span>
+      </button>
+    </div>
+    <div class="welcome__row">
+      <button type="button" class="btn btn--secondary" id="welcome-open"><span data-icon="folder-open" data-size="18"></span><span data-i18n="welcome.open"></span></button>
+      <span class="text-sm text-muted" data-i18n="welcome.openHint"></span>
+    </div>
+    <p class="welcome__privacy"><span data-icon="lock" data-size="16"></span><span data-i18n="welcome.privacy"></span></p>
+  </div>
+</div>
+
+<div id="overlay-root"></div>
+<div id="toast-root" role="region" data-i18n-aria="shell.toasts" aria-live="polite" aria-relevant="additions"></div>
+<div id="sr-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+
+<noscript><div class="noscript-msg">WiFi Heatmap Architect needs JavaScript. / Aplikace WiFi Heatmap Architect potřebuje zapnutý JavaScript.</div></noscript>
+
+<script>window.WH_DEFAULT_LANG = "{{LANG}}";</script>
+<script>
+{{JS}}
+</script>
+</body>
+</html>

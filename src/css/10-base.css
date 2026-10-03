@@ -1,0 +1,213 @@
+/* ==========================================================================
+   10-base.css - reset, typography, page frame, layout primitives, utilities
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  font-size: 15px;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1, h2, h3, h4 { margin: 0; line-height: 1.25; font-weight: 700; letter-spacing: -.005em; }
+h1 { font-size: var(--fs-xl); }
+h2 { font-size: var(--fs-lg); }
+h3 { font-size: var(--fs-md); }
+h4 { font-size: var(--fs-sm); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+p { margin: 0; }
+p + p { margin-top: .6em; }
+ul, ol { margin: 0; padding-left: 1.2em; }
+small { font-size: var(--fs-sm); }
+b, strong { font-weight: 650; }
+hr { border: 0; border-top: 1px solid var(--line); margin: var(--sp-4) 0; }
+img, svg, canvas { display: block; max-width: 100%; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); text-underline-offset: 2px; }
+a:hover { color: var(--accent-hover); }
+code, kbd, samp { font-family: var(--font-mono); font-size: .92em; }
+code { background: var(--surface-3); padding: .1em .35em; border-radius: var(--r-xs); }
+::selection { background: var(--accent-glow); }
+
+[hidden] { display: none !important; }
+
+/* Visible keyboard focus everywhere (mouse clicks do not show it) */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* Slim scrollbars that follow the theme */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; border: 2px solid transparent; }
+
+/* Screen-reader only text */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: fixed; left: 8px; top: -60px; z-index: calc(var(--z-welcome) + 10);
+  background: var(--accent); color: var(--accent-ink);
+  padding: 8px 14px; border-radius: var(--r-sm); font-weight: 650; text-decoration: none;
+  transition: top var(--t-fast);
+}
+.skip-link:focus { top: 8px; }
+
+/* --------------------------------------------------------------------------
+   Page frame: header + main. On wide/tall screens the app fits the viewport
+   (no page scroll, panels scroll inside); on small screens the page scrolls.
+   -------------------------------------------------------------------------- */
+#app-main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.view { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+@media (min-width: 900px) and (min-height: 560px) {
+  body { height: 100vh; height: 100dvh; overflow: hidden; }
+  #app-main { overflow: hidden; }
+}
+
+/* --------------------------------------------------------------------------
+   Layout primitives for views (see DESIGN.md)
+   .layout > .stage + .sidebar               (Wi-Fi mode)
+   .layout.layout--rail > .tool-rail + .stage + .sidebar   (floor-plan mode)
+   -------------------------------------------------------------------------- */
+.layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--sidebar-w);
+  gap: var(--gutter);
+  padding: var(--gutter);
+}
+.layout--rail {
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--inspector-w);
+}
+.layout > .stage { min-height: 0; min-width: 0; }
+.sidebar {
+  position: relative;             /* containing block for absolutely positioned descendants (.sr-only, switch inputs)
+                                     so the overflow clips them instead of letting them extend the page */
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: 2px 4px 2px 2px;       /* room for focus rings + scrollbar */
+  /* desktop toasts dock to the bottom of the panel (widgets.js): while they are there the panel can scroll its last
+     card out from under them (--toast-pad = height of the toast stack, set and cleared by the toast placement) */
+  padding-bottom: calc(2px + var(--toast-pad, 0px));
+  margin: -2px -4px -2px -2px;
+  overscroll-behavior: contain;
+}
+.sidebar > * { flex: none; }
+
+@media (max-width: 899px) {
+  .layout, .layout--rail {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    padding: var(--gutter);
+    gap: var(--sp-3);
+  }
+  .layout > .stage { flex: none; height: clamp(300px, 58dvh, 620px); }
+  .sidebar { overflow: visible; margin: 0; padding: 0; }
+  .layout--rail > .tool-rail { order: -1; }
+}
+@media (min-width: 900px) and (max-height: 559px) {
+  .layout > .stage { min-height: 420px; }
+}
+
+/* --------------------------------------------------------------------------
+   Utilities (spacing on the 4 / 8 grid, flex helpers, text helpers)
+   -------------------------------------------------------------------------- */
+.row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.row--wrap { flex-wrap: wrap; }
+.row--between { justify-content: space-between; }
+.row--end { justify-content: flex-end; }
+.row--top { align-items: flex-start; }
+.col { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
+.stack { display: flex; flex-direction: column; gap: var(--gap, var(--sp-3)); min-width: 0; }
+.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap, var(--sp-2)); }
+.grow { flex: 1 1 0; min-width: 0; }
+.shrink-0 { flex: none; }
+.gap-1 { --gap: var(--sp-1); gap: var(--sp-1); }
+.gap-2 { --gap: var(--sp-2); gap: var(--sp-2); }
+.gap-3 { --gap: var(--sp-3); gap: var(--sp-3); }
+.gap-4 { --gap: var(--sp-4); gap: var(--sp-4); }
+.gap-6 { --gap: var(--sp-6); gap: var(--sp-6); }
+.m-0 { margin: 0; }
+.mt-1 { margin-top: var(--sp-1); } .mt-2 { margin-top: var(--sp-2); } .mt-3 { margin-top: var(--sp-3); } .mt-4 { margin-top: var(--sp-4); } .mt-6 { margin-top: var(--sp-6); }
+.mb-1 { margin-bottom: var(--sp-1); } .mb-2 { margin-bottom: var(--sp-2); } .mb-3 { margin-bottom: var(--sp-3); } .mb-4 { margin-bottom: var(--sp-4); } .mb-6 { margin-bottom: var(--sp-6); }
+.ml-auto { margin-left: auto; } .mr-auto { margin-right: auto; }
+.p-0 { padding: 0; } .p-2 { padding: var(--sp-2); } .p-3 { padding: var(--sp-3); } .p-4 { padding: var(--sp-4); } .p-6 { padding: var(--sp-6); }
+.px-3 { padding-inline: var(--sp-3); } .px-4 { padding-inline: var(--sp-4); }
+.py-2 { padding-block: var(--sp-2); } .py-3 { padding-block: var(--sp-3); }
+.w-full { width: 100%; }
+.text-muted { color: var(--muted); }
+.text-ink2 { color: var(--ink-2); }
+.text-accent { color: var(--accent); }
+.text-warn { color: var(--warn); }
+.text-danger { color: var(--danger); }
+.text-ok { color: var(--ok); }
+.text-xs { font-size: var(--fs-xs); }
+.text-sm { font-size: var(--fs-sm); }
+.text-lg { font-size: var(--fs-lg); }
+.text-center { text-align: center; }
+.text-right { text-align: right; }
+.fw-600 { font-weight: 600; }
+.fw-700 { font-weight: 700; }
+.nowrap { white-space: nowrap; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Tabular figures for every metric so numbers do not jitter while dragging */
+.num, .tnum, kbd, .kv dd, .badge, .legend { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.hero-num { font-size: var(--fs-hero); font-weight: 750; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.unselectable { user-select: none; -webkit-user-select: none; }
+
+@media (max-width: 899px) { .hide-mobile { display: none !important; } }
+@media (min-width: 900px) { .show-mobile { display: none !important; } }
+@media (pointer: coarse) { .hide-touch { display: none !important; } }
+@media (pointer: fine) { .show-touch { display: none !important; } }
+
+/* Respect users who ask for less motion (also see WH.viewport & WH.ui) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media print {
+  #app-header, .tool-rail, .sidebar, .toolbar, #toast-root, #overlay-root { display: none !important; }
+  body { height: auto; overflow: visible; }
+}

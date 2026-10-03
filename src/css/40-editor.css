@@ -1,0 +1,209 @@
+/* ==========================================================================
+   40-editor.css - floor-plan editor (WH.views 'editor', src/js/40-editor).
+   Colours come from the design tokens; the only editor-specific values are
+   opacities (room fill, furniture hatch), which differ between the themes.
+   ========================================================================== */
+
+.ed { --ed-room-a: .5; --ed-furn-a: .2; --ed-label-sub: .72; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ed { --ed-room-a: .3; --ed-furn-a: .3; --ed-label-sub: .8; }
+}
+:root[data-theme="dark"] .ed { --ed-room-a: .3; --ed-furn-a: .3; --ed-label-sub: .8; }
+
+/* ---- stage & cursors ------------------------------------------------------ */
+.ed-svg { font-family: var(--font); cursor: default; }
+.ed-svg:focus { outline: none; }
+.ed-svg:focus-visible { outline: 2px solid var(--focus); outline-offset: -3px; border-radius: var(--r-lg); }
+.ed-svg * { pointer-events: none; }              /* hit testing is geometric (forgiving), see 10-core.js */
+.ed-stage:not([data-tool="select"]) .ed-svg { cursor: crosshair; }
+.ed-stage[data-cursor="move"] .ed-svg { cursor: move; }
+.ed-stage[data-cursor="grab"] .ed-svg { cursor: grab; }
+.ed-stage[data-cursor="add"] .ed-svg { cursor: copy; }
+.ed-stage[data-cursor="help"] .ed-svg { cursor: help; }
+.ed-stage.is-pan-ready .ed-svg { cursor: grab; }
+.ed-stage.is-panning .ed-svg { cursor: grabbing; }
+
+/* ---- canvas: the drawable sheet on a dotted stage ---------------------------- */
+.ed-sheet {
+  position: absolute; left: 0; top: 0; z-index: 0;
+  transform-origin: 0 0; pointer-events: none;
+  border-radius: 3px; background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line), var(--shadow-2);
+}
+.ed-dot { fill: var(--stage-dot); }
+.ed-dot--major { fill: var(--stage-dot-major); }
+
+/* ---- world layer (canvas px; strokes keep their on-screen width) ---------- */
+.ed-room { fill-opacity: var(--ed-room-a); stroke: var(--map-room-line); stroke-width: 1.25; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ed-furn { fill: url(#ed-hatch); stroke: var(--map-furniture); stroke-width: 1.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ed-furn.is-soft { stroke-dasharray: 4 3; opacity: .65; }
+.ed-hatch-bg { fill: var(--map-furniture); fill-opacity: var(--ed-furn-a); }
+.ed-hatch-line { fill: none; stroke: var(--map-furniture); stroke-width: 1.5; stroke-opacity: .6; }
+.ed-wall {
+  stroke: var(--map-wall); stroke-linecap: square;
+  stroke-width: calc(var(--ww, 4.5) * var(--zf, 1) * 1px);
+  vector-effect: non-scaling-stroke;
+}
+.ed-wall.is-light { stroke: var(--map-wall-soft); }
+/* door: an opening in the wall, accent jamb ticks, a dashed leaf when closed (the Wi-Fi map's symbol) */
+.ed-door-gap { stroke: var(--surface); stroke-linecap: butt; stroke-width: calc((var(--ww, 4.5) + 1) * var(--zf, 1) * 1px); vector-effect: non-scaling-stroke; }
+.ed-door-line { stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.ed-door.is-open .ed-door-line { display: none; }
+.ed-door-jambs { fill: none; stroke: var(--accent); stroke-width: 2.5px; stroke-linecap: butt; vector-effect: non-scaling-stroke; }
+.ed-labels { fill: var(--map-label); stroke: var(--map-halo); paint-order: stroke; stroke-linejoin: round; text-anchor: middle; dominant-baseline: central; }
+.ed-label__name { font-weight: 650; }
+.ed-label__sub { font-weight: 500; fill-opacity: var(--ed-label-sub); font-variant-numeric: tabular-nums; }
+
+/* ---- overlay (screen px) --------------------------------------------------- */
+.ed-hover { fill: var(--map-selection); fill-opacity: .06; stroke: var(--map-selection); stroke-opacity: .7; stroke-width: 1.5; stroke-linejoin: round; }
+.ed-hover--line { fill: none; stroke-width: 10; stroke-opacity: .22; stroke-linecap: round; }
+.ed-sel { fill: var(--map-selection); fill-opacity: .1; stroke: var(--map-selection); stroke-width: 2; stroke-linejoin: round; }
+.ed-sel--line { fill: none; stroke-width: 12; stroke-opacity: .3; stroke-linecap: round; }
+.ed-handle { fill: var(--map-marker-ring); stroke: var(--map-selection); stroke-width: 2; }
+.ed-handle.is-hot { fill: var(--map-selection); stroke: var(--map-marker-ring); }
+.ed-handle--mid { fill: var(--map-selection); fill-opacity: .55; stroke: var(--map-marker-ring); stroke-width: 1.5; }
+.ed-handle--mid.is-hot { fill-opacity: 1; }
+.ed-draft { fill: var(--accent); fill-opacity: .14; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 7 4; stroke-linejoin: round; }
+.ed-draft--fill { stroke: none; fill-opacity: .1; }
+.ed-draft-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.ed-draft-line--live { stroke-dasharray: 7 4; }
+.ed-draft-line.is-bad { stroke: var(--danger); }
+.ed-draft-wall { stroke: var(--map-wall); stroke-opacity: .75; stroke-width: 5; stroke-linecap: square; }
+.ed-draft-pt { fill: var(--accent); stroke: var(--map-marker-ring); stroke-width: 2; }
+.ed-draft-pt.is-close { fill: var(--map-marker-ring); stroke: var(--accent); stroke-width: 3; }
+.ed-measure { stroke: var(--info); stroke-width: 2.5; stroke-linecap: round; }
+.ed-door-ghost { stroke: var(--accent); stroke-opacity: .8; stroke-width: 7; stroke-linecap: round; }
+.ed-snap-ring { fill: none; stroke: var(--focus); stroke-width: 2; }
+.ed-snap-edge { stroke: var(--focus); stroke-opacity: .25; stroke-width: 7; stroke-linecap: round; }
+.ed-cursor-dot { fill: var(--focus); stroke: var(--map-marker-ring); stroke-width: 1.5; }
+.ed-pill rect { fill: var(--tip-bg); fill-opacity: .94; }
+.ed-pill text { fill: var(--tip-ink); font-size: 12px; font-weight: 600; text-anchor: middle; dominant-baseline: central; font-variant-numeric: tabular-nums; }
+.ed-ov .ed-issue { fill: var(--danger); fill-opacity: .1; stroke: var(--danger); stroke-width: 2.5; stroke-dasharray: 6 4; }
+.ed-ov .ed-issue--line { fill: none; stroke-width: 6; stroke-linecap: round; stroke-dasharray: 9 6; stroke-opacity: .8; }
+.ed-marker { pointer-events: none; }
+.ed-marker circle { stroke: var(--map-marker-ring); stroke-width: 2.5; }
+.ed-marker--router { color: var(--on-danger); }
+.ed-marker--router circle { fill: var(--danger); }
+.ed-marker--inlet { color: var(--info-soft); }
+.ed-marker--inlet circle { fill: var(--info); }
+.ed-marker--today { color: var(--warn); }
+.ed-marker--today circle { fill: var(--surface); stroke: var(--warn); stroke-dasharray: 4 3; }
+
+/* ---- hint line, "Done" button ----------------------------------------------- */
+.ed-topbar { justify-content: space-between; align-items: flex-start; flex-wrap: nowrap; gap: 10px; }
+.ed-hint { flex: 0 1 auto; min-width: 0; max-width: 620px; min-height: 36px; padding: 6px 14px 6px 10px; border-radius: 18px; line-height: 1.35; }  /* pill on one line, rounded box when it wraps */
+.ed-hint__icon { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; color: var(--accent); }
+.ed-hint__text { min-width: 0; }
+.ed-hint[data-kind="warn"] { background: var(--warn-soft); border-color: transparent; color: var(--warn-ink); }
+.ed-hint[data-kind="warn"] .ed-hint__icon { color: inherit; }
+.ed-hint[data-kind="info"] .ed-hint__icon { color: var(--info); }
+.ed-done { flex: none; margin-left: auto; box-shadow: var(--shadow-2); }
+.ed-done .btn__kbd { margin-left: 4px; }
+
+/* ---- per-tool option bar (bottom of the stage) ------------------------------- */
+.ed-optbar { gap: 6px; }   /* toolbar padding kept: the active segment then sits 4 px from every edge */
+.ed-optbar__item { display: flex; align-items: center; padding: 0 8px; }
+.ed-optbar .switch { min-height: 32px; gap: 8px; }
+.ed-optbar .switch__label { font-size: var(--fs-sm); font-weight: 600; }
+.ed-optbar .select--sm { width: auto; max-width: 230px; }
+.ed-optbar__num { width: 76px; max-width: 76px; }
+.ed-optbar .ed-unit { padding: 0 6px 0 0; }
+.ed-optbar .hint { margin-right: 4px; }
+.ed-presets { flex-wrap: wrap; justify-content: center; }
+
+/* ---- empty plan --------------------------------------------------------------- */
+.ed-empty { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; padding: 72px 16px 64px; pointer-events: none; }
+.ed-empty[hidden] { display: none; }
+.ed-empty__card {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  max-width: 400px; padding: 22px 24px 20px; text-align: center;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--glass); box-shadow: var(--shadow-2);
+}
+.ed-empty__card .btn { pointer-events: auto; }
+.ed-empty__title { font-size: var(--fs-lg); font-weight: 750; }
+.ed-empty__text { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.5; }
+.ed-empty__btns { justify-content: center; margin-top: 4px; }
+
+/* ---- scale question ------------------------------------------------------------ */
+.ed-anchor { position: absolute; width: 1px; height: 1px; pointer-events: none; }
+.ed-scale-pop .input-group .input { max-width: none; flex: 1 1 auto; }
+.ed-scale-note { margin: 8px 0 0; color: var(--muted); font-size: var(--fs-xs); line-height: 1.45; }
+
+/* ---- tool rail -------------------------------------------------------------------- */
+.ed-rail .tool-rail__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ed-rail .tool-rail__btn[disabled] { opacity: .32; }
+.ed-rail .tool-rail__kbd { right: 3px; bottom: 3px; }   /* clear of both the icon and the pressed button's border */
+.ed-rail .tool-rail__btn[aria-pressed="true"] .tool-rail__kbd { color: inherit; }
+
+/* ---- inspector ------------------------------------------------------------------- */
+.ed-top-card > .card .card-body__inner > * + * { margin-top: 12px; }
+.ed-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.ed-stat { display: inline-flex; align-items: center; gap: 6px; min-width: 0; min-height: 30px; padding: 0 10px 0 8px; border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface-2); color: var(--ink-2); font-size: var(--fs-sm); white-space: nowrap; }
+.ed-stat .icon { color: var(--accent); }
+.ed-stat__txt { min-width: 0; }
+.ed-stat b { color: var(--ink); font-weight: 700; }
+.ed-sec { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ed-sec__title { display: flex; align-items: center; gap: 2px; min-height: 20px; color: var(--muted); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.ed-sec > .btn { align-self: flex-start; }
+.ed-scale-line { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: var(--fs-sm); }
+.ed-scale-line .icon { color: var(--muted); }
+.ed-bandcap { display: flex; align-items: center; gap: 2px; }
+.ed-kbd { display: inline-flex; align-items: center; margin-left: 2px; }
+.switch .ed-kbd { margin-left: 0; }
+.ed-note { margin: 0; color: var(--muted); font-size: var(--fs-xs); line-height: 1.45; }
+.ed-kv { gap: 4px; }
+.ed-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.ed-swatch {
+  display: inline-grid; place-items: center; flex: none;
+  width: 30px; height: 30px; padding: 0;
+  border: 2px solid var(--surface); border-radius: 50%;
+  background: var(--c); box-shadow: 0 0 0 1px var(--line-strong);
+  cursor: pointer;
+}
+.ed-swatch:hover { box-shadow: 0 0 0 2px var(--muted); }
+.ed-swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--accent); }
+.ed-swatch .icon { padding: 1px; border-radius: 50%; background: var(--surface); color: var(--accent); }
+.ed-onwall { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-sm); }
+.ed-onwall .btn { flex: 0 0 auto; }
+.ed-onwall .truncate { flex: 1 1 auto; font-weight: 600; }
+.ed-actions { padding-top: 2px; }
+@media (pointer: coarse) { .ed-swatch { width: 38px; height: 38px; } }
+
+/* plan check */
+.ed-issues { display: flex; flex-direction: column; gap: 8px; }
+.ed-issues .ed-issue { display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 8px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn-ink); }
+.ed-issues .ed-issue--info { background: var(--info-soft); color: var(--info-ink); }
+.ed-issue__icon { display: inline-grid; place-items: center; flex: none; width: 20px; height: 20px; }
+.ed-issue__main { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.ed-issue__title { font-size: var(--fs-sm); font-weight: 700; line-height: 20px; }
+.ed-issue__text { font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+.ed-issue__actions { --gap: 4px; margin-top: 4px; }
+.ed-issue .btn--ghost { --btn-ink: currentColor; --btn-hover: var(--hover-wash); }
+
+/* object list */
+.ed-list { display: flex; flex-direction: column; gap: 10px; max-height: 340px; margin-top: 8px; overflow-y: auto; overscroll-behavior: contain; }
+.ed-group__title { display: flex; align-items: center; gap: 6px; padding: 0 4px 4px; color: var(--muted); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.ed-group__n { margin-left: auto; font-weight: 600; }
+.ed-row { min-height: 36px; padding: 4px 8px; }
+.ed-row__dot { flex: none; width: 12px; height: 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--c); }
+
+/* ---- narrow screens ------------------------------------------------------------------ */
+@media (max-width: 899px) {
+  /* horizontal rail: tools + undo/redo share the width (zoom moved to the floating .ed-zoombar) */
+  .ed-rail { gap: 2px; }
+  .ed-rail .tool-rail__btn { flex: 1 1 0; min-width: 32px; max-width: 48px; }
+  .ed-opts { bottom: calc(var(--stage-pad) + 54px); }  /* above the zoom row */
+  .ed-optbar { flex-wrap: nowrap; overflow-x: auto; border-radius: var(--r-lg); scrollbar-width: none; }
+  .ed-presets { flex-wrap: nowrap; justify-content: flex-start; flex: none; max-width: none; }
+  .ed-list { max-height: 420px; }
+}
+@media (max-width: 600px) {
+  .ed-topbar { gap: 8px; }
+  .ed-hint { padding: 5px 10px 5px 8px; font-size: var(--fs-xs); }
+  .ed-done { padding: 0 12px; gap: 6px; }
+  .ed-done__to { display: none; }   /* "Hotovo ->": the tooltip and the header switch say where it goes */
+  .ed-empty { padding: 96px 12px 56px; }
+  .ed-empty__card { padding: 14px 16px; gap: 6px; }
+  .ed-empty__card .icon-badge { display: none; }
+}

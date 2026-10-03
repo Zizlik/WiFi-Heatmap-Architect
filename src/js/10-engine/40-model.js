@@ -1,0 +1,1133 @@
+/* WiFi Heatmap Architect - engine.model: the propagation model (SPEC sections 3.3 and 7.1).
+ *
+ *   signal(a->b, band) = nearSignal - 20*log10(band/5) + bandPower[band] - 10*n*log10(max(1, distM))
+ *                        - obstacleLoss(band) + offset,   clamped to [-110, -20] dBm.
+ *
+ * Obstacle losses depend on the band (SPEC 7.1): every loss stored in a plan is the 5 GHz reference; wall materials and
+ * furniture kinds use per-band tables (E.project.MATERIALS / FURNITURE_BANDS, e.g. brick 7 / 11 / 13 dB), every other
+ * number is scaled by BAND_FACTOR (2.4 GHz x 0.65, 6 GHz x 1.15). So every stored number keeps its 5 GHz meaning (a wall
+ * that still carries an OLD preset number, e.g. brick 8, is that preset and gets its new table), while 2.4 GHz now
+ * really reaches further through walls and 6 GHz less far. The context keeps one loss array per band;
+ * createContext() returns the 5 GHz view and forBand() the others - every function taking a band resolves it itself.
+ *
+ * obstacleLoss is where the legacy app produced wedge / stair-step artifacts. Fixes implemented here:
+ *   - every wall is extended by 1.5 px at both ends (closes small gaps at corners and T-junctions),
+ *   - crossings of one ray that lie closer than 2.5 px along the ray (corners, T-junctions, duplicate overlapping
+ *     walls, doubled-up thick walls) form a cluster and only the MAX loss of the cluster counts (beyond 2.5 px the
+ *     merge fades out smoothly up to 4.5 px, so the field has no wall-sized step where a ray slides past a junction),
+ *   - a ray running along a wall (collinear overlap) counts as one crossing,
+ *   - a crossing inside a door's span (distance to the door segment < 3 px) uses the door's loss,
+ *   - furniture adds its loss once per piece; chords shorter than 15 cm (a ray grazing a corner) get a proportional
+ *     part, so furniture shadows have soft edges instead of razor-sharp, resolution dependent ones.
+ * All of this runs in canvas pixels on precomputed typed arrays; the hot path allocates nothing.
+ *
+ * Diffraction softening ("soften", metres, default SOFTEN = 0.4): a ray model casts razor-sharp shadows - straight
+ * wedges radiating from the router through door openings and past wall ends and furniture. Real Wi-Fi diffracts and
+ * multipath fills such shadows within a few tens of centimetres, and to a user the wedges look like rendering bugs. So
+ * what the app SHOWS is the free-space term minus a Gaussian-blurred obstacle loss:
+ *     soft(p) = nearSignal - 20*log10(band/5) - 10*n*log10(max(1, distM)) - G_sigma[obstacleLoss](p) + offset
+ * where the blur only mixes floor points that are not separated by a wall or a closed door (walls stay sharp steps;
+ * an open doorway stays continuous). The raster does this with a masked separable box-Gaussian (raster.field); single
+ * points (tooltip, calibration, backhaul) use a deterministic 128-point Gaussian stencil here (softSignal), which
+ * agrees with the raster to a few tenths of a dB.
+ * rawSignal / signal / obstacleLoss / traceLoss stay the exact, unsoftened ray physics.
+ */
+(function () {
+  'use strict';
+  const E = globalThis.WH.engine;
+  const { W, H } = E.CANVAS;
+  const { clamp, isNum } = E.util;
+  const units = E.units;
+  const geom = E.geom;
+
+  const WALL_EXT = 1.5; // px, wall extension at both ends
+  const MERGE_NEAR = 2.5; // px along the ray: crossings closer than this are one obstacle (MAX), as in SPEC 3.3
+  const MERGE_FAR = 4.5; // px: crossings farther apart than this always add up; in between the merge fades out (smoothstep)
+  const DOOR_TOL = 3; // px, distance of a crossing to a door segment
+  const COLLINEAR_TOL = 0.75; // px, "ray runs inside the wall"
+  const FURN_SOFT_M = 0.15; // metres of chord inside a piece of furniture needed for its full loss
+  const MIN_SIGNAL = -110;
+  const MAX_SIGNAL = -20;
+  const WIRELESS = ['mesh_wifi', 'repeater'];
+  // m, default sigma of the diffraction softening (0 = off). 0.4 m ~ the first Fresnel zone radius sqrt(lambda*d)
+  // 2-3 m behind an obstacle at 5 GHz; tuned visually on a real user plan (0.3-0.35 still leave diagonal streaks behind
+  // doorways, 0.5 washes out door beams)
+  const SOFTEN = 0.4;
+  const SOFTEN_MAX = 2; // m
+  const BARRIER_DB = 0.5; // a wall (or the door in it) with at least this loss stops the softening: walls stay sharp
+  const SOFT_N = 128; // samples of the point stencil
+
+  // ---- band-dependent obstacle loss (SPEC 7.1) -------------------------------------------------------------------
+  // Every loss stored in a plan is the 5 GHz reference. Presets (wall material, furniture kind) use their per-band
+  // tables (E.project.MATERIALS / FURNITURE_BANDS); every other number is scaled by BAND_FACTOR (2.4: 0.65, 6: 1.15).
+  // The context holds one loss array per band; createContext returns the 5 GHz view, forBand(ctx, band) the others
+  // (same geometry, same scratch buffers, same version - only the loss arrays differ).
+  const PJ = E.project;
+  const BAND_FACTOR = PJ.BAND_FACTOR;
+  const FACT = [BAND_FACTOR['2.4'], BAND_FACTOR['5'], BAND_FACTOR['6']];
+  const BAND_OF = [2.4, 5, 6];
+
+  /** 0 | 1 | 2 for 2.4 | 5 | 6 GHz (numbers or strings), -1 otherwise. */
+  function bandIndex(band) {
+    const b = units.normBand(band);
+    return b === 5 ? 1 : b === 2.4 ? 0 : b === 6 ? 2 : -1;
+  }
+  const own = (table, key) => (typeof key === 'string' && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null);
+  const rowOf = (T) => [T['2.4'], T['5'], T['6']];
+  /** A stored 5 GHz loss scaled to the three bands (4 decimals; 5 GHz is the stored number itself, bit for bit). */
+  const scaled = (L) => [E.util.round(L * FACT[0], 4), L * FACT[1], E.util.round(L * FACT[2], 4)];
+
+  /**
+   * [2.4, 5, 6] GHz loss of a wall: a preset material uses its table when the stored loss is missing, equals the
+   * table's 5 GHz value or equals the OLD app's preset number; anything else (custom, edited numbers) is the stored loss
+   * x BAND_FACTOR; a wall without loss follows model.wallLoss x BAND_FACTOR.
+   */
+  function wallBands(w, wallLoss) {
+    const T = own(PJ.MATERIALS, w.material);
+    const L = isNum(w.loss) ? clamp(w.loss, 0, 30) : null;
+    if (T && (L === null || L === T['5'] || L === PJ.LEGACY_WALL_MATERIALS[w.material])) return rowOf(T);
+    return scaled(L !== null ? L : isNum(wallLoss) ? clamp(wallLoss, 0, 30) : 8);
+  }
+  /** [2.4, 5, 6] GHz loss of a door: stored loss x BAND_FACTOR (0 = open doorway at every band). */
+  function doorBands(d) {
+    return scaled(clamp(Number(d.loss) || 0, 0, 30));
+  }
+  /** [2.4, 5, 6] GHz loss of furniture: 0 when it does not block; preset kinds use their table; custom x BAND_FACTOR. */
+  function furnitureBands(f) {
+    if (f.blocksSignal === false) return [0, 0, 0];
+    const T = own(PJ.FURNITURE_BANDS, f.kind);
+    const raw = Number(f.loss);
+    const has = Number.isFinite(raw);
+    const L = has ? clamp(raw, 0, 30) : 0;
+    if (T && (!has || L === T['5'])) return rowOf(T);
+    return scaled(L);
+  }
+  const typeOf = (o) => o.type || (Array.isArray(o.points) ? 'furniture' : o.wallId !== undefined ? 'door' : o.a && o.b ? 'wall' : '');
+
+  function bandsOf(obj, project) {
+    if (!obj || typeof obj !== 'object') return [0, 0, 0];
+    const type = typeOf(obj);
+    if (type === 'wall') return wallBands(obj, project && project.model ? project.model.wallLoss : undefined);
+    if (type === 'door') return doorBands(obj);
+    if (type === 'furniture') return furnitureBands(obj);
+    return [0, 0, 0];
+  }
+
+  /**
+   * The loss in dB the model really uses for a wall / door / furniture object at a band (SPEC 7.1) - for inspectors and
+   * tooltips. band: 2.4 | 5 | 6 (anything else = 5); project: needed for walls without their own loss (model.wallLoss).
+   */
+  function obstacleLossFor(obj, band, project) {
+    const k = bandIndex(band);
+    return bandsOf(obj, project)[k < 0 ? 1 : k];
+  }
+
+  /** {'2.4':dB,'5':dB,'6':dB} the model uses for an object (see obstacleLossFor). */
+  function lossBands(obj, project) {
+    const b = bandsOf(obj, project);
+    return { '2.4': b[0], '5': b[1], '6': b[2] };
+  }
+
+  /**
+   * The preset whose per-band table applies to the object: a wall's material key or a furniture kind, or null when
+   * the object uses a custom number (scaled by BAND_FACTOR) or the model's default wall loss.
+   */
+  function presetOf(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+    const type = typeOf(obj);
+    if (type === 'wall') {
+      const T = own(PJ.MATERIALS, obj.material);
+      const L = isNum(obj.loss) ? clamp(obj.loss, 0, 30) : null;
+      return T && (L === null || L === T['5'] || L === PJ.LEGACY_WALL_MATERIALS[obj.material]) ? obj.material : null;
+    }
+    if (type === 'furniture') {
+      const T = own(PJ.FURNITURE_BANDS, obj.kind);
+      const raw = Number(obj.loss);
+      return T && (!Number.isFinite(raw) || clamp(raw, 0, 30) === T['5']) ? obj.kind : null;
+    }
+    return null;
+  }
+
+  // Point stencil: SOFT_N equally weighted points distributed like a 2D standard normal (Rayleigh-quantile radii on a
+  // golden-angle spiral). Equal weights + no rows/columns -> a shadow edge sweeping over the stencil changes the mean
+  // by at most one sample (< 1 % of the step) at a time, so tooltips do not jump.
+  const SOFT_UX = new Float64Array(SOFT_N);
+  const SOFT_UY = new Float64Array(SOFT_N);
+  for (let k = 0; k < SOFT_N; k++) {
+    const rho = Math.sqrt(-2 * Math.log(1 - (k + 0.5) / SOFT_N));
+    const th = k * Math.PI * (3 - Math.sqrt(5));
+    SOFT_UX[k] = rho * Math.cos(th);
+    SOFT_UY[k] = rho * Math.sin(th);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // context
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Tiny double 32-bit hash (16 hex chars) used for ctx.version. */
+  class Hasher {
+    constructor() {
+      this.a = 0x811c9dc5 | 0;
+      this.b = 0x1b873593 | 0;
+    }
+    add(x) {
+      const i = x | 0;
+      this.a = Math.imul(this.a ^ i, 16777619);
+      this.b = Math.imul((this.b + i + 0x9e3779b9) | 0, 0x85ebca6b) ^ (this.b >>> 13);
+    }
+    /** px values are hashed with 1/1000 px resolution. */
+    px(v) {
+      this.add(Math.round(v * 1000));
+    }
+    hex() {
+      return (this.a >>> 0).toString(16).padStart(8, '0') + (this.b >>> 0).toString(16).padStart(8, '0');
+    }
+  }
+
+  /**
+   * Precompute everything the physics needs from a project. Cheap (O(walls + furniture)); rebuild it whenever the plan
+   * or the model parameters change. `ctx.version` is a hash of geometry + parameters (use it as cache key),
+   * `ctx.roomsVersion` hashes only the room outlines (the raster grid is cached on it).
+   * @param {object} project
+   * @returns {object} Ctx (opaque; read-only for callers except documented fields: version, roomsVersion, mpp, p)
+   */
+  function createContext(project) {
+    const plan = project.plan;
+    const mp = project.model;
+    const mpp = project.scale.mpp;
+    const bpRaw = mp.bandPower && typeof mp.bandPower === 'object' ? mp.bandPower : {};
+    const bp = (k) => (isNum(bpRaw[k]) ? clamp(bpRaw[k], PJ.BAND_POWER_MIN, PJ.BAND_POWER_MAX) : 0);
+    const p = {
+      nearSignal: mp.nearSignal,
+      n: mp.n,
+      wallLoss: mp.wallLoss,
+      threshold: mp.threshold,
+      rangeThreshold: mp.rangeThreshold,
+      bandPower: { '2.4': bp('2.4'), '5': bp('5'), '6': bp('6') },
+    };
+
+    // ---- rooms (px polygons, for rasterization) ----
+    const rooms = [];
+    const hr = new Hasher();
+    const usable = (pts) => Array.isArray(pts) && pts.length >= 3 && pts.every((q) => q && isNum(q.x) && isNum(q.y));
+    for (const r of plan.rooms) {
+      if (!usable(r.points)) continue; // half-edited objects must not crash the model
+      const n = r.points.length;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (let i = 0; i < n; i++) {
+        x[i] = r.points[i].x * W;
+        y[i] = r.points[i].y * H;
+        hr.px(x[i]);
+        hr.px(y[i]);
+        if (x[i] < minX) minX = x[i];
+        if (x[i] > maxX) maxX = x[i];
+        if (y[i] < minY) minY = y[i];
+        if (y[i] > maxY) maxY = y[i];
+      }
+      hr.add(r.roomId);
+      rooms.push({ id: r.roomId, n, x, y, minX, minY, maxX, maxY });
+    }
+    const roomsVersion = hr.hex();
+
+    // ---- walls (extended, direction vectors) ----
+    const hv = new Hasher();
+    hv.add(roomsVersion.length);
+    for (const ch of roomsVersion) hv.add(ch.charCodeAt(0));
+    const wallList = [];
+    for (const w of plan.walls) {
+      if (!w || !w.a || !w.b || !isNum(w.a.x) || !isNum(w.a.y) || !isNum(w.b.x) || !isNum(w.b.y)) continue;
+      const ax = w.a.x * W;
+      const ay = w.a.y * H;
+      const bx = w.b.x * W;
+      const by = w.b.y * H;
+      const len = Math.hypot(bx - ax, by - ay);
+      if (!(len >= 0.5)) continue; // degenerate wall: nothing to block
+      const ux = (bx - ax) / len;
+      const uy = (by - ay) / len;
+      wallList.push({ id: w.id, ax: ax - ux * WALL_EXT, ay: ay - uy * WALL_EXT, bx: bx + ux * WALL_EXT, by: by + uy * WALL_EXT, loss: wallBands(w, mp.wallLoss) });
+    }
+    const nW = wallList.length;
+    const wallIndexById = new Map();
+    wallList.forEach((w, i) => {
+      if (!wallIndexById.has(w.id)) wallIndexById.set(w.id, i);
+    });
+    const w = {
+      n: nW,
+      ax: new Float64Array(nW),
+      ay: new Float64Array(nW),
+      sx: new Float64Array(nW),
+      sy: new Float64Array(nW),
+      sl2: new Float64Array(nW),
+      minX: new Float64Array(nW),
+      maxX: new Float64Array(nW),
+      minY: new Float64Array(nW),
+      maxY: new Float64Array(nW),
+      d0: new Int32Array(nW), // first door index (CSR layout), doors of wall i are d0[i] .. d1[i]-1
+      d1: new Int32Array(nW),
+    };
+    // loss per band: lossW[k][i] = loss of wall i at band BAND_OF[k] (same for doors / furniture)
+    const lossW = [new Float64Array(nW), new Float64Array(nW), new Float64Array(nW)];
+    wallList.forEach((o, i) => {
+      w.ax[i] = o.ax;
+      w.ay[i] = o.ay;
+      w.sx[i] = o.bx - o.ax;
+      w.sy[i] = o.by - o.ay;
+      w.sl2[i] = w.sx[i] * w.sx[i] + w.sy[i] * w.sy[i];
+      w.minX[i] = Math.min(o.ax, o.bx) - 0.5;
+      w.maxX[i] = Math.max(o.ax, o.bx) + 0.5;
+      w.minY[i] = Math.min(o.ay, o.by) - 0.5;
+      w.maxY[i] = Math.max(o.ay, o.by) + 0.5;
+      hv.px(o.ax);
+      hv.px(o.ay);
+      hv.px(o.bx);
+      hv.px(o.by);
+      for (let b = 0; b < 3; b++) {
+        lossW[b][i] = o.loss[b];
+        hv.px(o.loss[b] * 10);
+      }
+    });
+
+    // ---- doors, grouped by wall ----
+    const perWall = Array.from({ length: nW }, () => []);
+    for (const d of plan.doors) {
+      const wi = d && d.a && d.b ? wallIndexById.get(d.wallId) : undefined;
+      if (wi === undefined || !isNum(d.a.x) || !isNum(d.a.y) || !isNum(d.b.x) || !isNum(d.b.y)) continue;
+      perWall[wi].push([d.a.x * W, d.a.y * H, d.b.x * W, d.b.y * H, doorBands(d)]);
+    }
+    const nD = perWall.reduce((s, a) => s + a.length, 0);
+    const d = { n: nD, ax: new Float64Array(nD), ay: new Float64Array(nD), bx: new Float64Array(nD), by: new Float64Array(nD) };
+    const lossD = [new Float64Array(nD), new Float64Array(nD), new Float64Array(nD)];
+    let k = 0;
+    for (let i = 0; i < nW; i++) {
+      w.d0[i] = k;
+      for (const [ax, ay, bx, by, loss] of perWall[i]) {
+        d.ax[k] = ax;
+        d.ay[k] = ay;
+        d.bx[k] = bx;
+        d.by[k] = by;
+        hv.px(ax);
+        hv.px(ay);
+        hv.px(bx);
+        hv.px(by);
+        for (let b = 0; b < 3; b++) {
+          lossD[b][k] = loss[b];
+          hv.px(loss[b] * 10);
+        }
+        k++;
+      }
+      w.d1[i] = k;
+    }
+
+    // ---- furniture that blocks the signal (at any band) ----
+    const fl = [];
+    for (const o of plan.furniture) {
+      if (!o || !usable(o.points)) continue;
+      const loss = furnitureBands(o);
+      if (loss[0] > 0 || loss[1] > 0 || loss[2] > 0) fl.push({ o, loss, pts: tracerRing(o.points) });
+    }
+    let nPts = 0;
+    for (const it of fl) nPts += it.pts.length;
+    const f = {
+      n: fl.length,
+      off: new Int32Array(fl.length),
+      cnt: new Int32Array(fl.length),
+      x: new Float64Array(nPts),
+      y: new Float64Array(nPts),
+      minX: new Float64Array(fl.length),
+      maxX: new Float64Array(fl.length),
+      minY: new Float64Array(fl.length),
+      maxY: new Float64Array(fl.length),
+      maxEdges: 0,
+    };
+    const lossF = [new Float64Array(fl.length), new Float64Array(fl.length), new Float64Array(fl.length)];
+    let at = 0;
+    fl.forEach(({ loss, pts }, i) => {
+      f.off[i] = at;
+      f.cnt[i] = pts.length;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const q of pts) {
+        const x = q.x;
+        const y = q.y;
+        f.x[at] = x;
+        f.y[at] = y;
+        at++;
+        hv.px(x);
+        hv.px(y);
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      for (let b = 0; b < 3; b++) {
+        lossF[b][i] = loss[b];
+        hv.px(loss[b] * 10);
+      }
+      f.minX[i] = minX;
+      f.maxX[i] = maxX;
+      f.minY[i] = minY;
+      f.maxY[i] = maxY;
+      if (pts.length > f.maxEdges) f.maxEdges = pts.length;
+    });
+
+    hv.add(Math.round(mpp * 1e9));
+    hv.add(Math.round(p.nearSignal * 100));
+    hv.add(Math.round(p.n * 100));
+    hv.add(Math.round(p.wallLoss * 100));
+    for (const key of ['2.4', '5', '6']) hv.add(Math.round(p.bandPower[key] * 100));
+    hv.add(nW);
+    hv.add(nD);
+    hv.add(f.n);
+
+    const src = {
+      version: hv.hex(),
+      roomsVersion,
+      mpp,
+      p,
+      rooms,
+      w,
+      d,
+      f,
+      soft: clamp(FURN_SOFT_M / mpp, 3, 60), // px of chord for the full furniture loss
+      // scratch buffers of the tracer (single threaded, non re-entrant by design; shared by the band views)
+      sS: new Float64Array(nW + 1),
+      sL: new Float64Array(nW + 1),
+      sT: new Float64Array(f.maxEdges + 4),
+      lossW,
+      lossD,
+      lossF,
+    };
+    const ctx = bandView(src, 1);
+    VIEWS.set(w, [null, ctx, null]);
+    return ctx;
+  }
+
+  // the band views of a context, keyed by its geometry object (shared by all views; a WeakMap instead of a property keeps
+  // the context free of reference cycles, e.g. for JSON.stringify)
+  const VIEWS = new WeakMap();
+  const RING_SIMPLIFY_MIN = 16; // furniture outlines with more vertices are simplified for the tracer
+  const RING_TOL_PX = 0.25; // ... to within a quarter of a canvas pixel (~3 mm)
+
+  /**
+   * A furniture outline in canvas px as the tracer uses it. Up to RING_SIMPLIFY_MIN vertices: exact. Above (a round
+   * table drawn with 200 points): Douglas-Peucker to RING_TOL_PX - every ray otherwise tests every edge; a 200-gon becomes
+   * ~20 edges, the shadow moves by less than a third of a pixel.
+   */
+  function tracerRing(points) {
+    const n = points.length;
+    const xs = new Float64Array(n);
+    const ys = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      xs[i] = points[i].x * W;
+      ys[i] = points[i].y * H;
+    }
+    const all = () => Array.from(xs, (x, i) => ({ x, y: ys[i] }));
+    if (n <= RING_SIMPLIFY_MIN) return all();
+    let far = 0;
+    let best = -1;
+    for (let i = 1; i < n; i++) {
+      const d = (xs[i] - xs[0]) * (xs[i] - xs[0]) + (ys[i] - ys[0]) * (ys[i] - ys[0]);
+      if (d > best) {
+        best = d;
+        far = i;
+      }
+    }
+    const keep = new Uint8Array(n);
+    keep[0] = 1;
+    keep[far] = 1;
+    const stack = [0, far, far, n]; // index n is vertex 0 again (closed ring)
+    while (stack.length) {
+      const b = stack.pop();
+      const a = stack.pop();
+      if (b - a < 2) continue;
+      const bx = xs[b % n];
+      const by = ys[b % n];
+      let maxD = -1;
+      let idx = -1;
+      for (let i = a + 1; i < b; i++) {
+        const d = geom.pointSegDistPx(xs[i], ys[i], xs[a], ys[a], bx, by);
+        if (d > maxD) {
+          maxD = d;
+          idx = i;
+        }
+      }
+      if (maxD > RING_TOL_PX) {
+        keep[idx] = 1;
+        stack.push(a, idx, idx, b);
+      }
+    }
+    const out = [];
+    for (let i = 0; i < n; i++) if (keep[i]) out.push({ x: xs[i], y: ys[i] });
+    return out.length >= 3 ? out : all();
+  }
+
+  /**
+   * The context as seen at band BAND_OF[k]: shares everything with the others (geometry, rooms, version, scratch
+   * buffers) except the loss arrays wl / dl / fl. Always built by this one literal, so every view has
+   * the same hidden class (the tracer's property loads stay monomorphic).
+   */
+  function bandView(src, k) {
+    return {
+      version: src.version,
+      roomsVersion: src.roomsVersion,
+      mpp: src.mpp,
+      p: src.p,
+      rooms: src.rooms,
+      w: src.w,
+      d: src.d,
+      f: src.f,
+      soft: src.soft,
+      sS: src.sS,
+      sL: src.sL,
+      sT: src.sT,
+      lossW: src.lossW,
+      lossD: src.lossD,
+      lossF: src.lossF,
+      band: BAND_OF[k],
+      wl: src.lossW[k],
+      dl: src.lossD[k],
+      fl: src.lossF[k],
+    };
+  }
+
+  /**
+   * The context for a band (2.4 | 5 | 6): same geometry and version, that band's obstacle losses. createContext()
+   * returns the 5 GHz context; every model / raster / optimize function that takes a band resolves it itself, so
+   * callers only need this for the low-level px helpers (traceLoss, crossLoss). Unknown band -> ctx unchanged.
+   */
+  function forBand(ctx, band) {
+    const k = bandIndex(band);
+    const views = k < 0 || !ctx || !ctx.w ? null : VIEWS.get(ctx.w);
+    if (!views) return ctx;
+    return views[k] || (views[k] = bandView(ctx, k));
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // ray tracing
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Obstacle loss in dB along the straight ray (ax,ay)->(bx,by), CANVAS PIXELS. Hot path of everything.
+   * @returns {number} dB >= 0
+   */
+  function traceLoss(ctx, ax, ay, bx, by) {
+    const rx = bx - ax;
+    const ry = by - ay;
+    const rl2 = rx * rx + ry * ry;
+    if (rl2 < 1e-6) return 0;
+    const rl = Math.sqrt(rl2);
+    const minX = ax < bx ? ax : bx;
+    const maxX = ax < bx ? bx : ax;
+    const minY = ay < by ? ay : by;
+    const maxY = ay < by ? by : ay;
+    let loss = 0;
+
+    // ---- walls ----
+    const w = ctx.w;
+    const nW = w.n;
+    if (nW) {
+      const S = ctx.sS;
+      const L = ctx.sL;
+      const WL = ctx.wl;
+      let nc = 0;
+      for (let i = 0; i < nW; i++) {
+        if (w.maxX[i] < minX || w.minX[i] > maxX || w.maxY[i] < minY || w.minY[i] > maxY) continue;
+        const sx = w.sx[i];
+        const sy = w.sy[i];
+        const ex = w.ax[i] - ax;
+        const ey = w.ay[i] - ay;
+        const den = rx * sy - ry * sx;
+        let pos;
+        let l = WL[i];
+        if (den * den > 1e-18 * rl2 * w.sl2[i]) {
+          // regular crossing
+          const inv = 1 / den;
+          const t = (ex * sy - ey * sx) * inv;
+          if (t <= 1e-9 || t >= 1 - 1e-9) continue;
+          const u = (ex * ry - ey * rx) * inv;
+          if (u < 0 || u > 1) continue;
+          pos = t * rl;
+          const d1 = w.d1[i];
+          if (d1 > w.d0[i]) {
+            // door lookup: crossing point vs door segments of this wall
+            const cx = ax + t * rx;
+            const cy = ay + t * ry;
+            const dd = ctx.d;
+            for (let k = w.d0[i]; k < d1; k++) {
+              if (geom.pointSegDistPx(cx, cy, dd.ax[k], dd.ay[k], dd.bx[k], dd.by[k]) < DOOR_TOL) {
+                l = ctx.dl[k];
+                break;
+              }
+            }
+          }
+        } else {
+          // parallel: only matters when the ray runs inside the wall
+          const cr = ex * ry - ey * rx; // = perpendicular distance * rl
+          if (cr * cr > COLLINEAR_TOL * COLLINEAR_TOL * rl2) continue;
+          const ta = (ex * rx + ey * ry) / rl;
+          const tb = ta + (sx * rx + sy * ry) / rl;
+          const lo = Math.max(ta < tb ? ta : tb, 0);
+          const hi = Math.min(ta < tb ? tb : ta, rl);
+          if (hi - lo < 0.5) continue;
+          pos = (lo + hi) / 2;
+        }
+        S[nc] = pos;
+        L[nc] = l;
+        nc++;
+      }
+      if (nc) {
+        // insertion sort by position along the ray (nc is tiny)
+        for (let i = 1; i < nc; i++) {
+          const s = S[i];
+          const l = L[i];
+          let j = i - 1;
+          while (j >= 0 && S[j] > s) {
+            S[j + 1] = S[j];
+            L[j + 1] = L[j];
+            j--;
+          }
+          S[j + 1] = s;
+          L[j + 1] = l;
+        }
+        // Crossings that lie close together along the ray (corners, T-junctions, duplicate or doubled walls) are one
+        // obstacle: only the strongest of them counts. The merge is soft so the field stays continuous: crossings
+        // closer than MERGE_NEAR px merge completely (plain MAX), farther than MERGE_FAR px they add up, in between
+        // the weight follows a smoothstep. For two crossings the result is  max + min * (1 - w)  with merge weight w.
+        let total = L[0];
+        let cur = L[0];
+        for (let i = 1; i < nc; i++) {
+          const gap = S[i] - S[i - 1];
+          let mw = 1; // merge weight: 1 = same obstacle, 0 = separate obstacles
+          if (gap >= MERGE_FAR) mw = 0;
+          else if (gap > MERGE_NEAR) {
+            const u = (gap - MERGE_NEAR) / (MERGE_FAR - MERGE_NEAR);
+            mw = 1 - u * u * (3 - 2 * u);
+          }
+          const l = L[i];
+          total += l - mw * (l < cur ? l : cur);
+          cur = mw * (l > cur ? l : cur) + (1 - mw) * l;
+        }
+        loss += total;
+      }
+    }
+
+    // ---- furniture ----
+    const f = ctx.f;
+    const nF = f.n;
+    if (nF) {
+      const T = ctx.sT;
+      const soft = ctx.soft;
+      const ix = rx !== 0 ? 1 / rx : 0;
+      const iy = ry !== 0 ? 1 / ry : 0;
+      for (let i = 0; i < nF; i++) {
+        if (f.maxX[i] < minX || f.minX[i] > maxX || f.maxY[i] < minY || f.minY[i] > maxY) continue;
+        const cnt = f.cnt[i];
+        if (cnt > 6) {
+          // many-sided piece: first make sure the ray really crosses its bounding box (slab test, boxes grown by a
+          // hair so a grazing ray is never dropped) - a long ray's bounding box overlaps many boxes it never enters
+          let t0 = 0;
+          let t1 = 1;
+          if (rx !== 0) {
+            let ta = (f.minX[i] - 1e-6 - ax) * ix;
+            let tb = (f.maxX[i] + 1e-6 - ax) * ix;
+            if (ta > tb) {
+              const tt = ta;
+              ta = tb;
+              tb = tt;
+            }
+            if (ta > t0) t0 = ta;
+            if (tb < t1) t1 = tb;
+          }
+          if (ry !== 0) {
+            let ta = (f.minY[i] - 1e-6 - ay) * iy;
+            let tb = (f.maxY[i] + 1e-6 - ay) * iy;
+            if (ta > tb) {
+              const tt = ta;
+              ta = tb;
+              tb = tt;
+            }
+            if (ta > t0) t0 = ta;
+            if (tb < t1) t1 = tb;
+          }
+          if (t0 > t1) continue;
+        }
+        const off = f.off[i];
+        let nt = 0;
+        T[nt++] = 0;
+        T[nt++] = 1;
+        let px = f.x[off + cnt - 1];
+        let py = f.y[off + cnt - 1];
+        for (let k = 0; k < cnt; k++) {
+          const qx = f.x[off + k];
+          const qy = f.y[off + k];
+          const sx = qx - px;
+          const sy = qy - py;
+          const den = rx * sy - ry * sx;
+          if (den !== 0) {
+            const ex = px - ax;
+            const ey = py - ay;
+            const inv = 1 / den;
+            const t = (ex * sy - ey * sx) * inv;
+            if (t > 0 && t < 1) {
+              const u = (ex * ry - ey * rx) * inv;
+              if (u >= 0 && u <= 1) T[nt++] = t;
+            }
+          }
+          px = qx;
+          py = qy;
+        }
+        // sort the (few) parameters
+        for (let a = 1; a < nt; a++) {
+          const v = T[a];
+          let j = a - 1;
+          while (j >= 0 && T[j] > v) {
+            T[j + 1] = T[j];
+            j--;
+          }
+          T[j + 1] = v;
+        }
+        // chord = total length of the sub-segments whose midpoint lies inside the polygon
+        let chord = 0;
+        for (let a = 1; a < nt; a++) {
+          const t0 = T[a - 1];
+          const t1 = T[a];
+          if (t1 - t0 < 1e-9) continue;
+          const tm = (t0 + t1) / 2;
+          if (inside(f, off, cnt, ax + rx * tm, ay + ry * tm)) chord += (t1 - t0) * rl;
+        }
+        if (chord > 0) loss += ctx.fl[i] * (chord >= soft ? 1 : chord / soft);
+      }
+    }
+    return loss;
+  }
+
+  /** Even-odd inside test on the flat furniture arrays. */
+  function inside(f, off, cnt, x, y) {
+    let c = false;
+    let j = off + cnt - 1;
+    for (let i = off; i < off + cnt; j = i++) {
+      const yi = f.y[i];
+      const yj = f.y[j];
+      if (yi > y !== yj > y && x < ((f.x[j] - f.x[i]) * (y - yi)) / (yj - yi) + f.x[i]) c = !c;
+    }
+    return c;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // softening helpers (px)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Resolve a `soften` parameter (metres): undefined/null/not a number -> SOFTEN, clamped to 0..SOFTEN_MAX. */
+  function softenOf(v) {
+    return isNum(v) ? clamp(v, 0, SOFTEN_MAX) : SOFTEN;
+  }
+
+  /**
+   * Loss of wall `i` where it crosses the segment (ax,ay)->(bx,by), door aware; -1 when it does not cross. A crossing
+   * counts when it lies after the start and up to and including the end of the segment; walls parallel to the
+   * segment never cross. (The extended wall, as the tracer sees it.)
+   */
+  function crossLoss(ctx, i, ax, ay, bx, by) {
+    const w = ctx.w;
+    const rx = bx - ax;
+    const ry = by - ay;
+    const sx = w.sx[i];
+    const sy = w.sy[i];
+    const den = rx * sy - ry * sx;
+    if (den * den <= 1e-18 * (rx * rx + ry * ry) * w.sl2[i]) return -1;
+    const ex = w.ax[i] - ax;
+    const ey = w.ay[i] - ay;
+    const inv = 1 / den;
+    const t = (ex * sy - ey * sx) * inv;
+    if (t <= 0 || t > 1) return -1;
+    const u = (ex * ry - ey * rx) * inv;
+    if (u < 0 || u > 1) return -1;
+    return wallLossAt(ctx, i, ax + t * rx, ay + t * ry);
+  }
+
+  /** Loss of wall i at a crossing point (px) at the context's band: the door's loss inside a door span, else the wall's. */
+  function wallLossAt(ctx, i, cx, cy) {
+    const w = ctx.w;
+    const dd = ctx.d;
+    for (let k = w.d0[i]; k < w.d1[i]; k++) {
+      if (geom.pointSegDistPx(cx, cy, dd.ax[k], dd.ay[k], dd.bx[k], dd.by[k]) < DOOR_TOL) return ctx.dl[k];
+    }
+    return ctx.wl[i];
+  }
+
+  /**
+   * True when a wall (or a closed door) of >= BARRIER_DB lies between two px points: the softening never crosses it.
+   * Decided on the 5 GHz reference losses whatever the band of `ctx`, so the softening mask (and raster's cached blur
+   * plan) is the same for every band.
+   */
+  function wallBlocks(ctx, ax, ay, bx, by) {
+    const views = VIEWS.get(ctx.w);
+    const ref = views ? views[1] : ctx;
+    const w = ref.w;
+    const minX = ax < bx ? ax : bx;
+    const maxX = ax < bx ? bx : ax;
+    const minY = ay < by ? ay : by;
+    const maxY = ay < by ? by : ay;
+    for (let i = 0; i < w.n; i++) {
+      if (w.maxX[i] < minX || w.minX[i] > maxX || w.maxY[i] < minY || w.minY[i] > maxY) continue;
+      if (crossLoss(ref, i, ax, ay, bx, by) >= BARRIER_DB) return true;
+    }
+    return false;
+  }
+
+  /** Room id at a px point using the exact polygons (last room wins, like raster.grid); 0 = outside every room. */
+  function roomAtPx(ctx, x, y) {
+    for (let r = ctx.rooms.length - 1; r >= 0; r--) {
+      const rm = ctx.rooms[r];
+      if (x < rm.minX || x > rm.maxX || y < rm.minY || y > rm.maxY) continue;
+      let c = false;
+      for (let i = 0, j = rm.n - 1; i < rm.n; j = i++) {
+        if (rm.y[i] > y !== rm.y[j] > y && x < ((rm.x[j] - rm.x[i]) * (y - rm.y[i])) / (rm.y[j] - rm.y[i]) + rm.x[i]) c = !c;
+      }
+      if (c) return rm.id;
+    }
+    return 0;
+  }
+
+  /**
+   * Softened obstacle loss (dB) at the px point (x,y) for a source at (sx,sy): the mean of traceLoss over the Gaussian
+   * stencil of sigma `sigmaPx` around (x,y), using only stencil points on the floor that are not behind a wall (or
+   * closed door) as seen from (x,y) - the same rule as the raster. sigmaPx <= 0 or a point off the floor -> the exact
+   * traceLoss.
+   */
+  function softLossPx(ctx, sx, sy, x, y, sigmaPx) {
+    if (!(sigmaPx > 0)) return traceLoss(ctx, sx, sy, x, y);
+    if (!roomAtPx(ctx, x, y)) return traceLoss(ctx, sx, sy, x, y);
+    let sum = 0;
+    let cnt = 0;
+    for (let k = 0; k < SOFT_N; k++) {
+      const qx = x + sigmaPx * SOFT_UX[k];
+      const qy = y + sigmaPx * SOFT_UY[k];
+      if (!roomAtPx(ctx, qx, qy) || wallBlocks(ctx, x, y, qx, qy)) continue;
+      sum += traceLoss(ctx, sx, sy, qx, qy);
+      cnt++;
+    }
+    return cnt ? sum / cnt : traceLoss(ctx, sx, sy, x, y);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // signal functions (normalized points)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Constant part of the signal for a band: nearSignal - 20*log10(band/5) + model.bandPower[band] (the per-band
+   * transmit power difference, SPEC 7.1; 0 by default).
+   */
+  function bandBase(ctx, band) {
+    const bp = ctx.p.bandPower;
+    const extra = bp ? bp[units.bandKey(band)] : 0;
+    return ctx.p.nearSignal - 20 * Math.log10(band / 5) + (extra || 0);
+  }
+
+  /**
+   * Obstacle loss in dB between two NORMALIZED points, exact rays, at `band` (default: the band of ctx - 5 GHz for
+   * the context createContext() returns).
+   */
+  function obstacleLoss(ctx, a, b, band) {
+    return traceLoss(band === undefined ? ctx : forBand(ctx, band), a.x * W, a.y * H, b.x * W, b.y * H);
+  }
+
+  /**
+   * Uncalibrated, unclamped signal in dBm.
+   * @param {object} ctx
+   * @param {{x:number,y:number}} from transmitter (normalized)
+   * @param {{x:number,y:number}} to receiver (normalized)
+   * @param {number} band 2.4 | 5 | 6
+   * @param {{nodePower?:number}} [opts] nodePower: dB added (transmit power of a second node)
+   */
+  function rawSignal(ctx, from, to, band, opts) {
+    const c = forBand(ctx, band);
+    const ax = from.x * W;
+    const ay = from.y * H;
+    const bx = to.x * W;
+    const by = to.y * H;
+    const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
+    const extra = opts && isNum(opts.nodePower) ? opts.nodePower : 0;
+    return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - traceLoss(c, ax, ay, bx, by) + extra;
+  }
+
+  /** Calibrated signal clamped to [-110, -20] dBm: rawSignal + offset. Exact ray physics (no softening). */
+  function signal(ctx, from, to, band, offset) {
+    return clamp(rawSignal(ctx, from, to, band) + (offset || 0), MIN_SIGNAL, MAX_SIGNAL);
+  }
+
+  /**
+   * Softened obstacle loss in dB between two NORMALIZED points; soften in metres (default SOFTEN, 0 = exact); band
+   * as in obstacleLoss (default: the band of ctx).
+   */
+  function softObstacleLoss(ctx, a, b, soften, band) {
+    const c = band === undefined ? ctx : forBand(ctx, band);
+    return softLossPx(c, a.x * W, a.y * H, b.x * W, b.y * H, softenOf(soften) / c.mpp);
+  }
+
+  /** rawSignal with the softened obstacle loss (uncalibrated, unclamped). */
+  function softRawSignal(ctx, from, to, band, soften) {
+    const s = softenOf(soften);
+    if (!(s > 0)) return rawSignal(ctx, from, to, band);
+    const c = forBand(ctx, band);
+    const ax = from.x * W;
+    const ay = from.y * H;
+    const bx = to.x * W;
+    const by = to.y * H;
+    const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
+    return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - softLossPx(c, ax, ay, bx, by, s / c.mpp);
+  }
+
+  /**
+   * The signal as the heat map shows it at one point: softened (see the file header), + offset, clamped to
+   * [-110, -20] dBm. soften in metres (default SOFTEN; 0 -> identical to signal()). Agrees with raster.sample() of a
+   * raster.field() with the same soften to a few tenths of a dB.
+   */
+  function softSignal(ctx, from, to, band, offset, soften) {
+    const s = softenOf(soften);
+    if (!(s > 0)) return signal(ctx, from, to, band, offset);
+    return clamp(softRawSignal(ctx, from, to, band, s) + (offset || 0), MIN_SIGNAL, MAX_SIGNAL);
+  }
+
+  /** Offset (dB) for a band out of an offsets map {'2.4':dB,'5':dB,'6':dB}; 0 when missing. */
+  function offsetFor(offsets, band) {
+    if (!offsets) return 0;
+    const v = offsets[units.bandKey(band)];
+    return isNum(v) ? v : 0;
+  }
+
+  /** Is the second node transmitting on this band? `node` as built by nodeParams(). */
+  function nodeActive(node, band) {
+    return !!(node && node.mode !== 'none' && node.pos && node.bands && node.bands[units.bandKey(band)]);
+  }
+
+  /** True for scenarios with a wireless uplink (mesh over Wi-Fi, repeater). */
+  function isWirelessNode(node) {
+    return !!(node && WIRELESS.includes(node.mode));
+  }
+
+  /**
+   * Node description for field params from a project, or null when no second node is configured.
+   * @returns {{mode:string,pos:{x:number,y:number},power:number,bands:object,backhaulBand:number,backhaulThreshold:number}|null}
+   */
+  function nodeParams(project) {
+    const n = project.node;
+    if (!n || n.mode === 'none') return null;
+    return {
+      mode: n.mode,
+      pos: { x: n.pos.x, y: n.pos.y },
+      power: n.power,
+      bands: { ...n.bands },
+      backhaulBand: n.backhaulBand,
+      backhaulThreshold: n.backhaulThreshold,
+    };
+  }
+
+  /**
+   * Field/combined-signal parameters ("state") for the model, built from a project.
+   * which = 'trial' (router at net.router + the second node) or 'today' (router at net.baseline, no node: the
+   * measurements were taken in that situation).
+   * @param {object} project
+   * @param {'trial'|'today'} [which='trial']
+   * @param {{band?:number, offsets?:object, soften?:number}} [opts] offsets from offsets(); default all 0. soften
+   *        (metres) is copied into the state only when given (the default SOFTEN applies everywhere otherwise)
+   * @returns {{band:number, router:{x,y}, node:object|null, offsets:object, baseline:{x,y}, soften?:number}}
+   */
+  function fieldParams(project, which, opts) {
+    const o = opts || {};
+    const today = which === 'today';
+    const st = {
+      band: units.normBand(o.band) || project.view.band,
+      router: today ? { ...project.net.baseline } : { ...project.net.router },
+      node: today ? null : nodeParams(project),
+      offsets: o.offsets || { '2.4': 0, '5': 0, '6': 0 },
+      baseline: { ...project.net.baseline },
+    };
+    if (o.soften !== undefined) st.soften = softenOf(o.soften);
+    return st;
+  }
+
+  /**
+   * Strongest signal at p from the router and (when enabled for this band) the second node - softened like the heat
+   * map (state.soften, default SOFTEN; 0 = exact rays).
+   * @param {object} ctx
+   * @param {{x,y}} p normalized
+   * @param {number} band
+   * @param {{router:{x,y}, node?:object|null, offsets?:object, soften?:number}} state as produced by fieldParams()
+   */
+  function combinedSignal(ctx, p, band, state) {
+    const off = offsetFor(state.offsets, band);
+    let s = softSignal(ctx, state.router, p, band, off, state.soften);
+    if (nodeActive(state.node, band)) {
+      const sn = softSignal(ctx, state.node.pos, p, band, off + (state.node.power || 0), state.soften);
+      if (sn > s) s = sn;
+    }
+    return s;
+  }
+
+  /**
+   * Signal of the wireless uplink router -> node on the node's backhaul band (what the heat map of the router alone
+   * shows at the node, softened with state.soften), or null without a node. Compare with node.backhaulThreshold.
+   */
+  function backhaulSignal(ctx, state) {
+    if (!state || !state.node || state.node.mode === 'none' || !state.node.pos) return null;
+    const bb = state.node.backhaulBand || 5;
+    return softSignal(ctx, state.router, state.node.pos, bb, offsetFor(state.offsets, bb), state.soften);
+  }
+
+  /**
+   * Everything a tooltip needs at point p - softened exactly like the heat map (state.soften, default SOFTEN), so the
+   * number matches the colour under the pointer.
+   * @param {object} ctx
+   * @param {{x,y}} p normalized
+   * @param {object} state fieldParams() result (needs band, router, node, offsets, baseline; optional soften)
+   * @returns {{router:number, node:number|null, combined:number, baseline:number|null, bestSource:'router'|'node',
+   *            backhaul:number|null, weakBackhaul:boolean}}
+   *          router = trial router only; node = second node only (null when off for this band); combined = max of both;
+   *          baseline = today's router alone (null when state.baseline missing).
+   */
+  function pointSignalDetail(ctx, p, state) {
+    const band = state.band;
+    const off = offsetFor(state.offsets, band);
+    const sf = state.soften;
+    const router = softSignal(ctx, state.router, p, band, off, sf);
+    let node = null;
+    if (nodeActive(state.node, band)) node = softSignal(ctx, state.node.pos, p, band, off + (state.node.power || 0), sf);
+    const combined = node !== null && node > router ? node : router;
+    const baseline = state.baseline ? softSignal(ctx, state.baseline, p, band, off, sf) : null;
+    const backhaul = backhaulSignal(ctx, state);
+    const nodeWins = node !== null && node > router;
+    return {
+      router,
+      node,
+      combined,
+      baseline,
+      bestSource: nodeWins ? 'node' : 'router',
+      backhaul,
+      weakBackhaul: nodeWins && isWirelessNode(state.node) && backhaul !== null && backhaul < state.node.backhaulThreshold,
+    };
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // calibration
+  // ---------------------------------------------------------------------------------------------------------------
+
+  const profileKey = (s) => String(s === undefined || s === null ? '' : s).trim().toLowerCase();
+
+  /**
+   * Calibration offset for one band: median of (measured - prediction(baseline -> point)) over the measurements of
+   * that band (all taken with the router at the baseline). rms = sqrt(mean((residual - offset)^2)). The prediction is
+   * the uncalibrated, unclamped signal softened like the heat map (opts.soften, default SOFTEN; 0 = rawSignal), so a
+   * calibrated map reproduces a measurement where it was taken; the offset is added after the softening.
+   * Measurements of `opts.device` are preferred; if that device has none on the band, all devices are used.
+   * Speed-test points without a measured signal (value null, SPEC 6.2) never take part: calibrating the model with
+   * its own prediction would be circular.
+   * @param {object} ctx
+   * @param {Array<object>} measurements project.measurements
+   * @param {number} band
+   * @param {{device?:string, baseline:{x,y}, soften?:number}} opts
+   * @returns {{offset:number, rms:number, n:number, fallback:boolean, suspicious:boolean,
+   *            used:Array<{id,x,y,measured:number,predicted:number,residual:number}>}}
+   *          suspicious: |offset| > 20 dB (wrong band, scale or walls - tell the user)
+   */
+  function calibrate(ctx, measurements, band, opts) {
+    const o = opts || {};
+    const b = units.normBand(band);
+    const all = (measurements || []).filter((m) => units.normBand(m.band) === b && isNum(m.value));
+    let list = all;
+    let fallback = false;
+    if (o.device) {
+      const key = profileKey(o.device);
+      const own = all.filter((m) => profileKey(m.device) === key);
+      if (own.length) list = own;
+      else if (all.length) fallback = true;
+    }
+    if (!list.length || !o.baseline) return { offset: 0, rms: 0, n: 0, fallback: false, suspicious: false, used: [] };
+    const used = list.map((m) => {
+      const predicted = softRawSignal(ctx, o.baseline, m, b, o.soften);
+      return { id: m.id, x: m.x, y: m.y, measured: m.value, predicted, residual: m.value - predicted };
+    });
+    const offset = E.util.median(used.map((u) => u.residual));
+    let ss = 0;
+    for (const u of used) ss += (u.residual - offset) * (u.residual - offset);
+    return { offset, rms: Math.sqrt(ss / used.length), n: used.length, fallback, suspicious: Math.abs(offset) > 20, used };
+  }
+
+  /**
+   * calibrate() for the three bands using the project's measurements, baseline and goal.device.
+   * @param {object} ctx
+   * @param {object} project
+   * @param {{soften?:number}} [opts] soften in metres (default SOFTEN) - use the same value as for the fields
+   * @returns {{'2.4':object,'5':object,'6':object}}
+   */
+  function calibrateAll(ctx, project, opts) {
+    const out = {};
+    const soften = opts && opts.soften;
+    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, project.measurements, b, { device: project.goal.device, baseline: project.net.baseline, soften });
+    return out;
+  }
+
+  /**
+   * Calibration offsets {'2.4':dB,'5':dB,'6':dB} to hand to field()/combinedSignal(). All zero when the user switched
+   * calibration off (project.view.calibrate === false).
+   * @param {object} ctx
+   * @param {object} project
+   * @param {{soften?:number}} [opts] as calibrateAll
+   */
+  function offsets(ctx, project, opts) {
+    const out = { '2.4': 0, '5': 0, '6': 0 };
+    if (project.view.calibrate === false) return out;
+    const cal = calibrateAll(ctx, project, opts);
+    for (const k of Object.keys(out)) out[k] = cal[k].offset;
+    return out;
+  }
+
+  E.model = {
+    createContext,
+    forBand,
+    bandIndex,
+    obstacleLossFor,
+    lossBands,
+    presetOf,
+    BAND_FACTOR,
+    MATERIALS: PJ.MATERIALS,
+    FURNITURE_KINDS: PJ.FURNITURE_BANDS,
+    LEGACY_MATERIALS: PJ.LEGACY_WALL_MATERIALS,
+    traceLoss,
+    obstacleLoss,
+    rawSignal,
+    signal,
+    softObstacleLoss,
+    softRawSignal,
+    softSignal,
+    softenOf,
+    wallBlocks,
+    crossLoss,
+    roomAtPx,
+    bandBase,
+    offsetFor,
+    nodeActive,
+    isWirelessNode,
+    nodeParams,
+    fieldParams,
+    combinedSignal,
+    backhaulSignal,
+    pointSignalDetail,
+    calibrate,
+    calibrateAll,
+    offsets,
+    profileKey,
+    MIN_SIGNAL,
+    MAX_SIGNAL,
+    SOFTEN,
+    SOFTEN_MAX,
+    BARRIER_DB,
+  };
+})();
