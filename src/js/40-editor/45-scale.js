@@ -41,11 +41,15 @@
 
   /** Rooms of every floor with their area in canvas px²; `counted` = part of the flat's area (not excluded like a
    *  balcony - the same list as goal.excluded, see ED.isExcluded). */
+  // Outdoor spaces are not part of the floor area people know from a lease or a listing ("byt má 58 m²"),
+  // so the scale-by-area never counts them, even when they count toward Wi-Fi coverage.
+  const OUTDOOR = /balk|lod[žz]i|teras|zahr|balcon|terrace|loggia|garden|patio|veranda/i;
+  const isOutdoor = (r) => OUTDOOR.test(String(r && r.name || ''));
   function roomList() {
     const out = [];
     const G = WH.engine.geom;
     for (const f of ED.plans()) {
-      for (const r of f.plan.rooms) out.push({ room: r, name: r.name, floor: f, px2: G.polygonAreaPx(r.points), counted: !ED.isExcluded(f, r) });
+      for (const r of f.plan.rooms) out.push({ room: r, name: r.name, floor: f, px2: G.polygonAreaPx(r.points), counted: !ED.isExcluded(f, r) && !isOutdoor(r) });
     }
     return out;
   }
@@ -112,7 +116,8 @@
     const plans = ED.plans();
     // one floor: the engine's own helper (same rule as the planner); several floors: the same formula over all of them
     if (plans.length === 1) {
-      const v = WH.engine.project.scaleFromArea(plans[0].plan, m2, { excluded: ED.excludedIds(plans[0]) });
+      const ex = ED.excludedIds(plans[0]).concat(plans[0].plan.rooms.filter(isOutdoor).map((r) => r.roomId));
+      const v = WH.engine.project.scaleFromArea(plans[0].plan, m2, { excluded: ex });
       return v > 0 ? v : null;
     }
     return Math.sqrt(m2 / px2);
@@ -147,7 +152,17 @@
   // ---------------------------------------------------------------------------------------------------------------
   // small form builders
   // ---------------------------------------------------------------------------------------------------------------
-  function numIn(o) { const i = WH.ui.numberInput(o); i.classList.add('input--sm'); return i; }
+  /** Number field of the scale card. A click or Tab into it selects what is there, so typing "58" REPLACES the prefilled
+   *  value instead of being appended to it (the prefilled "12" + typed "58" became "5812", "14" became "1412,9"). */
+  function numIn(o) {
+    const i = WH.ui.numberInput(o);
+    i.classList.add('input--sm');
+    let fresh = false;
+    i.addEventListener('focus', () => { fresh = true; try { i.select(); } catch (e) { /* ignore */ } });
+    i.addEventListener('mouseup', (e) => { if (fresh) { fresh = false; e.preventDefault(); } });
+    i.addEventListener('blur', () => { fresh = false; });
+    return i;
+  }
   /** Unit right after the input (before the button). */
   const unit = (u) => el('span.field__unit', u);
 
@@ -217,11 +232,6 @@
     f.classList.add('ed-scale-field', 'ed-scale-obj');
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
     input.addEventListener('input', () => f.setError(''));
-    // the field shows the current size: clicking into it selects it, so typing "14" replaces it (not "1412,9")
-    let fresh = false;
-    input.addEventListener('focus', () => { fresh = true; input.select(); });
-    input.addEventListener('mouseup', (e) => { if (fresh) { fresh = false; e.preventDefault(); } });
-    input.addEventListener('blur', () => { fresh = false; });
     function sync(ob) {
       if (typing(input)) return;
       const v = isRoom ? ED.areaM2(ob.points) : ED.dpx(ob.a, ob.b) * ED.mpp();
@@ -281,8 +291,11 @@
 
     // a file whose scale nobody confirmed yet (method 'import'): "Měřítko z načteného souboru ... Sedí?"
     const iText = el('p.ed-scale-ask__b');
+    // the user knows the real floor area (e.g. 58 m²): type it right here, no need to find it behind "Upravit"
+    const iForm = areaForm({ primary: true, bare: true });
     const imp = el('div.ed-scale-ask.ed-scale-import',
       el('div.ed-scale-ask__t', el('span', t('editor.scale.importT'))), iText,
+      el('p.ed-scale-ask__b.ed-scale-import__or', t('editor.scale.importArea')), iForm.el,
       el('div.cluster.ed-scale-ask__alt',
         WH.ui.button({ i18n: 'editor.scale.bannerOk', icon: 'check', size: 'sm', variant: 'primary', onClick: () => confirmCurrent() }),
         WH.ui.button({ i18n: 'editor.scale.bannerEdit', icon: 'ruler', size: 'sm', variant: 'soft', onClick: () => editImported() })));
@@ -305,7 +318,29 @@
       el('div.cluster', ED.withKbd(WH.ui.button({ i18n: 'editor.scale.pointsBtn', icon: 'ruler', size: 'sm', variant: 'soft', onClick: () => ED.tools.setTool('scale') }), 's')),
       pointsLast);
     const widthIn = numIn({ min: 1, max: 200, step: 0.1, ariaLabel: t('editor.scale.width') });
-    const goW = () => { const v = readNum(widthIn, fW, { min: 1, max: 200 }, 'editor.scale.badWidth'); if (v !== null) fromWidth(v); };
+    // A flat is rarely wider than ~30 m: a big number here is almost always the floor AREA typed into the width field
+    // (58 "m" instead of 58 m² made a bedroom 861 m²). Ask before applying, and offer to use it as the area.
+    const WIDTH_SUSPICIOUS = 30;
+    const goW = async () => {
+      const v = readNum(widthIn, fW, { min: 1, max: 200 }, 'editor.scale.badWidth');
+      if (v === null) return;
+      if (v > WIDTH_SUSPICIOUS) {
+        const pl = widthPlan();
+        const mpp = pl ? WH.engine.project.scaleFromWidth(pl, v) : null;
+        const would = mpp ? summary(mpp).total : 0;
+        const asArea = await WH.ui.confirm({
+          title: t('editor.scale.wideT', { m: fmtLen(v) }),
+          body: t('editor.scale.wideB', { m: fmtLen(v), area: fmtA(would), a: WH.util.fmt(v, 0) }),
+          ok: t('editor.scale.wideArea', { a: WH.util.fmt(v, 0) }),
+          cancel: t('editor.scale.wideKeep', { m: fmtLen(v) }),
+        });
+        if (asArea) {
+          if (v >= AREA.min && v <= AREA.max) fromArea(v);
+          return;
+        }
+      }
+      fromWidth(v);
+    };
     widthIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); goW(); } });
     widthIn.addEventListener('input', () => fW.setError(''));
     const fW = WH.ui.field({ label: 'editor.scale.width', hint: 'scale', control: [widthIn, unit('m'), WH.ui.button({ i18n: 'editor.scale.apply', variant: 'soft', size: 'sm', onClick: goW })], helpI18n: 'editor.scale.widthHelp' });
@@ -375,6 +410,7 @@
       open.hidden = mode !== 'open';
       panels.area.querySelector('.ed-scale-form').classList.toggle('is-off', !has);
       pForm.sync();
+      iForm.sync();
       mForm.sync(st.verified && has ? s.total : undefined);
       if (!typing(widthIn)) widthIn.setValue(pl && widthPlan() ? Math.round(currentWidth() * 10) / 10 : null);
       pointsLast.textContent = st.method === 'two-points' && st.ref && st.ref.metres > 0 ? t('editor.scale.by.points', { m: fmtLen(st.ref.metres) }) : '';
@@ -386,7 +422,12 @@
     function reveal(which) {
       const st = state();
       if (st.verified) more.open = true;
-      else if (lastMode === 'import') { editImported(); return; }
+      else if (lastMode === 'import' && (!which || which === 'area')) {
+        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        try { iForm.input.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+        flashCard();
+        return;
+      } else if (lastMode === 'import') { editImported(); return; }
       else if (lastMode === 'prompt' && (!which || which === 'area')) {
         card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
         try { pForm.input.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
