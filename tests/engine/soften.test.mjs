@@ -360,6 +360,7 @@ test('soften: the point stencil never reaches through a wall or into another roo
 
 test('soften: parameter handling, determinism and plumbing through fieldParams / analysis.run / optimize / speed', async () => {
   const p = demoProject();
+  p.view.band = 5; // one band: the optimizer below is asked for 5 GHz
   p.net.router = P.nearestFloor(p.plan, { x: 0.47, y: 0.5 });
   const ctx = ctxOf(p);
   const g = raster.grid(ctx, { cell: 4 });
@@ -402,7 +403,7 @@ test('soften: parameter handling, determinism and plumbing through fieldParams /
   const a0 = E.analysis.run(p, { cell: 4, soften: 0 });
   assert.deepEqual(a0.trial, raster.field(ctx, g, { ...st, aa: 2, soften: 0 }));
   // optimize: exact before/after on the softened field by default, on the exact one with soften 0
-  const opts = { band: 5, goalRoom: null, allowedRoom: null, threshold: p.model.threshold, router: p.net.router, offsets: { '2.4': 0, '5': 0, '6': 0 } };
+  const opts = { band: 5, goalRoom: null, allowedRoom: null, threshold: p.model.threshold, excluded: p.goal.excluded, router: p.net.router, offsets: { '2.4': 0, '5': 0, '6': 0 } };
   const o = await E.optimize.find(ctx, g, opts);
   assert.equal(o.before.coverage, a.stats.trial.coverage);
   const o0 = await E.optimize.find(ctx, g, { ...opts, soften: 0 });
@@ -528,9 +529,15 @@ test('contours: traced on the softened field - the range lines follow the colour
   }
 });
 
+// the router "in the middle of the flat": a real plan's middle; on the showcase demo the study by the spine wall (its
+// 0.5 / 0.49 is next to the T-junction of the spine with the living-room walls, where a range line meeting the wall
+// corner legitimately turns)
+const DEMO_MID = { x: 0.45, y: 0.55 };
+
 test('contours: chains are smoothed (Chaikin), closed loops stay closed, smooth:0 gives the raw polylines', () => {
-  const p = realProject() || demoProject();
-  p.net.router = P.nearestFloor(p.plan, { x: 0.5, y: 0.49 });
+  const real = realProject();
+  const p = real || demoProject();
+  p.net.router = P.nearestFloor(p.plan, real ? { x: 0.5, y: 0.49 } : DEMO_MID);
   const ctx = ctxOf(p);
   const opts = { band: 5, router: p.net.router, offsets: {}, threshold: p.model.rangeThreshold };
   const raw = raster.contours(ctx, { ...opts, smooth: 0 });
@@ -578,7 +585,7 @@ test('contours: chains are smoothed (Chaikin), closed loops stay closed, smooth:
   assert.ok(smoothTurn < rawTurn / 2 && smoothTurn < 35, `sharpest turn ${rawTurn.toFixed(0)} deg -> ${smoothTurn.toFixed(0)} deg`);
   // the same on the demo and on a field handed in (planner path), and on the exact lattice (soften 0)
   const demo = demoProject();
-  demo.net.router = P.nearestFloor(demo.plan, { x: 0.5, y: 0.49 });
+  demo.net.router = P.nearestFloor(demo.plan, DEMO_MID);
   const cd = ctxOf(demo);
   const gd = raster.grid(cd, { cell: 4 });
   const fd = raster.field(cd, gd, { band: 5, router: demo.net.router, offsets: {}, aa: 2 });

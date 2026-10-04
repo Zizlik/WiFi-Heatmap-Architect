@@ -34,6 +34,8 @@
   }
 
   function toast(msg, opts) { if (WH.ui && WH.ui.toast) WH.ui.toast(msg, opts); else console.warn('[WH.io]', msg); }
+  /** An unexpected (non-IoError) failure: kept in the error diary for Help -> Report a problem; the caller shows its own toast. */
+  function report(e, context) { try { if (WH.diag) WH.diag.record(e, { kind: 'reported', context, notify: false }); } catch (x) { /* ignore */ } }
 
   function engineProject() {
     const ep = WH.engine && WH.engine.project;
@@ -50,7 +52,7 @@
       return { kind: 'error', error: e.message };
     }
     const code = e instanceof IoError ? e.code : 'generic';
-    if (!(e instanceof IoError)) console.error('[WH.io] unexpected error:', e);
+    if (!(e instanceof IoError)) { console.error('[WH.io] unexpected error:', e); report(e, 'io.import'); }
     toast({ i18n: `io.err.${code}` }, { kind: 'error' });
     return { kind: 'error', error: code };
   }
@@ -437,7 +439,7 @@
       toast(t('io.ok.saved', { name }), { kind: 'ok' });
       return true;
     } catch (e) {
-      if (!(e instanceof IoError)) console.error('[WH.io] saveProjectSvg:', e);
+      if (!(e instanceof IoError)) { console.error('[WH.io] saveProjectSvg:', e); report(e, 'io.saveSvg'); }
       fail(e instanceof IoError ? e : new IoError('export'));
       return false;
     }
@@ -457,6 +459,7 @@
       c.width = 2160;
       c.height = 1884;
       const ctx = c.getContext('2d');
+      // white paper in every theme: the exported plan is a document (the same light drawing as the saved SVG), not UI
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0, c.width, c.height);
@@ -570,6 +573,7 @@
       }
     } catch (e) {
       console.error('[WH.io] migration of the old data failed:', e);
+      report(e, 'io.migrate');
     }
     return null;
   }

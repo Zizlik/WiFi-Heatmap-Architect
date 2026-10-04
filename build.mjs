@@ -11,7 +11,9 @@
  *   1. reads src/template.html (must exist - fails loudly otherwise)
  *   2. inlines src/css/*.css in lexical file-name order and src/js/**\/*.js in lexical path order
  *      (files named *.test.* and anything starting with "_" or "." are skipped)
- *   3. fills the template placeholders {{LANG}} {{TITLE}} {{DESCRIPTION}} {{FAVICON}} {{CSS}} {{JS}}
+ *   3. fills the template placeholders {{LANG}} {{TITLE}} {{DESCRIPTION}} {{FAVICON}} {{CSS}} {{JS}} {{BUILD}}
+ *      ({{BUILD}} = window.WH_BUILD: a short hash of the bundle + the HTML line where every src/js file starts, so the
+ *      error diary (src/js/00-core/diag.js) can name the source file of a stack frame inside the one inline script)
  *   4. escapes "</script" inside the JS so the inline <script> cannot be terminated early
  *   5. writes the two self-contained files next to this script
  *   6. PWA (SPEC 6.3): writes sw.js (from src/pwa/sw.js) and manifest.webmanifest (from src/pwa/manifest.webmanifest)
@@ -24,18 +26,21 @@
  *   - the JS bundle parses (syntax errors are reported with the offending file)
  *   - no external URLs: http(s):// may appear only as XML namespaces or as plain-text help links inside strings*.js;
  *     the one exception is https://speed.cloudflare.com/ (+ fetch/XMLHttpRequest) inside src/js/35-speedtest/ - the
- *     speed test the user starts on purpose (SPEC 6.1)
+ *     speed test the user starts on purpose (SPEC 6.1); and the optional local Wi-Fi helper http://127.0.0.1:47823
+ *     (+ fetch) inside src/js/36-devinfo/ and src/js/50-planner/26-* - a loopback-only program from pomocnik/ that the
+ *     user starts on purpose (SPEC 8.1, 8.2)
  *   - PWA: manifest is valid JSON with the installability basics (name, start_url inside scope, standalone, 192 + 512 +
  *     maskable icons whose PNG sizes match), sw.js parses, the written sw.js carries the current cache version (with
- *     --dry this catches stale committed files), the template never links the manifest itself (JS adds it on http(s)
+ *     --dry this catches stale committed files; a --dry --out=<scratch> check has nothing on disk to compare and skips
+ *     that part), the template never links the manifest itself (JS adds it on http(s)
  *     only, so file:// makes no request)
  *   - every data-i18n* / data-tip / data-hint key used in template.html exists in BOTH languages
  *   - the cs and en dictionaries have the same keys and the same {placeholders}; plural forms are well-formed
  *   - every mandatory hint key (SPEC 1.7) has a title and body in both languages
  *   - literal i18n keys used in JS exist in both languages (warning only: keys may be built dynamically)
- *   - the two dark-theme token blocks in 00-tokens.css are identical
+ *   - the two Deep dark token blocks in 00-tokens.css are identical and the OLED block declares the same properties
  *   - template has no duplicate ids and contains the DOM contract ids
- *   - built files are <= 1.5 MB (readable, unminified code on purpose: this is a local app opened from disk, so a
+ *   - built files are <= 2 MB (readable, unminified code on purpose: this is a local app opened from disk, so a
  *     minifier would buy nothing but harder debugging)
  */
 import fs from 'node:fs';
@@ -49,7 +54,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(ROOT, 'src');
 const TEMPLATE = path.join(SRC, 'template.html');
 const PWA_SRC = path.join(SRC, 'pwa');
-const SIZE_LIMIT = 1.5 * 1024 * 1024; // 1.5 MB per built file (SPEC 0.10); no minifier by design
+const SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB per built file (SPEC 0.10, raised from 1.5 MB in stage 7); no minifier by design
 
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');
@@ -91,6 +96,9 @@ const MANIFEST_FILE = 'manifest.webmanifest';
 /** The one external origin the app may talk to, and only from the speed-test module (SPEC 6.1). */
 const SPEEDTEST_DIR = 'src/js/35-speedtest/';
 const SPEEDTEST_ORIGIN = 'https://speed.cloudflare.com';
+/** The optional local Wi-Fi helper (pomocnik/, SPEC 8.1/8.2): loopback only, probed only when the user measures. */
+const HELPER_ORIGIN = 'http://127.0.0.1:47823';
+const HELPER_FILE = /^src\/js\/(?:36-devinfo\/|50-planner\/26-[^/]*$)/;
 
 /** Hint keys every build must ship in both languages (SPEC 1.7). */
 const MANDATORY_HINTS = [
@@ -185,6 +193,26 @@ function bundle() {
   return { template, cssText, jsText, css, js };
 }
 
+/** Short, deterministic id of the bundle (same for both languages): changes whenever any CSS / JS / template byte does. */
+function buildHash(b) {
+  return crypto.createHash('sha256').update(b.template).update('\0').update(b.cssText).update('\0').update(b.jsText).digest('hex').slice(0, 10);
+}
+
+/**
+ * window.WH_BUILD for one output: {v: hash, files: [[line, 'src/js/...'], ...]} - `line` is the 1-based line of the
+ * "/* ===== src/js/... ===== *\/" marker in the final HTML (the file's own line n is HTML line `line + n`). Rendered
+ * in two passes: first with a one-line placeholder, then the JSON (also one line), so no line number moves.
+ */
+function buildInfo(html, hash) {
+  const files = [];
+  const lines = html.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^\/\* ===== (src\/js\/[^ ]+) ===== \*\/$/.exec(lines[i]);
+    if (m) files.push([i + 1, m[1]]);
+  }
+  return JSON.stringify({ v: hash, files }).replace(/</g, '\\u003c');
+}
+
 function render(b, v) {
   const map = {
     LANG: v.lang,
@@ -195,7 +223,9 @@ function render(b, v) {
     JS: b.jsText,
   };
   let html = b.template;
+  // {{BUILD}} last: its value depends on where the other placeholders put the JS
   for (const [k, val] of Object.entries(map)) html = html.split(`{{${k}}}`).join(val);
+  if (html.includes('{{BUILD}}')) html = html.split('{{BUILD}}').join(buildInfo(html.split('{{BUILD}}').join('null'), buildHash(b)));
   const left = html.match(/\{\{[A-Z]+\}\}/g);
   if (left) fail(`unreplaced template placeholders in ${v.file}: ${[...new Set(left)].join(', ')}`);
   return html;
@@ -210,7 +240,8 @@ function loadDictionaries(jsFiles) {
   const dicts = { cs: {}, en: {} };
   const owners = { cs: {}, en: {} };
   for (const f of jsFiles) {
-    if (!/(^|\/)strings[^/]*\.js$/.test(f.rel)) continue;
+    // strings*.js + the engine's own dictionary (10-engine/99-strings.js mirrors its engine.* / err.* keys into WH.i18n)
+    if (!/(^|\/)strings[^/]*\.js$/.test(f.rel) && f.rel !== 'src/js/10-engine/99-strings.js') continue;
     const sandbox = { console };
     sandbox.globalThis = sandbox;
     sandbox.window = sandbox;
@@ -229,6 +260,7 @@ function loadDictionaries(jsFiles) {
           }
         },
       },
+      engine: { text: { add() {} } },
     };
     try {
       vm.runInContext(read(f.abs), sandbox, { filename: f.rel, timeout: 2000 });
@@ -344,6 +376,9 @@ function checkJsKeys(jsFiles, dicts) {
 /** True for a URL of the speed-test origin used from a file inside src/js/35-speedtest/ (the only allowed network use). */
 const isSpeedtestFile = (rel) => rel.startsWith(SPEEDTEST_DIR);
 const isSpeedtestUrl = (url) => url === SPEEDTEST_ORIGIN || url.startsWith(`${SPEEDTEST_ORIGIN}/`);
+/** True for the loopback Wi-Fi helper URL used from src/js/36-devinfo/ or src/js/50-planner/26-* (SPEC 8.1). */
+const isHelperFile = (rel) => HELPER_FILE.test(rel);
+const isHelperUrl = (url) => url === HELPER_ORIGIN || url.startsWith(`${HELPER_ORIGIN}/`);
 
 function checkExternalUrls(template, cssFiles, jsFiles, outputs) {
   const urlRe = /https?:\/\/[^\s"'`<>)\\\]}]+/g;
@@ -352,6 +387,7 @@ function checkExternalUrls(template, cssFiles, jsFiles, outputs) {
       const url = m[0].replace(/[.,;:]+$/, '');
       if (NAMESPACE_URLS.has(url)) continue;
       if (isSpeedtestFile(rel) && isSpeedtestUrl(url)) { log(`  speed-test endpoint (allow-listed): ${url}  [${rel}]`); continue; }
+      if (isHelperFile(rel) && isHelperUrl(url)) { log(`  local Wi-Fi helper (allow-listed, loopback): ${url}  [${rel}]`); continue; }
       if (allowHelp) { log(`  help link (plain text): ${url}  [${rel}]`); continue; }
       fail(`external URL in ${rel}: ${url}`);
     }
@@ -378,13 +414,14 @@ function checkExternalUrls(template, cssFiles, jsFiles, outputs) {
     const speed = isSpeedtestFile(f.rel);
     if (/\bnavigator\.sendBeacon\b|\bWebSocket\b|\bEventSource\b|\bimportScripts\b/.test(s)) fail(`${f.rel}: uses a network API (the app must stay offline)`);
     if (!speed && /\bXMLHttpRequest\b/.test(s)) fail(`${f.rel}: uses XMLHttpRequest (only ${SPEEDTEST_DIR} may talk to the network)`);
-    if (!speed && /\bfetch\s*\(/.test(s)) fail(`${f.rel}: uses fetch() (only ${SPEEDTEST_DIR} may talk to the network)`);
+    // ... and the device-info module may fetch() the loopback Wi-Fi helper (its only allowed URL, checked above).
+    if (!speed && !isHelperFile(f.rel) && /\bfetch\s*\(/.test(s)) fail(`${f.rel}: uses fetch() (only ${SPEEDTEST_DIR} and the Wi-Fi helper probe may talk to the network)`);
     // the service worker is registered in exactly one place, which guards it to http(s) (never file://)
     if (/\bserviceWorker\s*\.\s*register\b/.test(s) && f.rel !== 'src/js/20-ui/pwa.js') fail(`${f.rel}: registers a service worker (only src/js/20-ui/pwa.js may)`);
   }
 }
 
-/** The two dark blocks in 00-tokens.css must declare exactly the same custom properties. */
+/** The two Deep dark blocks in 00-tokens.css must be identical; the OLED block must declare the same custom properties. */
 function checkDarkTokens() {
   const p = path.join(SRC, 'css', '00-tokens.css');
   if (!fs.existsSync(p)) { fail('src/css/00-tokens.css is missing'); return; }
@@ -392,7 +429,9 @@ function checkDarkTokens() {
   const decls = (block) => block.split(';').map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean).sort().join(';');
   const media = /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\) \{([\s\S]*?)\n  \}\s*\}/.exec(css);
   const attr = /:root\[data-theme="dark"\] \{([\s\S]*?)\n\}/.exec(css);
+  const oled = /:root\[data-theme="oled"\] \{([\s\S]*?)\n\}/.exec(css);
   if (!media || !attr) { fail('00-tokens.css: dark theme blocks not found in the expected form'); return; }
+  if (!oled) fail('00-tokens.css: the OLED block (:root[data-theme="oled"]) is missing (SPEC 12)');
   const a = decls(media[1]);
   const b = decls(attr[1]);
   if (a !== b) {
@@ -400,6 +439,16 @@ function checkDarkTokens() {
     const bs = new Set(b.split(';'));
     const diff = [...as].filter((x) => !bs.has(x)).concat([...bs].filter((x) => !as.has(x)));
     fail(`00-tokens.css: the two dark blocks differ: ${diff.slice(0, 4).join(' | ')}${diff.length > 4 ? ' ...' : ''}`);
+  }
+  // OLED: the same set of properties as Deep dark (values differ) - a missing one would leak the Deep dark value
+  // through the media block on a dark OS, or the light value on a light OS
+  if (oled) {
+    const names = (block) => new Set([...block.matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1]).concat(/color-scheme\s*:/.test(block) ? ['color-scheme'] : []));
+    const dn = names(attr[1]);
+    const on = names(oled[1]);
+    const miss = [...dn].filter((n) => !on.has(n));
+    const extra = [...on].filter((n) => !dn.has(n));
+    if (miss.length || extra.length) fail(`00-tokens.css: the OLED block differs from Deep dark in its properties: ${miss.map((n) => `missing ${n}`).concat(extra.map((n) => `extra ${n}`)).slice(0, 6).join(', ')}`);
   }
   // every custom property overridden in dark must exist in light
   const lightNames = new Set([...css.matchAll(/^\s*(--[\w-]+):/gm)].map((m) => m[1]));
@@ -530,6 +579,17 @@ function checkPwa(pwa, template) {
   try { new vm.Script(pwa.sw, { filename: SW_FILE }); } catch (e) { fail(`${SW_FILE}: syntax error: ${e.message}`); }
   const dir = OUT_DIR || ROOT;
   for (const f of pwa.precache) if (!fs.existsSync(path.join(dir, f)) && !DRY) fail(`${SW_FILE} precaches ${f}, which is missing in ${path.relative(ROOT, dir) || '.'}`);
+  // a dry check into a scratch --out folder writes nothing there, so there is no on-disk copy to be stale: the
+  // staleness check only guards the committed files next to build.mjs (and a written --out build)
+  if (DRY && OUT_DIR) { log(`  pwa: dry run into ${path.relative(ROOT, OUT_DIR) || OUT_DIR} - on-disk ${SW_FILE} / ${MANIFEST_FILE} not compared`); }
+  else checkPwaOnDisk(pwa, dir);
+
+  // file:// must never request the manifest or touch the worker: both are added by JS on http(s) only
+  if (/<link\b[^>]*\brel\s*=\s*["']?(?:manifest|apple-touch-icon)\b/i.test(template)) fail('template.html must not link the manifest / apple-touch-icon itself (src/js/20-ui/pwa.js adds them on http(s) only)');
+}
+
+/** The written sw.js / manifest in `dir` carry the current cache version and manifest text. */
+function checkPwaOnDisk(pwa, dir) {
   const onDisk = path.join(dir, SW_FILE);
   if (!fs.existsSync(onDisk)) fail(`${SW_FILE} is missing - run node build.mjs`);
   else {
@@ -539,9 +599,6 @@ function checkPwa(pwa, template) {
   const manDisk = path.join(dir, MANIFEST_FILE);
   if (!fs.existsSync(manDisk)) fail(`${MANIFEST_FILE} is missing - run node build.mjs`);
   else if (read(manDisk) !== pwa.manifestText) fail(`${MANIFEST_FILE} is stale - run node build.mjs`);
-
-  // file:// must never request the manifest or touch the worker: both are added by JS on http(s) only
-  if (/<link\b[^>]*\brel\s*=\s*["']?(?:manifest|apple-touch-icon)\b/i.test(template)) fail('template.html must not link the manifest / apple-touch-icon itself (src/js/20-ui/pwa.js adds them on http(s) only)');
 }
 
 // -------------------------------------------------------------------------------------------------------------------

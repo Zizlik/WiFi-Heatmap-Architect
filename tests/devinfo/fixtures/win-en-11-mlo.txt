@@ -1,0 +1,26 @@
+
+There is 1 interface on the system: 
+
+    Name                   : Wi-Fi
+    Description            : Intel(R) Wi-Fi 7 BE201 320MHz
+    GUID                   : 00000000-1111-2222-3333-444444444444
+    Physical address       : 00:11:22:33:44:55
+    Interface type         : Primary
+    State                  : connected
+    SSID                   : MojeWiFi
+    MLD AP BSSID           : aa:bb:cc:11:22:33
+        LinkID: 0, Local: 02:11:22:33:44:56, AP: aa:bb:cc:11:22:33, RSSI: -70, Channel: 100, Band: 5 GHz, BW: 80
+    Connected Akm-cipher   : [ akm = 00-0f-ac:24, cipher =  00-0f-ac:09 ]
+    Network type           : Infrastructure
+    Radio type             : 802.11be
+    Authentication         : WPA3-Personal  (H2E)
+    Cipher                 : GCMP-256
+    Connection mode        : Auto Connect
+    Receive rate (Mbps)    : 103.2
+    Transmit rate (Mbps)   : 216.2
+    Signal                 : 67% 
+    Profile                : MojeWiFi 
+    QoS MSCS Configured         : 0
+    QoS Map Configured          : 0
+    QoS Map Allowed by Policy   : 0
+

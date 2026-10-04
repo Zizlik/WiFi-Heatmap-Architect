@@ -28,30 +28,72 @@ function throwsKey(fn, key, label = '') {
 // create
 // ---------------------------------------------------------------------------------------------------------------
 
-test('create(demo): a valid, nicely proportioned flat in the requested language', () => {
+test('create(demo): the realistic showcase flat (SPEC 11) in the requested language', () => {
   const cs = P.create({ template: 'demo', lang: 'cs' });
   const en = P.create({ template: 'demo', lang: 'en' });
   assertValidProject(cs, 'demo cs');
   assertValidProject(en, 'demo en');
-  assert.equal(cs.plan.rooms.length, 6);
-  assert.deepEqual(cs.plan.rooms.map((r) => r.name), ['Obývací pokoj', 'Kuchyň', 'Ložnice', 'Chodba', 'Koupelna', 'Pracovna']);
-  assert.deepEqual(en.plan.rooms.map((r) => r.name), ['Living room', 'Kitchen', 'Bedroom', 'Hall', 'Bathroom', 'Office']);
+  assert.equal(cs.plan.rooms.length, 7);
+  assert.deepEqual(cs.plan.rooms.map((r) => r.name), ['Obývák s kuchyní', 'Ložnice', 'Pracovna', 'Koupelna', 'WC', 'Předsíň', 'Balkon']);
+  assert.deepEqual(en.plan.rooms.map((r) => r.name), ['Living & kitchen', 'Bedroom', 'Study', 'Bathroom', 'WC', 'Hall', 'Balcony']);
   assert.equal(cs.goal.device, 'Telefon');
   assert.equal(en.goal.device, 'Phone');
-  assert.equal(cs.scale.mpp, 0.01);
-  close(P.widthFromMpp(cs.plan, cs.scale.mpp), 9, 0.005, 'the flat is 9 m wide');
-  assert.ok(cs.plan.walls.length >= 10 && cs.plan.doors.length >= 4 && cs.plan.furniture.length >= 10);
+  assert.equal(cs.scale.mpp, 0.0125);
+  close(P.widthFromMpp(cs.plan, cs.scale.mpp), 10.5, 0.005, 'the flat is 10.5 m wide (with the bay)');
+  // ~74 m2 of rooms + a ~4 m2 balcony; the balcony does not count towards the whole flat
+  const m2 = (r) => E.geom.polygonAreaPx(r.points) * cs.scale.mpp ** 2;
+  const inside = cs.plan.rooms.filter((r) => r.name !== 'Balkon').reduce((s, r) => s + m2(r), 0);
+  assert.ok(inside >= 65 && inside <= 75, `${inside.toFixed(1)} m2`);
+  assert.deepEqual(cs.goal.excluded, [cs.plan.rooms.find((r) => r.name === 'Balkon').roomId]);
+  // a non-rectangular outline: the L-shaped hall and the bay of the living room are not rectangles
+  assert.equal(cs.plan.rooms.find((r) => r.name === 'Předsíň').points.length, 6, 'L-shaped hall');
+  assert.ok(cs.plan.rooms.find((r) => r.name === 'Obývák s kuchyní').points.length > 4, 'bay');
+  assert.ok(cs.plan.walls.length >= 18 && cs.plan.doors.length >= 7 && cs.plan.furniture.length >= 20);
   assert.ok(cs.plan.walls.every((w) => w.material && w.loss >= 3), 'every demo wall has a material');
-  assert.ok(new Set(cs.plan.walls.map((w) => w.material)).size >= 2, 'brick and drywall');
+  const mats = new Set(cs.plan.walls.map((w) => w.material));
+  for (const m of ['brick', 'drywall', 'masonry', 'concrete', 'reinforced_concrete', 'glass']) assert.ok(mats.has(m), `material ${m}`);
   assert.ok(cs.plan.doors.some((d) => d.loss === 0) && cs.plan.doors.some((d) => d.loss > 0), 'open doorways and closed doors');
-  // today == trial at the start, inside the hall, and the internet inlet sits in the hall too
+  // furniture as real shapes: the L corner sofa and the L kitchen counter have 6 corners; real kinds
+  const furn = (name) => cs.plan.furniture.find((f) => f.name === name);
+  assert.equal(furn('Rohová sedačka').points.length, 6);
+  assert.equal(furn('Kuchyňská linka').points.length, 6);
+  for (const k of ['bed', 'wood', 'books', 'appliance', 'custom']) assert.ok(cs.plan.furniture.some((f) => f.kind === k), `kind ${k}`);
+  // a 160 x 200 cm double bed
+  const bb = E.geom.bbox(furn('Manželská postel').points);
+  close((bb.maxX - bb.minX) * E.CANVAS.W * cs.scale.mpp, 2.0, 0.01);
+  close((bb.maxY - bb.minY) * E.CANVAS.H * cs.scale.mpp, 1.6, 0.01);
+  // every piece of furniture lies inside one room
+  for (const f of cs.plan.furniture) assert.ok(P.roomAt(cs.plan, E.geom.polygonCentroid(f.points)), f.name);
+  // today == trial at the start, in the hall by the front door, and the internet inlet sits in the hall too
   assert.deepEqual(cs.net.router, cs.net.baseline);
-  assert.equal(P.roomAt(cs.plan, cs.net.router).name, 'Chodba');
-  assert.equal(P.roomAt(cs.plan, cs.net.optic).name, 'Chodba');
+  assert.equal(P.roomAt(cs.plan, cs.net.router).name, 'Předsíň');
+  assert.equal(P.roomAt(cs.plan, cs.net.optic).name, 'Předsíň');
+  // the markers stay readable on a phone (~29 px per m): router and inlet >= 1.2 m apart, >= 0.4 m from every wall,
+  // >= 0.9 m from the hall's label, not inside furniture (SPEC 1.8.1 centring guard, SPEC 11 "labels must fit")
+  const mM = (a, b) => E.geom.distM(a, b, cs.scale.mpp);
+  assert.ok(mM(cs.net.router, cs.net.optic) >= 1.2, 'router / inlet apart');
+  const hallLabel = E.geom.labelPoint(cs.plan.rooms.find((r) => r.name === 'Předsíň').points);
+  for (const q of [cs.net.router, cs.net.optic]) {
+    const wallM = Math.min(...cs.plan.walls.map((w) => E.geom.pointSegDistPx(q.x * E.CANVAS.W, q.y * E.CANVAS.H, w.a.x * E.CANVAS.W, w.a.y * E.CANVAS.H, w.b.x * E.CANVAS.W, w.b.y * E.CANVAS.H))) * cs.scale.mpp;
+    assert.ok(wallM >= 0.4, `marker ${wallM.toFixed(2)} m from a wall`);
+    assert.ok(mM(q, hallLabel) >= 0.9, 'marker clear of the hall label');
+    assert.ok(!cs.plan.furniture.some((f) => E.geom.pointInPolygon(q, f.points)), 'marker not in furniture');
+  }
+  // round / shaped pieces stay within the exact tracer's vertex budget
+  assert.ok(cs.plan.furniture.every((f) => f.points.length <= 12));
+  for (const name of ['Záchod', 'Kancelářská židle', 'Balkonový stolek', 'Umyvadlo']) assert.ok(furn(name).points.length > 4, `${name} is not a box`);
+  assert.equal(cs.node.mode, 'none');
+  assert.equal(P.roomAt(cs.plan, cs.node.pos).name, 'Ložnice', 'the (off) second AP waits in the bedroom');
   assert.equal(cs.measurements.length, 0);
-  assert.equal(cs.view.band, 5);
+  // SPEC 13: the band mode Auto by default (the default router sends 2.4 + 5 GHz)
+  assert.equal(cs.view.band, 'auto');
+  assert.deepEqual(cs.net.routerBands, { '2.4': true, '5': true, '6': false });
+  assert.deepEqual(cs.model.steer, { six: -70, five: -72 });
+  // the same flat in both languages
+  assert.deepEqual(en.plan.walls.map((w) => [w.a, w.b, w.material]), cs.plan.walls.map((w) => [w.a, w.b, w.material]));
+  assert.deepEqual(en.plan.furniture.map((f) => [f.points, f.kind, f.loss]), cs.plan.furniture.map((f) => [f.points, f.kind, f.loss]));
   // default language follows WH.i18n.lang (cs in the test stub)
-  assert.equal(P.create({ template: 'demo' }).plan.rooms[0].name, 'Obývací pokoj');
+  assert.equal(P.create({ template: 'demo' }).plan.rooms[0].name, 'Obývák s kuchyní');
   // fresh object every time
   assert.notEqual(P.create({ template: 'demo' }), P.create({ template: 'demo' }));
 });
@@ -68,7 +110,7 @@ test('create(blank) / defaults()', () => {
   assert.equal(P.defaults().model.n, 2.2, 'defaults() returns fresh objects');
   assert.deepEqual(Object.keys(P.defaults()).sort(), ['goal', 'measurements', 'model', 'net', 'node', 'scale', 'view']);
   assert.equal(P.SCHEMA_VERSION, 3);
-  assert.equal(P.create({ template: 'nonsense' }).plan.rooms.length, 6, 'unknown template falls back to the demo flat');
+  assert.equal(P.create({ template: 'nonsense' }).plan.rooms.length, 7, 'unknown template falls back to the demo flat');
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -109,9 +151,10 @@ test('sanitize: an optional private real plan (WH_PRIVATE_PLAN) via parseSvgText
     if (!rw.material) assert.equal(w.loss, undefined, `wall ${i}: no material -> model.wallLoss`);
     else if (rw.material in P.LEGACY_WALL_MATERIALS && rw.loss === P.LEGACY_WALL_MATERIALS[rw.material]) assert.equal(w.loss, E.model.MATERIALS[rw.material]['5'], `wall ${i}: legacy preset`);
   });
-  // defaults of a freshly imported legacy file (SPEC 3.1): 5 GHz, whole flat, no node
+  // defaults of a freshly imported legacy file (SPEC 3.1, SPEC 13): band mode Auto (2.4 + 5 GHz router), whole flat, no node
   if (!raw.project) {
-    assert.equal(p.view.band, 5);
+    assert.equal(p.view.band, 'auto');
+    assert.deepEqual(p.net.routerBands, { '2.4': true, '5': true, '6': false });
     assert.equal(p.goal.room, 'all');
     assert.equal(p.node.mode, 'none');
     assert.equal(p.measurements.length, 0);
@@ -185,10 +228,17 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
   p.measurements = [
     { id: 'm1', x: 0.5, y: 0.7, band: 5, value: -62.5, name: 'Hall', download: 300, upload: 100, device: 'Phone', t: 1700000000000 },
     { id: 'm2', x: 0.3, y: 0.3, band: 2.4, value: -70, name: 'Living', download: null, upload: null, device: 'Laptop', t: 0 },
+    // SPEC 13: "Nevím" (band null) and a Wi-Fi 7 multi-link measurement with its links, strongest first
+    { id: 'm3', x: 0.4, y: 0.5, band: null, value: -66, name: 'Bedroom', download: 80, upload: 20, device: 'Phone', t: 5 },
+    {
+      id: 'm4', x: 0.6, y: 0.4, band: 6, value: -58, name: 'Desk', download: 900, upload: 400, device: 'Laptop', t: 6,
+      wifi: { ssid: 'Home', bssid: 'aa:bb:cc:11:22:33', channel: 37, band: 6, rxRate: 2400, txRate: 2400, radio: '802.11be', security: 'WPA3-Personal', links: [{ band: 6, channel: 37, rssiDbm: -58, widthMHz: 160 }, { band: 5, channel: 100, rssiDbm: -70, widthMHz: 80 }] },
+    },
   ];
   p.goal = { room: 2, allowedRoom: 4, excluded: [5, 6], mode: 'speed', targetDown: 120, targetUp: 40, reserve: 25, device: 'Laptop' };
-  p.node = { mode: 'mesh_wifi', pos: { x: 0.3, y: 0.3 }, bands: { '2.4': true, '5': false, '6': true }, power: -3, backhaulBand: 6, backhaulThreshold: -70 };
-  p.model = { nearSignal: -38, n: 2.6, wallLoss: 10, threshold: -65, rangeThreshold: -58, bandPower: { '2.4': -3, '5': 0, '6': 1.5 } };
+  p.node = { mode: 'mesh_wifi', pos: { x: 0.3, y: 0.3 }, bands: { '2.4': true, '5': false, '6': true }, power: -3, backhaulBand: 6, backhaulThreshold: -70, maxMbps: 300 };
+  p.model = { nearSignal: -38, n: 2.6, wallLoss: 10, threshold: -65, rangeThreshold: -58, bandPower: { '2.4': -3, '5': 0, '6': 1.5 }, steer: { six: -68, five: -74 } };
+  p.net.routerBands = { '2.4': false, '5': true, '6': true };
   p.net.wanDown = 500;
   p.net.wanUp = 100;
   p.net.wanPort = 1000;
@@ -196,7 +246,7 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
   p.net.wanLink = 1000;
   p.net.cableCategory = 'cat6';
   p.net.cableLength = 12.5;
-  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, calibrate: false, palette: 'cb' };
+  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, points: false, whatif: false, calibrate: false, palette: 'cb' };
   const s = P.sanitize(p);
   assertValidProject(s, 'v3');
   assert.deepEqual(s, p);
@@ -208,10 +258,59 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
   assert.equal(JSON.stringify(p), before);
 });
 
+test('view.points / view.whatif (planner layers "Body měření" / "Předpověď u bodů"): on by default, kept off through every format', () => {
+  // new projects and defaults: both layers on
+  for (const p of [P.create({ template: 'demo', lang: 'cs' }), P.create({ template: 'blank', lang: 'en' })]) {
+    assert.equal(p.view.points, true);
+    assert.equal(p.view.whatif, true);
+  }
+  assert.equal(P.defaults().view.points, true);
+  assert.equal(P.defaults().view.whatif, true);
+  // older v3 files / autosaves wrote the view without these keys: both on
+  const old = clone(P.create({ template: 'demo', lang: 'en' }));
+  delete old.view.points;
+  delete old.view.whatif;
+  const o = P.sanitize(old);
+  assert.equal(o.view.points, true, 'older file: points on');
+  assert.equal(o.view.whatif, true, 'older file: what-if on');
+  assert.equal(P.sanitize({ ...old, view: undefined }).view.whatif, true, 'no view at all');
+  // the OLD app's payload (no v3 slices) and a bare plan
+  const legacy = P.sanitize(oldDemo());
+  assert.equal(legacy.view.points, true);
+  assert.equal(legacy.view.whatif, true);
+  // switched off: kept by sanitize, serialize (localStorage + SVG metadata) and the SVG round trip, each independently
+  for (const [pts, wi] of [[false, false], [true, false], [false, true]]) {
+    const p = P.create({ template: 'demo', lang: 'cs' });
+    p.view.points = pts;
+    p.view.whatif = wi;
+    const s = P.sanitize(p);
+    assertValidProject(s, `points ${pts} whatif ${wi}`);
+    assert.equal(s.view.points, pts);
+    assert.equal(s.view.whatif, wi);
+    const json = JSON.parse(P.serialize(s));
+    assert.equal(json.project.view.points, pts, 'serialize writes view.points');
+    assert.equal(json.project.view.whatif, wi, 'serialize writes view.whatif');
+    const back = P.sanitize({ ...json.project, plan: json.plan, v: 3 });
+    assert.equal(back.view.points, pts, 'localStorage round trip');
+    assert.equal(back.view.whatif, wi, 'localStorage round trip');
+    const svg = P.parseSvgText(P.buildSvg(s)).project;
+    assert.equal(svg.view.points, pts, 'SVG round trip');
+    assert.equal(svg.view.whatif, wi, 'SVG round trip');
+    assert.deepEqual(P.sanitize(s), s, 'idempotent');
+  }
+  // anything but a boolean falls back to "on"
+  for (const bad of ['false', 0, 1, null, {}, [], 'off']) {
+    const q = P.sanitize({ ...clone(old), view: { ...old.view, points: bad, whatif: bad } });
+    assert.equal(q.view.points, true, `points ${JSON.stringify(bad)}`);
+    assert.equal(q.view.whatif, true, `whatif ${JSON.stringify(bad)}`);
+  }
+});
+
 test('sanitize: clamps values, repairs references, snaps markers onto the floor', () => {
   const p = P.create({ template: 'demo', lang: 'cs' });
   const raw = clone(p);
-  raw.model = { nearSignal: -5, n: 9, wallLoss: 99, threshold: -10, rangeThreshold: 'x', bandPower: { '2.4': -50, '5': 'loud', '6': 9 } };
+  raw.model = { nearSignal: -5, n: 9, wallLoss: 99, threshold: -10, rangeThreshold: 'x', bandPower: { '2.4': -50, '5': 'loud', '6': 9 }, steer: { six: -10, five: 'x' } };
+  raw.net.routerBands = { '2.4': false, '5': false, '6': false };
   raw.net.router = { x: 2, y: -1 }; // far outside
   raw.net.baseline = { x: 0.02, y: 0.02 }; // outside the flat
   raw.net.wanDown = 99999;
@@ -224,7 +323,8 @@ test('sanitize: clamps values, repairs references, snaps markers onto the floor'
   raw.measurements = [{ id: 'a', x: 0.5, y: 0.5, band: '5', value: 0, name: 'x'.repeat(200), download: -5, upload: 1e6, device: 'D'.repeat(100) }, { x: 'a', y: 0, band: 5, value: -50 }, { x: 0.5, y: 0.5, band: 7, value: -50 }, null, 7];
   const s = P.sanitize(raw);
   assertValidProject(s, 'clamped');
-  assert.deepEqual(s.model, { nearSignal: -25, n: 4, wallLoss: 20, threshold: -55, rangeThreshold: -60, bandPower: { '2.4': -10, '5': 0, '6': 6 } });
+  assert.deepEqual(s.model, { nearSignal: -25, n: 4, wallLoss: 20, threshold: -55, rangeThreshold: -60, bandPower: { '2.4': -10, '5': 0, '6': 6 }, steer: { six: -50, five: -72 } });
+  assert.deepEqual(s.net.routerBands, { '2.4': true, '5': true, '6': false }, 'a router without any band -> the default');
   assert.ok(P.floorMaskAt(s.plan, s.net.router) && P.floorMaskAt(s.plan, s.net.baseline) && P.floorMaskAt(s.plan, s.node.pos));
   assert.equal(s.net.wanDown, 10000);
   assert.equal(s.net.wanPort, null);
@@ -242,7 +342,7 @@ test('sanitize: clamps values, repairs references, snaps markers onto the floor'
   assert.equal(s.goal.targetUp, 10000);
   assert.equal(s.goal.reserve, 80);
   assert.equal(s.goal.device, 'Telefon');
-  assert.equal(s.view.band, 5);
+  assert.equal(s.view.band, 'auto', 'an invalid band -> Auto (two router bands)');
   assert.equal(s.view.layer, 'signal');
   assert.equal(s.view.palette, 'default');
   assert.equal(s.view.ranges, false);

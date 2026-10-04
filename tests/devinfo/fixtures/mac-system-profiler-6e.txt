@@ -1,0 +1,26 @@
+Wi-Fi:
+
+      Software Versions:
+          CoreWLAN: 16.0 (1657)
+          CoreWLANKit: 16.0 (1657)
+      Interfaces:
+        en0:
+          Card Type: Wi-Fi  (0x14E4, 0x4388)
+          MAC Address: 8c:85:90:65:43:21
+          Locale: ETSI
+          Country Code: CZ
+          Supported PHY Modes: 802.11 a/b/g/n/ac/ax
+          Supported Channels: 1 (2GHz), 6 (2GHz), 36 (5GHz), 1 (6GHz), 5 (6GHz), 37 (6GHz)
+          Wake On Wireless: Supported
+          AirDrop: Supported
+          Status: Connected
+          Current Network Information:
+            Chalupa_6E:
+              PHY Mode: 802.11ax
+              Channel: 37 (6GHz, 160MHz)
+              Country Code: CZ
+              Network Type: Infrastructure
+              Security: WPA3 Personal
+              Signal / Noise: -60 dBm / -95 dBm
+              Transmit Rate: 1729
+              MCS Index: 7

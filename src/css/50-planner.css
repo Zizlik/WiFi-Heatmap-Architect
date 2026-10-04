@@ -13,26 +13,30 @@
   --pl-inlet-ink: #ffffff;
   --pl-unknown: rgb(113, 126, 148);
 }
+/* SPEC 12: deep dark (auto-dark + data-theme="dark") and OLED black share the bright accents; neutral inks, no navy */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --pl-range-24: #67e8f9;
     --pl-range-5: #a5b4fc;
     --pl-range-6: #f9a8d4;
     --pl-node: #60a5fa;
-    --pl-node-ink: #0c1424;
+    --pl-node-ink: #0a0a0b;
     --pl-inlet: #f5b14a;
-    --pl-inlet-ink: #2a1a03;
+    --pl-inlet-ink: #1c1305;
+    --pl-unknown: rgb(140, 140, 150);
   }
 }
-:root[data-theme="dark"] {
+:root[data-theme="dark"], :root[data-theme="oled"] {
   --pl-range-24: #67e8f9;
   --pl-range-5: #a5b4fc;
   --pl-range-6: #f9a8d4;
   --pl-node: #60a5fa;
-  --pl-node-ink: #0c1424;
+  --pl-node-ink: #0a0a0b;
   --pl-inlet: #f5b14a;
-  --pl-inlet-ink: #2a1a03;
+  --pl-inlet-ink: #1c1305;
+  --pl-unknown: rgb(140, 140, 150);
 }
+:root[data-theme="oled"] { --pl-node-ink: #000; --pl-inlet-ink: #000; }
 
 /* ---- stage ---------------------------------------------------------------- */
 .pl-stage { container-type: inline-size; }
@@ -56,6 +60,12 @@
 .pl-tools, .pl-zoom { flex: none; }
 .pl-tools .btn { padding: 0 12px; }
 .pl-tools .btn--ghost[aria-pressed="true"] { --btn-bg: var(--accent-soft); }
+/* Vrstvy while a default layer is hidden (walls, furniture, room names, Body měření, Předpověď u bodů): a small dot on the
+   icon's top-right corner (--pl-dot-x: the icon's right edge - 5 px; icon-only buttons centre the 18 px icon) */
+.pl-tools .btn.is-on::after {
+  content: ''; position: absolute; top: calc(50% - 13px); left: var(--pl-dot-x, 25px); width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 2px var(--glass); pointer-events: none;
+}
 
 /* legend */
 .pl-legend__head { display: flex; align-items: center; gap: 2px; min-width: 0; }
@@ -77,6 +87,7 @@
 .pl-dash--b24 { width: 22px; }
 .pl-sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
 .pl-sw--unknown { background: var(--pl-unknown); margin-right: 4px; }
+.pl-sw--cap { margin-right: 4px; border: 1px solid var(--line-strong); background: repeating-linear-gradient(135deg, var(--map-wall) 0 1.2px, transparent 1.2px 4px); }
 
 /* markers (DOM over the canvas; the 44 px box is centred on the anchor point) */
 .pl-mk {
@@ -118,9 +129,45 @@
 .pl-mk__label { left: 50%; top: calc(50% + 17px); transform: translateX(-50%); color: var(--ink-2); }
 .pl-mk--meas { width: 32px; height: 32px; }
 .pl-mk--meas .pl-mk__dot { width: 15px; height: 15px; border-width: 2px; box-shadow: 0 0 0 1px var(--map-wall), var(--shadow-1); }
-.pl-mk__val { left: calc(50% + 10px); top: 50%; transform: translateY(-50%); }
-.pl-mk--meas.is-other { opacity: .5; }
-.pl-mk--meas.is-other .pl-mk__val { display: none; }
+/* the value label of a measurement dot: placed by layoutLabels() (inline transform from the dot centre); a solid pill
+   with a halo, so dashed range lines and the heat colours never run through the numbers (SPEC 10) */
+.pl-mk__val {
+  left: 50%; top: 50%; display: inline-flex; align-items: center; gap: 2px; width: max-content;
+  height: 20px; padding: 0 6px; background: var(--surface);
+  box-shadow: 0 0 0 1.5px var(--map-halo), var(--shadow-1); font-size: 11.5px; line-height: 20px;
+}
+.pl-lv0, .pl-lv1 { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.pl-mk[data-lv="0"] .pl-lv1, .pl-mk[data-lv="1"] .pl-lv0, .pl-mk[data-lv="2"] .pl-mk__val { display: none; }
+.pl-mk__val .icon { color: var(--muted); }
+.pl-mk__no {
+  position: absolute; left: calc(50% + 2px); top: calc(50% - 20px); display: none;
+  width: 16px; height: 16px; border-radius: 50%; place-items: center;
+  background: var(--ink); color: var(--surface); box-shadow: 0 0 0 1.5px var(--map-halo);
+  font-size: 10px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.pl-mk[data-lv="2"] .pl-mk__no { display: grid; }
+.pl-mk--meas.is-other .pl-mk__dot { opacity: .5; }
+/* a dot on a wall line / off the floor: a dashed warning ring (the list says why and offers "Posunout dovnitř") */
+.pl-mk--meas.is-off .pl-mk__dot { outline: 2px dashed var(--warn); outline-offset: 2px; }
+.pl-mk--meas.is-other .pl-mk__val { color: var(--ink-2); }
+.pl-lab__tag { margin-left: 3px; color: var(--muted); font-weight: 600; }
+.pl-lab__v--up, .pl-mk__val .pl-lab__v--up { color: var(--ok-ink); }
+.pl-lab__v--down { color: var(--danger-ink); }
+.pl-mk__val .pl-lab__cap .icon { color: var(--warn); }
+.pl-lab__cap { display: grid; place-items: center; flex: none; margin-left: 1px; }
+/* the change chip "+14" (green up / red down / grey zero) - map labels, tooltip, sidebar list */
+.pl-chip {
+  display: inline-flex; flex: none; align-items: center; gap: 1px; height: 16px; margin-left: 4px; padding: 0 5px 0 2px;
+  border-radius: var(--r-pill); font-size: 11px; font-weight: 800; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.pl-lv1 > .pl-chip:first-child { margin-left: 0; }
+.pl-chip--up { background: var(--ok-soft); color: var(--ok-ink); }
+.pl-chip--down { background: var(--danger-soft); color: var(--danger-ink); }
+.pl-chip--zero { background: var(--surface-3); color: var(--ink-2); padding: 0 5px; }
+.pl-mk__val .pl-chip .icon, .pl-chip .icon { color: currentColor; }
+.pl-mk--meas.is-pulse .pl-mk__dot { animation: pl-pulse 1s var(--ease) 2; }
+@keyframes pl-pulse { 50% { box-shadow: 0 0 0 7px var(--accent-glow), var(--shadow-1); transform: scale(1.25); } }
+@media (prefers-reduced-motion: reduce) { .pl-mk--meas.is-pulse .pl-mk__dot { animation: none; box-shadow: 0 0 0 4px var(--focus); } }
 @media (pointer: coarse) { .pl-mk--meas { width: 44px; height: 44px; } }
 .pl-stage.is-dragging, .pl-stage.is-dragging .pl-mk { cursor: grabbing; }
 .pl-stage.is-dragging .pl-mk__dot { transition: none; }
@@ -164,6 +211,8 @@
 .pl-mnote { padding: 8px 10px; }
 .pl-ico { display: grid; place-items: center; flex: none; color: var(--muted); }
 .pl-layers .switch { width: 100%; }
+/* "Předpověď u bodů" with nothing to show (no dots / no measurements / nothing differs): greyed, the "?" says why */
+.pl-layers .switch.is-disabled .switch__label { color: var(--muted); }
 .pl-kbdchip { margin-left: auto; }
 
 /* responsive stage chrome (the stage is a size container) */
@@ -173,7 +222,7 @@
 }
 @container (max-width: 640px) {
   .pl-tools .btn__label, .pl-tools .btn__kbd { display: none; }
-  .pl-tools .btn { width: 36px; padding: 0; }
+  .pl-tools .btn { width: 36px; padding: 0; --pl-dot-x: calc(50% + 4px); }
   .pl-legend__thr { display: none; }
 }
 @container (max-width: 560px) {
@@ -190,7 +239,7 @@
 @media (pointer: coarse) { .pl-tools .btn { min-height: 44px; } }
 /* touch: the view / band switches at the top get the full 44 px height (their width is what fits a 360 px phone) */
 @media (pointer: coarse) { .pl-stage > .stage__tl .seg > button, .pl-stage > .stage__tr .seg > button, .pl-stage > .stage__tl .seg__item, .pl-stage > .stage__tr .seg__item { min-height: 44px; } }
-@media (pointer: coarse) and (max-width: 899px) { .pl-tools .btn__label, .pl-tools .btn__kbd { display: none; } .pl-tools .btn { width: 44px; padding: 0; } }
+@media (pointer: coarse) and (max-width: 899px) { .pl-tools .btn__label, .pl-tools .btn__kbd { display: none; } .pl-tools .btn { width: 44px; padding: 0; --pl-dot-x: calc(50% + 4px); } }
 
 /* ---- sidebar ---------------------------------------------------------------- */
 /* absolutely positioned bits (sr-only live region, switch inputs) must be clipped by the scrolling sidebar */
@@ -266,6 +315,9 @@
 .pl-mrow__main { flex: 1 1 auto; min-width: 0; }
 .pl-mrow__t { font-size: var(--fs-sm); font-weight: 600; }
 .pl-mrow__s { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; color: var(--muted); font-size: var(--fs-xs); }
+.pl-mwifi { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.pl-mwifi > svg { flex: none; }
+.pl-mout { color: var(--warn); font-weight: 600; }
 .pl-sp { display: inline-flex; align-items: center; gap: 2px; }
 .pl-cal { display: flex; flex-direction: column; gap: 6px; }
 .pl-calrow { display: flex; align-items: flex-start; gap: 6px; color: var(--ink-2); font-size: var(--fs-sm); }
@@ -283,8 +335,6 @@
 /* ---- measuring with the phone (SPEC 6.2): speed-only dots, the measurement sheet, the measuring mode ---------- */
 /* measurement dots: no measured signal = neutral dot; Speed view (and speed-only points) label "↓ 245 / ↑ 38" */
 .pl-mk--meas.is-nosig .pl-mk__dot { background: var(--pl-unknown); }
-.pl-mk--meas.is-speed:not(.is-other) .pl-mk__val { display: inline-flex; align-items: center; gap: 1px; padding: 0 6px 0 2px; line-height: 16px; }
-.pl-mk--meas.is-speed .pl-mk__val > .icon { color: var(--muted); }
 .pl-mk__sep { margin: 0 3px; color: var(--muted); font-weight: 600; }
 .pl-mdot.is-nosig { background: var(--pl-unknown); }
 .pl-est { font-style: italic; }
@@ -344,6 +394,9 @@ body.pl-measuring #app-header, body.pl-measuring .pl-side { visibility: hidden; 
 .pl-stage.is-mm > .pl-mmslot { display: flex; max-width: none; flex-wrap: nowrap; left: var(--stage-pad); right: var(--stage-pad); }
 .pl-mmslot--top { top: max(var(--stage-pad), env(safe-area-inset-top)); justify-content: space-between; }
 .pl-mmslot--bottom { bottom: max(var(--stage-pad), env(safe-area-inset-bottom)); justify-content: center; }
+/* the "Prvotní měření" entry (28-calib-wizard.js) sits above the hint bar */
+.pl-stage.is-mm > .pl-mmslot--bottom { flex-direction: column; align-items: center; gap: 8px; }
+.pl-mm__calib { flex: none; min-height: 44px; padding: 0 16px; border-radius: var(--r-pill); box-shadow: var(--shadow-2); }
 .pl-stage.is-mm > .pl-mmslot--bottom.is-covered { visibility: hidden; }
 .pl-mmbar { flex: 0 1 auto; min-width: 0; }
 .pl-mmbar .seg__item { min-width: 48px; min-height: 44px; padding: 0 10px; font-size: var(--fs-md); }
@@ -367,8 +420,6 @@ body.pl-measuring #app-header, body.pl-measuring .pl-side { visibility: hidden; 
 @container (max-width: 560px) {
   .pl-tools .toolbar__sep { display: none; }
 }
-/* a dot label that would leave the stage on the right goes to the left of the dot */
-.pl-mk--meas.is-flip .pl-mk__val { left: auto; right: calc(50% + 10px); }
 
 /* ---- stage 5 (SPEC 7) ------------------------------------------------------------------------------------------- */
 /* speed view without a speed curve: slim banner under the top toolbars (never over them, never blocking the map) */
@@ -443,10 +494,17 @@ body.pl-has-sheet #toast-root { top: var(--pl-toast-top, calc(var(--header-h, 56
 .pl-bphead { margin-top: 4px; }
 .pl-wallbands { margin-top: -2px; }
 @media (pointer: coarse) { .pl-sb .btn__kbd { display: none; } }
-/* very narrow stages (360 px phones): the two top toolbars must not touch - "GHz" goes (the hint explains the band),
-   the banner drops its icon so its sentence keeps two lines */
+/* phone-wide stages: the view switch and the band switch (2,4 · 5 · 6 GHz · Auto, SPEC 13) do not fit side by side -
+   the band switch takes a second row on the right (the plan is width-bound there, so the map does not shrink; the
+   fit and the speed banner read the slots' real bottoms) */
+@container (max-width: 400px) {
+  .pl-stage > .stage__tr { top: calc(var(--stage-pad) + 60px); }
+  /* measuring mode: band switch + "?" + Hotovo share one row - the unit goes (the hint and every label say GHz) */
+  .pl-stage .pl-mm__bands > .pl-bands__unit { display: none; }
+}
+/* very narrow stages (360 px phones) */
 @container (max-width: 350px) {
-  .pl-stage > .stage__tr .toolbar__label { display: none; }
+  .pl-mmbar .seg__item { padding: 0 9px; }
   /* tools + zoom stay on one row (40 x 44 px targets) */
   .pl-tools .btn, .pl-zoom .btn { width: 40px; }
 }
@@ -457,3 +515,102 @@ body.pl-has-sheet #toast-root { top: var(--pl-toast-top, calc(var(--header-h, 56
   .pl-sb__short { display: inline; }
 }
 .pl-tip__dot { color: var(--muted); }
+
+/* ---- stage 7 (SPEC 10): what changes at the measured points, dots on walls, node speed caps ---------------- */
+.pl-mk__nt { display: block; line-height: 1; }
+.pl-tip__sep { height: 1px; margin: 6px 0 4px; background: var(--line); }
+.pl-tip > .pl-tip__sep { display: block; }
+.pl-tip__wi { font-weight: 650; }
+.pl-tip__wi .pl-chip { margin-left: 2px; }
+.pl-tip__cap { color: var(--warn); font-weight: 650; }
+.pl-tip__cap .icon { color: currentColor; }
+/* Measurements card: "Co by se změnilo v tvých bodech" */
+.pl-wi { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--accent-line); border-radius: var(--r-md); background: var(--accent-wash, var(--surface-2)); }
+.pl-wi__head .hint { margin-left: 2px; }
+.pl-wi__verdict { margin: 0; color: var(--ink); font-size: var(--fs-sm); font-weight: 600; line-height: 1.45; }
+.pl-wi__sum { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 0; color: var(--ink-2); font-size: var(--fs-xs); font-weight: 600; }
+.pl-wi__cnt--up { color: var(--ok-ink); }
+.pl-wi__cnt--down { color: var(--danger-ink); }
+.pl-wi__list { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 0; padding: 0; list-style: none; }
+.pl-wi__row {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 3px 6px;
+  border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.pl-wi__row:hover { background: var(--hover-wash, var(--surface-3)); }
+.pl-wi__row:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.pl-wi__no, .pl-mrow__no {
+  display: grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--surface-3); color: var(--ink-2); font-size: 11px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+}
+.pl-wi__main { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.pl-wi__name { font-size: var(--fs-sm); font-weight: 650; }
+.pl-wi__sub { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; color: var(--muted); font-size: var(--fs-xs); }
+.pl-wi__sp, .pl-wi__capt { display: inline-flex; align-items: center; gap: 2px; }
+.pl-wi__capt { color: var(--warn); font-weight: 650; }
+.pl-wi__row > .pl-chip { flex: none; margin-left: 0; }
+.pl-wi-host > .pl-wi__idle { margin: 0; }
+/* numbers in the measurement list only while some dot on the map shows its number */
+.pl-mrow__no { display: none; width: 16px; height: 16px; font-size: 10px; }
+.pl-mlist.has-no .pl-mrow__no { display: grid; }
+.pl-moff { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; color: var(--warn); font-size: var(--fs-xs); font-weight: 650; }
+.pl-moff .btn { margin-left: auto; }
+.pl-moffall { padding: 8px 10px; }
+/* Result card: one line about the measured points */
+.pl-wiline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; color: var(--ink-2); font-size: var(--fs-sm); }
+.pl-wiline > .icon { color: var(--accent); }
+.pl-wiline .btn { margin-left: auto; }
+/* Second AP card */
+.pl-nmax .input--num { max-width: 110px; }
+.pl-bhspeed { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); font-weight: 600; }
+
+/* SPEC 13: the band of every measurement ---------------------------------------------------------------------- */
+/* the measurement count on a band button (2,4 · 5 · 6): a small bubble in the top-right corner of the item */
+.pl-bands .seg__item, .pl-mm__bands .seg__item { position: relative; }
+.pl-bcnt {
+  position: absolute; top: -5px; right: -4px; z-index: 1;
+  display: grid; place-items: center; min-width: 15px; height: 15px; padding: 0 3px;
+  border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink);
+  font-size: 9.5px; font-weight: 750; line-height: 1; font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 1.5px var(--surface); pointer-events: none;
+}
+.pl-bcnt[hidden] { display: none; }
+.pl-bands__auto[hidden] { display: none; }
+/* "GHz" sits inside the switch, right after the numbers and before Auto */
+.pl-bands > .pl-bands__unit, .pl-mm__bands > .pl-bands__unit { display: inline-flex; align-items: center; padding: 0 4px 0 8px; }   /* left: room for the count bubble of "6" */
+/* 2,4 / 5 / 6 / Nevím */
+.pl-bd { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pl-bd__label { font-size: var(--fs-sm); font-weight: 650; color: var(--ink); }
+.pl-bd__seg .seg__item { min-height: 36px; font-size: var(--fs-md); }
+.pl-bd__seg.seg--sm .seg__item { min-height: 30px; font-size: .9rem; }
+@media (pointer: coarse) { .pl-bd__seg .seg__item, .pl-bd__seg.seg--sm .seg__item { min-height: 44px; } }
+.pl-bd__where { display: flex; }
+.pl-bd__where .btn { margin-left: -6px; }
+.pl-bd__how { margin: 0; line-height: 1.45; }
+.pl-mform__band .field__row { display: block; }
+/* phone sheet: label + "Kde to zjistím?" on one row, the 2,4 / 5 / 6 / Nevím choice below */
+.pl-mform__band--where { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; row-gap: 6px; }
+.pl-mform__band--where > * { grid-column: 1 / -1; }
+.pl-mform__band--where > .field__label { grid-column: 1; grid-row: 1; }
+.pl-mform__band--where > .pl-bd__where { grid-column: 2; grid-row: 1; }
+.pl-mform__band--where > .pl-bd__where .btn { margin: -8px -6px -8px 0; }
+/* the band question in the checklist's Wi-Fi row */
+.pl-bd__ask { margin-top: 6px; }
+.pl-bd__acts { --gap: 6px; }
+.pl-bd__manual { display: flex; flex-direction: column; gap: 6px; }
+.pl-bd__manual > p { margin: 0; color: var(--ink-2); }
+.pl-bd__paste { padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md, 10px); background: var(--surface-2); }
+.pl-bd__ta { width: 100%; min-height: 64px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--fs-xs); }
+.pl-bd__err { margin: 0; }
+.pl-bd__err[hidden] { display: none; }
+.pl-bd__got { color: var(--ink); font-weight: 750; }
+/* the measurement list: the band in words, "≈ 5 GHz (odhad)" muted, "pásmo neověřeno" + Opravit pásmo */
+.pl-mband { font-weight: 650; color: var(--ink-2); }
+.pl-mband.is-est { font-weight: 500; font-style: italic; color: var(--muted); }
+.pl-mnb .badge { flex: none; }
+.pl-mnbAll { padding: 8px 10px; align-items: center; }
+/* Auto: where a steering device would be on which band (legend line) */
+.pl-legend__zones { gap: 2px 8px; }
+.pl-zone { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pl-zone__sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
+/* Advanced: the router's bands */
+.pl-rbands { --gap: 4px 14px; }

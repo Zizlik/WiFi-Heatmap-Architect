@@ -58,7 +58,7 @@
 }
 .btn--ghost.is-active, .btn--ghost[aria-pressed="true"] { --btn-line: transparent; }
 .btn__kbd { margin-left: 2px; }
-.btn--primary .kbd, .btn--primary kbd { background: rgba(255, 255, 255, .18); border-color: rgba(255, 255, 255, .35); color: var(--accent-ink); }
+.btn--primary .kbd, .btn--primary kbd { background: var(--accent-kbd-bg); border-color: var(--accent-kbd-line); box-shadow: none; color: var(--accent-ink); }
 .btn .spinner { width: 14px; height: 14px; border-width: 2px; }
 
 @media (pointer: coarse) {
@@ -113,6 +113,7 @@ kbd, .kbd {
 /* touch-only devices have no keyboard to press: key chips in buttons and menus are noise there */
 @media (hover: none) and (pointer: coarse) { .btn__kbd, .menu__kbd { display: none; } }
 .kbd-combo .plus { color: var(--muted); font-size: .75rem; }
+.popover--tip .kbd-combo .plus { color: inherit; }   /* the tooltip is the inverse of the page: --muted would vanish */
 
 /* ---- Segmented control --------------------------------------------------- */
 /* Concentric corners: an item's radius = container radius - padding - border, so the active pill keeps the same
@@ -309,7 +310,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
 .switch__track::after {
   content: ""; position: absolute; left: 3px; top: 3px;
   width: 16px; height: 16px; border-radius: 50%;
-  background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+  background: var(--switch-knob); box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
   transition: transform var(--t-fast) var(--ease);
 }
 .switch input:checked + .switch__track { background: var(--accent); }
@@ -395,7 +396,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
   padding: 12px 14px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
-  background: var(--surface);
+  background: var(--surface-float);
   color: var(--ink);
   box-shadow: var(--shadow-pop);
   font-size: .9rem; line-height: 1.45;
@@ -407,6 +408,8 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
 .popover__title { display: block; font-size: .9333rem; font-weight: 700; margin-bottom: 4px; }
 .popover__body { color: var(--ink-2); }
 .popover__more { color: var(--muted); margin-top: .55em; font-size: .8667rem; }
+/* data-hint-note: the current state of the control next to the "?" (e.g. why it is greyed), between title and body */
+.popover__note { margin: 2px 0 8px; padding: 6px 9px; border-radius: var(--r-xs); background: var(--warn-soft); color: var(--warn-ink); font-size: .8667rem; font-weight: 600; }
 .popover__arrow {
   position: absolute; width: 10px; height: 10px;
   background: inherit; border: inherit;
@@ -431,9 +434,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
 .popover--tip .popover__title { display: inline; font-size: inherit; font-weight: 600; margin: 0; }
 .popover--tip .popover__body { color: inherit; }
 .popover--tip .popover__arrow { display: none; }
-.popover--tip kbd { margin-left: 6px; background: rgba(255, 255, 255, .14); border-color: rgba(255, 255, 255, .3); color: inherit; padding: 0 .4em; font-size: .72rem; box-shadow: none; }
-:root[data-theme="dark"] .popover--tip kbd { background: rgba(12, 20, 36, .08); border-color: rgba(12, 20, 36, .25); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .popover--tip kbd { background: rgba(12, 20, 36, .08); border-color: rgba(12, 20, 36, .25); } }
+.popover--tip kbd { margin-left: 6px; background: var(--tip-kbd-bg); border-color: var(--tip-kbd-line); color: inherit; padding: 0 .4em; font-size: .72rem; box-shadow: none; }
 
 /* Generic floating panel anchored to a button (layers, "how many metres?", ...) */
 .pop-panel {
@@ -442,7 +443,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
   max-height: min(70dvh, 560px); overflow: auto;
   padding: 12px;
   border: 1px solid var(--line-strong); border-radius: var(--r-md);
-  background: var(--surface); color: var(--ink);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
   animation: wh-pop-in var(--t-fast) ease-out;
 }
@@ -456,7 +457,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
   max-height: calc(100dvh - 24px); overflow: auto;
   padding: 6px;
   border: 1px solid var(--line-strong); border-radius: var(--r-md);
-  background: var(--surface); color: var(--ink);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
   animation: wh-pop-in var(--t-fast) ease-out;
 }
@@ -475,7 +476,9 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
 .menu__item--danger .menu__icon { color: inherit; }
 .menu__label { flex: 1 1 auto; min-width: 0; }
 .menu__kbd { margin-left: 12px; flex: none; }
-.menu__check { width: 20px; flex: none; color: var(--accent); }
+.menu__check { display: grid; place-items: center; width: 20px; height: 20px; flex: none; color: var(--accent); }
+.menu__check + .menu__icon { margin-left: -4px; }   /* "check + icon + label" (theme menu): the two glyphs read as one column pair */
+.menu__item[aria-checked="true"] .menu__icon { color: var(--accent); }
 .menu__sep { height: 1px; margin: 6px 4px; background: var(--line); border: 0; }
 .menu__note { padding: 6px 10px 4px; color: var(--muted); font-size: var(--fs-xs); line-height: 1.4; max-width: 280px; }
 .menu__heading { padding: 8px 10px 2px; color: var(--muted); font-size: var(--fs-xs); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
@@ -495,7 +498,7 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
   width: 100%; padding: 10px 10px 10px 14px;
   border: 1px solid var(--line-strong); border-left: 4px solid var(--info);
   border-radius: var(--r-md);
-  background: var(--surface); color: var(--ink);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
   font-size: .9333rem; line-height: 1.4;
   animation: wh-toast-in var(--t-med) var(--ease);
@@ -535,8 +538,8 @@ input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-i
 .modal {
   display: flex; flex-direction: column;
   width: min(520px, 100%); max-height: min(90dvh, 780px);
-  border: 1px solid var(--line); border-radius: var(--r-lg);
-  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--line-strong); border-radius: var(--r-lg);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
   animation: wh-modal-in var(--t-med) var(--ease);
 }
@@ -768,6 +771,8 @@ button.dropzone { appearance: none; -webkit-appearance: none; width: 100%; font:
   font-weight: 650;
 }
 .disclosure > summary::-webkit-details-marker { display: none; }
+/* inset ring: the open body starts right under the summary, an outside ring would cover its first line */
+.disclosure > summary:focus-visible { outline-offset: -2px; }
 .disclosure > summary::after {
   content: ""; width: 7px; height: 7px; margin-left: auto; margin-right: 6px;
   border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
@@ -785,7 +790,7 @@ button.dropzone { appearance: none; -webkit-appearance: none; width: 100%; font:
   border-radius: 50%;
   background: var(--accent); color: var(--accent-ink);
   border: 3px solid var(--map-marker-ring);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  box-shadow: 0 2px 8px var(--map-marker-shadow);
   font-size: 12px; font-weight: 800;
   cursor: grab; touch-action: none;
 }

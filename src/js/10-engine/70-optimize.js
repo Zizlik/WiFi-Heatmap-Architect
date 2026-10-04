@@ -7,7 +7,9 @@
  *   4. (signal mode, softening on) the refined three + the current position are ranked again on the softened full grid,
  *   5. before / after statistics are computed exactly on the full grid (softened, as analysis.run).
  * Signal score (per room, area weighted across rooms):  coverage% + 0.2*(mean+100) + 0.2*(p10+100).
- * Speed score (per room): the legacy pass-rate based score (speed.scoreRatios), area weighted as well.
+ * Speed score (per room): the legacy pass-rate based score (speed.scoreRatios), area weighted as well. With a second
+ * node (SPEC 10) node-served samples go through the node's link - whose wireless uplink depends on where the router is,
+ * so it is traced again for every candidate position.
  * The work yields to the event loop every ~12 ms, reports progress and stops on an AbortSignal.
  */
 (function () {
@@ -38,7 +40,8 @@
    * @param {object} ctx model.createContext()
    * @param {object} g raster.grid() (cell 4 gives exact before/after numbers; cell 8 is fine and 4x cheaper)
    * @param {object} opts
-   *   band: 2.4|5|6 (required)
+   *   band: 2.4|5|6|'auto' (required; 'auto' = band mode Auto, SPEC 13: with bands = the router's bands and steer =
+   *     the thresholds, as model.fieldParams puts them into the state - every sample on its steered band)
    *   goalRoom: roomId to optimize for, or null = whole flat (all rooms except `excluded`)
    *   allowedRoom: roomId the router may be placed in, or null = anywhere on the floor
    *   threshold: dBm for "good signal" (default ctx.p.threshold)
@@ -53,28 +56,39 @@
    *     softening changes coverage by only ~1 percentage point); in signal mode the three refined finalists and the
    *     current position (when it is an allowed candidate) are then ranked again on the softened full grid, so the
    *     answer is never worse than staying put in the numbers the UI shows
-   *   speed: {curve, targetDown, targetUp, limits, reserve?} -> optimize for speed targets instead of signal
+   *   speed: {curve (one curve or a curves map, SPEC 13), targetDown, targetUp, limits, reserve?, backhaulCurve?} ->
+   *     optimize for speed targets instead of
+   *     signal; works with a second node too (speed.predictVia through its link; backhaulCurve = a curve of the node's
+   *     backhaul band, default curve)
    * @param {{onProgress?:(fraction:number)=>void, signal?:AbortSignal}} [ctl]
    * @returns {Promise<{pos:{x:number,y:number}, roomId:number, score:number, scoreBefore:number|null,
    *   before:{coverage:number,mean:number,median:number,p10:number}|null,
    *   after:{coverage:number,mean:number,median:number,p10:number}, candidates:number}>}
-   *   Rejects with Error('err.opt.noFloor' | 'err.opt.speedNode' | 'err.opt.noCurve') or an AbortError.
+   *   Rejects with Error('err.opt.noFloor' | 'err.opt.noCurve') or an AbortError ('err.opt.speedNode' is no longer
+   *   thrown: speed through a second node is modelled since SPEC 10).
    */
   async function find(ctx, g, opts, ctl) {
     const o = opts || {};
     const c = ctl || {};
-    const band = units.normBand(o.band);
+    // band mode Auto (SPEC 13): every sample takes the band a steering client would use there
+    const auto = model.isAuto(o);
+    const band = auto ? 'auto' : units.normBand(o.band);
     if (band === null) throw new RangeError('optimize.find: band is required');
-    // the search traces rays itself: use the obstacle losses of the band (SPEC 7.1)
-    ctx = model.forBand(ctx, band);
+    const bandList = auto ? model.routerBandList(o.bands) : [band];
+    const steer = model.steerOf(o.steer);
+    const ctx0 = ctx;
+    // the search traces rays itself: use the obstacle losses of each band (SPEC 7.1)
+    const ctxB = bandList.map((b) => model.forBand(ctx0, b));
+    ctx = ctxB[0];
     if (c.signal && c.signal.aborted) throw abortError();
     if (!g.count) throw fail('err.opt.noFloor');
 
     const threshold = isNum(o.threshold) ? o.threshold : ctx.p.threshold;
     const speedMode = !!o.speed;
-    const node = model.nodeActive(o.node, band) ? o.node : null;
-    if (speedMode && o.node && o.node.mode !== 'none') throw fail('err.opt.speedNode');
-    if (speedMode && !o.speed.curve) throw fail('err.opt.noCurve');
+    const node = bandList.some((b) => model.nodeActive(o.node, b)) ? o.node : null;
+    // one curve or a curves map (SPEC 13): the curve of each band, else the nearest band's
+    const curveB = speedMode ? bandList.map((b) => speed.curveFor(o.speed.curve, b)) : [];
+    if (speedMode && !curveB.some(Boolean)) throw fail('err.opt.noCurve');
 
     // ---- target rooms and allowed rooms ----
     const known = new Set(g.roomIds);
@@ -120,33 +134,65 @@
     const SX = Float64Array.from(sx);
     const SY = Float64Array.from(sy);
 
-    // ---- per-sample precomputation ----
-    const off = model.offsetFor(o.offsets, band);
-    const base = model.bandBase(ctx, band);
+    // ---- per-sample precomputation (per band) ----
+    const nB = bandList.length;
+    const offB = bandList.map((b) => model.offsetFor(o.offsets, b));
+    const baseB = bandList.map((b, q) => model.bandBase(ctxB[q], b));
+    const idxB = bandList.map((b) => model.bandIndex(b));
     const kk = 10 * ctx.p.n;
     const mpp = ctx.mpp;
-    const nodeSig = new Float64Array(nS).fill(-Infinity);
-    if (node) {
+    const nodeSigB = bandList.map((b, q) => {
+      const ns = new Float64Array(nS).fill(-Infinity);
+      if (!node || !model.nodeActive(node, b)) return ns;
       const nxp = node.pos.x * W;
       const nyp = node.pos.y * H;
       for (let j = 0; j < nS; j++) {
         const dm = Math.hypot(SX[j] - nxp, SY[j] - nyp) * mpp;
-        nodeSig[j] = clamp(base - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, nxp, nyp, SX[j], SY[j]) + off + (node.power || 0), -110, -20);
+        ns[j] = clamp(baseB[q] - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctxB[q], nxp, nyp, SX[j], SY[j]) + offB[q] + (node.power || 0), -110, -20);
       }
-    }
+      return ns;
+    });
+    const per = new Float64Array(3);
+    const viaB = new Uint8Array(3);
     const vals = new Float64Array(nS);
     let speedLim = null;
     let tDown = 1;
     let tUp = 1;
+    // speed through the second node: its wireless uplink (router -> node on the backhaul band, exact rays like the
+    // rest of the search) changes with every candidate router position
+    let linkAt = null;
     if (speedMode) {
       speedLim = speed.toLimits({ ...o.speed.limits, reserve: o.speed.reserve !== undefined ? o.speed.reserve : o.speed.limits && o.speed.limits.reserve });
       tDown = o.speed.targetDown;
       tUp = o.speed.targetUp;
+      if (node) {
+        const bb = units.normBand(node.backhaulBand) || 5;
+        // the client curve stands in for the uplink when there is no backhaul curve; a curves map gives its backhaul band's
+        const pickB = speed.validCurve(o.speed.curve) ? null : speed.curveFor(o.speed.curve, bb);
+        const curveS = speed.validCurve(o.speed.curve) ? o.speed.curve : pickB ? pickB.curve : null;
+        const bCurve = o.speed.backhaulCurve;
+        if (model.isWirelessNode(node)) {
+          const bhCtx = model.forBand(ctx0, bb);
+          const bhBase = model.bandBase(bhCtx, bb);
+          const bhOff = model.offsetFor(o.offsets, bb);
+          const nxp = node.pos.x * W;
+          const nyp = node.pos.y * H;
+          linkAt = (x, y) => {
+            const dm = Math.hypot(nxp - x, nyp - y) * mpp;
+            const sig = clamp(bhBase - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(bhCtx, x, y, nxp, nyp) + bhOff, -110, -20);
+            return speed.linkFromSignal(node, sig, curveS, bCurve);
+          };
+        } else {
+          const fixed = speed.linkFromSignal(node, null, curveS, bCurve);
+          linkAt = () => fixed;
+        }
+      }
     }
 
     /** Score of a router at px position (x,y) over the samples. Allocation free apart from a typed-array sort. */
     function score(x, y) {
       let total = 0;
+      const link = linkAt ? linkAt(x, y) : null;
       for (let gi = 0; gi < groupWeight.length; gi++) {
         const a = groupStart[gi];
         const b = groupStart[gi + 1];
@@ -155,11 +201,25 @@
         let sum = 0;
         for (let j = a; j < b; j++) {
           const dm = Math.hypot(SX[j] - x, SY[j] - y) * mpp;
-          let s = base - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, x, y, SX[j], SY[j]) + off;
-          s = s < -110 ? -110 : s > -20 ? -20 : s;
-          if (nodeSig[j] > s) s = nodeSig[j];
+          const fs = Math.log10(dm < 1 ? 1 : dm);
+          let q = 0;
+          per.fill(NaN);
+          for (let t = 0; t < nB; t++) {
+            let st = baseB[t] - kk * fs - model.traceLoss(ctxB[t], x, y, SX[j], SY[j]) + offB[t];
+            st = st < -110 ? -110 : st > -20 ? -20 : st;
+            viaB[idxB[t]] = nodeSigB[t][j] > st ? 1 : 0;
+            per[idxB[t]] = viaB[idxB[t]] ? nodeSigB[t][j] : st;
+          }
+          if (nB > 1) {
+            // the steering rule (model.steerBand) on this sample's bands
+            const k = per[2] === per[2] && per[2] >= steer.six ? 2 : per[1] === per[1] && per[1] >= steer.five ? 1 : per[0] === per[0] ? 0 : per[1] === per[1] && !(per[2] > per[1]) ? 1 : 2;
+            q = idxB.indexOf(k);
+          }
+          const s = per[idxB[q]];
+          const viaNode = viaB[idxB[q]] === 1;
           if (speedMode) {
-            const p = speed.predict(o.speed.curve, s, speedLim);
+            const cf = curveB[q];
+            const p = cf ? speed.predictVia(cf.curve, s, speedLim, viaNode ? link : null) : null;
             vals[j - a] = p ? Math.min(p.down / tDown, p.up / tUp) : 0;
           } else {
             vals[j - a] = s;
@@ -309,7 +369,8 @@
       // ---- exact before / after on the full grid (the field the map shows: softened unless soften is 0) ----
       const aaF = o.aa !== undefined ? o.aa : g.cell <= 4 ? 2 : 1;
       const norm = (x, y) => ({ x: Number((x / W).toFixed(6)), y: Number((y / H).toFixed(6)) });
-      const fieldAt = (router) => raster.field(ctx, g, { band, router, node, offsets: o.offsets, aa: aaF, soften: o.soften });
+      const fieldAt = (router) =>
+        raster.field(ctx0, g, auto ? { band: 'auto', bands: bandList, steer, router, node, offsets: o.offsets, aa: aaF, soften: o.soften } : { band, router, node, offsets: o.offsets, aa: aaF, soften: o.soften });
       const summary = (f) => {
         const st = raster.stats(g, f, targetIds, threshold);
         return { coverage: st.coverage, mean: st.mean, median: st.median, p10: st.p10 };

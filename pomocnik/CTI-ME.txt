@@ -1,0 +1,82 @@
+POMOCNÍK PRO WI-FI - WiFi Heatmap Architect                  © 2026 Zizlik, licence MIT
+
+CO TO JE
+Prohlížeč (Chrome, Edge, Safari, Firefox…) z bezpečnostních důvodů nesmí zjistit,
+ke které Wi-Fi je počítač připojený, jak silný je signál, kanál ani rychlost
+linky - a to na žádném systému ani v telefonu. Tyhle malé skripty to aplikaci
+řeknou. Jen ČTOU údaje o Wi-Fi: nic nemění, nic neinstalují, nepotřebují heslo
+správce, odpovídají jen tomuto počítači (adresa 127.0.0.1:47823) a jen stránce
+aplikace. Na internet nic neposílají. Webová stránka sama program spustit
+neumí, proto pomocníka spustíš ty - dvojklikem. Aplikace funguje i bez něj.
+
+WINDOWS 10/11 (složka Windows)
+1. Dvakrát klikni na „Spustit pomocníka.cmd“.
+2. Objeví-li se „Systém Windows ochránil váš počítač“: klikni na „Další
+   informace“ a pak „Přesto spustit“ (u otázky „Spustit tento soubor?“ na
+   „Spustit“). Když Windows soubor úplně zablokuje: pravým tlačítkem na oba
+   soubory → Vlastnosti → dole zaškrtni „Odblokovat“ → OK.
+3. Otevře se okno „Pomocník běží“. Nech ho otevřené a v aplikaci klikni na
+   „Změřit vše“ - údaje o Wi-Fi si vezme samo.
+Píše-li pomocník, že Windows údaje nepouští: Nastavení → Soukromí a
+zabezpečení → Poloha → zapni ji i „Povolit desktopovým aplikacím přístup
+k poloze“ (Windows 11 to pro údaje o Wi-Fi vyžaduje).
+Bez běžícího okna: „Jednorázově zjistit Wi-Fi.cmd“ jen zkopíruje údaje do
+schránky a otevře aplikaci rovnou s nimi.
+
+MACOS (složka macOS)
+1. Dvakrát klikni na „Spustit pomocníka.command“.
+2. Hlásí-li macOS neověřeného vývojáře: pravým tlačítkem na soubor → Otevřít →
+   Otevřít. Na macOS 15 a novějším: Nastavení systému → Soukromí a zabezpečení
+   → dole „Přesto otevřít“. Hlásí-li „nemáte oprávnění“: otevři Terminál,
+   napiš sh a mezeru, přetáhni soubor do okna a stiskni Enter.
+3. V Terminálu běží pomocník - nech okno otevřené a v aplikaci klikni na
+   „Změřit vše“.
+Pomocník potřebuje Python 3. Když chybí, skript aspoň zkopíruje údaje do
+schránky (v aplikaci pak „Vložit výsledek“) a poradí, jak Python doinstalovat.
+Když ho aplikace v Safari nenajde, použij Chrome, Edge nebo Firefox, nebo
+„Jednorázově zjistit Wi-Fi.command“.
+
+APLIKACE Z INTERNETU (zizlik.github.io) - OTÁZKA PROHLÍŽEČE
+Chrome a Edge (verze 142 a novější) pustí stránku z internetu k pomocníkovi
+na tomto počítači až po tvém svolení. Aplikace se sama od sebe neptá:
+1. Spusť pomocníka (viz výš) a nech jeho okno otevřené.
+2. V aplikaci klikni na „Připojit pomocníka“ - je v „Info o zařízení“ a po
+   „Změřit vše“ i přímo v řádku „Wi-Fi údaje“.
+3. Vlevo nahoře u adresy se objeví okénko prohlížeče: „… chce přistupovat
+   k zařízením v místní síti“ (nebo „k dalším aplikacím a službám v tomto
+   zařízení“). Klikni na „Povolit“. Aplikace mezitím ukazuje „Čekám, až
+   prohlížeči odpovíš“ a čeká nejvýš 30 sekund.
+4. Hotovo: od teď si „Změřit vše“ údaje o Wi-Fi vezme samo, už se nikdo
+   ptát nebude. Svolení platí jen pro adresu aplikace a pomocník dál
+   odpovídá jen tomuto počítači (127.0.0.1).
+Klikl(a) jsi omylem na „Blokovat“? Klikni na ikonu zámku (nebo posuvníků)
+vlevo od adresy → Nastavení webu → Místní síť (přístup k zařízením v místní
+síti) → Povolit a stránku obnov. Do té doby jde Wi-Fi údaje do aplikace
+vložit ručně: příkaz z „Info o zařízení“ a „Vložit výsledek“.
+Okénko se neobjevilo a aplikace píše „Pomocník se neozval“? Zkontroluj, že
+okno pomocníka běží, a klikni na „Zkusit znovu“.
+Aplikace otevřená ze souboru (index.cs.html na disku) se nikoho ptát nemusí.
+
+PÁSMO (2,4 / 5 / 6 GHz) - NEMUSÍŠ HO HLÍDAT
+Každé měření se uloží s pásmem, na kterém zrovna vzniklo, a aplikace s ním
+počítá (kalibrace i rychlost zvlášť pro každé pásmo). K jednomu pásmu se
+připojovat nemusíš - moderní routery (band steering, Wi-Fi 7) přepínají
+pásma samy a to nevadí. Pomocník přečte pásmo, kanál a signál přesně
+v okamžiku měření; u Wi-Fi 7 (MLO, víc spojení najednou) vezme to
+nejsilnější a aplikace ukáže třeba „5 GHz (+6 GHz MLO)“.
+Na počítači bez pomocníka se aplikace zeptá: Připojit pomocníka, Vložit
+výpis (příkaz netsh … | clip), nebo Zadat pásmo ručně (2,4 / 5 / 6 / Nevím).
+Bez pásma měření neuloží.
+LINUX (složka Linux)
+V terminálu ve složce Linux napiš:  sh spustit-pomocnika.sh
+(jednorázově: sh jednorazove-zjistit-wifi.sh). Potřebuje python3 a nmcli
+nebo iw; schránku přes wl-copy, xclip nebo xsel.
+
+JAK HO VYPNOUT
+Zavři okno pomocníka (nebo v něm stiskni Ctrl+C). Nic po sobě nenechává.
+
+TELEFON
+Na Androidu ani iPhonu to nejde - prohlížeč v telefonu program nespustí.
+Signál v dBm i pásmo ukáže aplikace WiFiman (Ubiquiti); do měření je zapíšeš
+ručně. Pásmo vybereš 2,4 / 5 / 6, a když ho nevíš, zvol „Nevím“ - aplikace
+ho odhadne podle síly signálu v tom místě.

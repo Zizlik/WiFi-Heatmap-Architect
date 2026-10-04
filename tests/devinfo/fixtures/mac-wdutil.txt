@@ -1,0 +1,49 @@
+————————————————————————————————————————————————————————————————————
+NETWORK
+————————————————————————————————————————————————————————————————————
+    Primary IPv4         : en0 (Wi-Fi / 1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9)
+                         : 192.168.1.23
+    Primary IPv6         : None
+    DNS Addresses        : 192.168.1.1
+    Apple                : Reachable
+————————————————————————————————————————————————————————————————————
+WIFI
+————————————————————————————————————————————————————————————————————
+    MAC Address          : 8c:85:90:12:34:56 (hw=8c:85:90:12:34:56)
+    Interface Name       : en0
+    Power                : On [On]
+    Op Mode              : STA
+    SSID                 : Domov 5G
+    BSSID                : 74:83:c2:1a:2b:3c
+    RSSI                 : -57 dBm
+    CCA                  : 9 %
+    Noise                : -93 dBm
+    Tx Rate              : 864.0 Mbps
+    Security             : WPA2 Personal
+    PHY Mode             : 11ax
+    MCS Index            : 9
+    Guard Interval       : 800
+    NSS                  : 2
+    Channel              : 5g36/80
+    Country Code         : CZ
+    Scan Cache Count     : 21
+    NetworkServiceID     : 1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9
+    IPv4 Config Method   : DHCP
+    IPv4 Address         : 192.168.1.23
+    IPv4 Router          : 192.168.1.1
+    IPv6 Config Method   : Automatic
+    DNS                  : 192.168.1.1
+    BTC Mode             : Off
+    Sniffer Supported    : YES
+    Supports 6e          : Yes
+    6e Mode              : enabled
+————————————————————————————————————————————————————————————————————
+BLUETOOTH
+————————————————————————————————————————————————————————————————————
+    Power                : On
+    Address              : 8c:85:90:aa:bb:cc
+    Discoverable         : No
+————————————————————————————————————————————————————————————————————
+AWDL
+————————————————————————————————————————————————————————————————————
+    Power                : Off

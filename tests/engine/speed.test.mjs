@@ -158,16 +158,31 @@ test('fieldSpeed / ratioField / stats', () => {
   assert.deepEqual(Array.from(img.data.slice(unknown * 4, unknown * 4 + 3)), [113, 126, 148]);
 });
 
-test('fieldSpeed: unsupported with a second node or without a curve', () => {
+test('fieldSpeed: a second node is supported now (SPEC 10); unsupported only without a curve / params, never throws', () => {
   const p = speedProject();
   const c = ctxOf(p);
   const g = raster.grid(c);
   const curve = speed.buildCurve(MEAS, { band: 5, device: 'Phone' });
   const node = { mode: 'ap_cable', pos: n(700, 300), power: 0, bands: { '2.4': true, '5': true, '6': false } };
   const withNode = speed.fieldSpeed(c, g, { ...model.fieldParams(p, 'today', { band: 5 }), node }, curve, {});
-  assert.deepEqual({ s: withNode.supported, r: withNode.reason, k: withNode.known.some(Boolean) }, { s: false, r: 'node', k: false });
+  assert.deepEqual({ s: withNode.supported, r: withNode.reason, k: withNode.known.some(Boolean) }, { s: true, r: null, k: true });
+  assert.ok(withNode.source && withNode.source.some(Boolean), 'the node serves some cells');
+  assert.equal(withNode.link.wireless, false);
   const noCurve = speed.fieldSpeed(c, g, model.fieldParams(p, 'today', { band: 5 }), null, {});
   assert.deepEqual({ s: noCurve.supported, r: noCurve.reason }, { s: false, r: 'curve' });
+  // the old 'node' reason is gone; odd input gives a reason instead of an exception
+  for (const [label, args] of [
+    ['no grid', [c, null, model.fieldParams(p, 'today', { band: 5 }), curve, {}]],
+    ['no params', [c, g, null, curve, {}]],
+    ['no router', [c, g, { band: 5 }, curve, {}]],
+    ['bad band', [c, g, { ...model.fieldParams(p, 'today'), band: 7 }, curve, {}]],
+    ['broken curve', [c, g, model.fieldParams(p, 'today', { band: 5 }), { download: 'x' }, {}]],
+    ['empty curve', [c, g, model.fieldParams(p, 'today', { band: 5 }), {}, null]],
+  ]) {
+    const r = speed.fieldSpeed(...args);
+    assert.equal(r.supported, false, label);
+    assert.ok(['params', 'curve'].includes(r.reason), `${label}: ${r.reason}`);
+  }
 });
 
 test('scoreRatios: pass rate dominates, then the weak tail, then the mean', () => {

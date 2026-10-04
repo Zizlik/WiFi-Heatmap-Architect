@@ -184,26 +184,69 @@
     }
   }
 
+  // ---- calibration fit (SPEC 9) -----------------------------------------------------------------------------------
+  // project.model.fit (written by model.fitProject after the "first measurement" wizard) replaces the path-loss
+  // exponent n and multiplies EVERY obstacle loss (walls, doors, furniture; after the band factors) by wallFactor. It
+  // lives in the context, so the raster, the optimizer, contours, tooltips, calibration and the speed model all use the
+  // same fitted physics without passing anything around. It is active while the calibration switch is on.
+  const FIT_N_MIN = 1.6;
+  const FIT_N_MAX = 4;
+  const FIT_WF_MIN = 0.5;
+  const FIT_WF_MAX = 2;
+
+  /**
+   * The fit a context should use: opts.fit === false -> none; opts.fit = {n, wallFactor, byBand?} -> that one (even
+   * with the calibration switched off; for before/after previews); otherwise project.model.fit while
+   * project.view.calibrate is not false. Returns {n, wallFactor, offsets:{'2.4','5','6': dB|null}} or null.
+   */
+  function activeFit(project, opts) {
+    const o = opts || {};
+    if (o.fit === false || o.fit === null) return null;
+    let f = o.fit;
+    if (f === undefined) {
+      if (project.view && project.view.calibrate === false) return null;
+      f = project.model ? project.model.fit : null;
+    }
+    if (!f || typeof f !== 'object' || !isNum(f.n) || !isNum(f.wallFactor)) return null;
+    const by = f.byBand && typeof f.byBand === 'object' ? f.byBand : {};
+    const off = (k) => (by[k] && typeof by[k] === 'object' && isNum(by[k].offset) ? by[k].offset : null);
+    return {
+      n: clamp(f.n, FIT_N_MIN, FIT_N_MAX),
+      wallFactor: clamp(f.wallFactor, FIT_WF_MIN, FIT_WF_MAX),
+      offsets: { '2.4': off('2.4'), '5': off('5'), '6': off('6') },
+    };
+  }
+
   /**
    * Precompute everything the physics needs from a project. Cheap (O(walls + furniture)); rebuild it whenever the plan
    * or the model parameters change. `ctx.version` is a hash of geometry + parameters (use it as cache key),
    * `ctx.roomsVersion` hashes only the room outlines (the raster grid is cached on it).
+   * A calibration fit (project.model.fit, SPEC 9) is part of the context while project.view.calibrate is on: ctx.p.n is
+   * then the fitted exponent (ctx.p.baseN = project.model.n), ctx.wf the obstacle-loss multiplier (1 without a fit) and
+   * ctx.fit = {n, wallFactor, offsets} (null without one) - so rebuild the context when view.calibrate changes too.
    * @param {object} project
-   * @returns {object} Ctx (opaque; read-only for callers except documented fields: version, roomsVersion, mpp, p)
+   * @param {{fit?:false|object}} [opts] fit:false = ignore project.model.fit (the default model, e.g. for "before");
+   *        fit:{n, wallFactor, byBand?} = use that fit
+   * @returns {object} Ctx (opaque; read-only for callers except documented fields: version, roomsVersion, mpp, p, wf, fit)
    */
-  function createContext(project) {
+  function createContext(project, opts) {
     const plan = project.plan;
     const mp = project.model;
     const mpp = project.scale.mpp;
     const bpRaw = mp.bandPower && typeof mp.bandPower === 'object' ? mp.bandPower : {};
     const bp = (k) => (isNum(bpRaw[k]) ? clamp(bpRaw[k], PJ.BAND_POWER_MIN, PJ.BAND_POWER_MAX) : 0);
+    const fit = activeFit(project, opts);
     const p = {
       nearSignal: mp.nearSignal,
-      n: mp.n,
+      n: fit ? fit.n : mp.n,
       wallLoss: mp.wallLoss,
       threshold: mp.threshold,
       rangeThreshold: mp.rangeThreshold,
       bandPower: { '2.4': bp('2.4'), '5': bp('5'), '6': bp('6') },
+      baseN: mp.n,
+      // band steering (SPEC 13): what the band 'auto' means for the point functions (signal / softSignal)
+      routerBands: routerBandList(project),
+      steer: steerOf(project),
     };
 
     // ---- rooms (px polygons, for rasterization) ----
@@ -385,6 +428,12 @@
     hv.add(nW);
     hv.add(nD);
     hv.add(f.n);
+    if (fit) {
+      // only with a fit, so the version of every unfitted context stays what it always was
+      hv.add(0x5f17);
+      hv.add(Math.round(fit.n * 1e6));
+      hv.add(Math.round(fit.wallFactor * 1e6));
+    }
 
     const src = {
       version: hv.hex(),
@@ -403,14 +452,16 @@
       lossW,
       lossD,
       lossF,
+      wf: fit ? fit.wallFactor : 1,
+      fit,
     };
     const ctx = bandView(src, 1);
-    VIEWS.set(w, [null, ctx, null]);
+    VIEWS.set(p, [null, ctx, null]);
     return ctx;
   }
 
-  // the band views of a context, keyed by its geometry object (shared by all views; a WeakMap instead of a property keeps
-  // the context free of reference cycles, e.g. for JSON.stringify)
+  // the band views of a context, keyed by its parameter object `p` (one per createContext, shared by its band views; a
+  // WeakMap instead of a property keeps the context free of reference cycles, e.g. for JSON.stringify)
   const VIEWS = new WeakMap();
   const RING_SIMPLIFY_MIN = 16; // furniture outlines with more vertices are simplified for the tracer
   const RING_TOL_PX = 0.25; // ... to within a quarter of a canvas pixel (~3 mm)
@@ -490,6 +541,8 @@
       lossW: src.lossW,
       lossD: src.lossD,
       lossF: src.lossF,
+      wf: src.wf,
+      fit: src.fit,
       band: BAND_OF[k],
       wl: src.lossW[k],
       dl: src.lossD[k],
@@ -504,7 +557,7 @@
    */
   function forBand(ctx, band) {
     const k = bandIndex(band);
-    const views = k < 0 || !ctx || !ctx.w ? null : VIEWS.get(ctx.w);
+    const views = k < 0 || !ctx || !ctx.p ? null : VIEWS.get(ctx.p);
     if (!views) return ctx;
     return views[k] || (views[k] = bandView(ctx, k));
   }
@@ -705,7 +758,8 @@
         if (chord > 0) loss += ctx.fl[i] * (chord >= soft ? 1 : chord / soft);
       }
     }
-    return loss;
+    // calibration fit (SPEC 9): every obstacle loss x wallFactor (exactly x 1 without a fit, so bit for bit unchanged)
+    return loss * ctx.wf;
   }
 
   /** Even-odd inside test on the flat furniture arrays. */
@@ -768,7 +822,7 @@
    * plan) is the same for every band.
    */
   function wallBlocks(ctx, ax, ay, bx, by) {
-    const views = VIEWS.get(ctx.w);
+    const views = VIEWS.get(ctx.p);
     const ref = views ? views[1] : ctx;
     const w = ref.w;
     const minX = ax < bx ? ax : bx;
@@ -780,6 +834,56 @@
       if (crossLoss(ref, i, ax, ay, bx, by) >= BARRIER_DB) return true;
     }
     return false;
+  }
+
+  /**
+   * How many walls (or closed doors) the straight line a -> b (normalized points) passes through: crossings whose loss
+   * there is at least BARRIER_DB (an open doorway does not count); crossings closer than MERGE_NEAR px along the line
+   * (a corner, a T-junction, a doubled wall) count once; a line running along a wall does not cross it. Decided on the
+   * 5 GHz reference losses, so the answer is the same for every band and with or without a calibration fit.
+   */
+  function wallCount(ctx, a, b) {
+    const views = VIEWS.get(ctx.p);
+    const ref = views ? views[1] : ctx;
+    const w = ref.w;
+    const ax = a.x * W;
+    const ay = a.y * H;
+    const bx = b.x * W;
+    const by = b.y * H;
+    const rx = bx - ax;
+    const ry = by - ay;
+    const rl2 = rx * rx + ry * ry;
+    if (rl2 < 1e-6) return 0;
+    const rl = Math.sqrt(rl2);
+    const minX = Math.min(ax, bx);
+    const maxX = Math.max(ax, bx);
+    const minY = Math.min(ay, by);
+    const maxY = Math.max(ay, by);
+    const at = [];
+    for (let i = 0; i < w.n; i++) {
+      if (w.maxX[i] < minX || w.minX[i] > maxX || w.maxY[i] < minY || w.minY[i] > maxY) continue;
+      const sx = w.sx[i];
+      const sy = w.sy[i];
+      const den = rx * sy - ry * sx;
+      if (den * den <= 1e-18 * rl2 * w.sl2[i]) continue;
+      const ex = w.ax[i] - ax;
+      const ey = w.ay[i] - ay;
+      const inv = 1 / den;
+      const t = (ex * sy - ey * sx) * inv;
+      if (t <= 1e-9 || t >= 1 - 1e-9) continue;
+      const u = (ex * ry - ey * rx) * inv;
+      if (u < 0 || u > 1) continue;
+      if (wallLossAt(ref, i, ax + t * rx, ay + t * ry) < BARRIER_DB) continue;
+      at.push(t * rl);
+    }
+    at.sort((p, q) => p - q);
+    let count = 0;
+    let last = -Infinity;
+    for (const s of at) {
+      if (s - last >= MERGE_NEAR) count++;
+      last = s;
+    }
+    return count;
   }
 
   /** Room id at a px point using the exact polygons (last room wins, like raster.grid); 0 = outside every room. */
@@ -858,9 +962,26 @@
     return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - traceLoss(c, ax, ay, bx, by) + extra;
   }
 
-  /** Calibrated signal clamped to [-110, -20] dBm: rawSignal + offset. Exact ray physics (no softening). */
+  /**
+   * Calibrated signal clamped to [-110, -20] dBm: rawSignal + offset. Exact ray physics (no softening).
+   * band 'auto' (SPEC 13): the router's signal on the band a steering client uses at `to` (the context's router bands
+   * and thresholds; offset = a number for every band or an offsets map).
+   */
   function signal(ctx, from, to, band, offset) {
+    if (units.normBandMode(band) === 'auto') return autoPoint(ctx, from, to, offset, 0);
     return clamp(rawSignal(ctx, from, to, band) + (offset || 0), MIN_SIGNAL, MAX_SIGNAL);
+  }
+
+  /** signal() / softSignal() for the band 'auto': every router band of ctx, then the steering rule. */
+  function autoPoint(ctx, from, to, offset, soften) {
+    const bands = (ctx && ctx.p && ctx.p.routerBands) || routerBandList(null);
+    const sig = {};
+    for (const b of bands) {
+      const off = isNum(offset) ? offset : offsetFor(offset, b);
+      sig[units.bandKey(b)] = softSignal(ctx, from, to, b, off, soften);
+    }
+    const pick = steerBand(sig, bands, ctx && ctx.p && ctx.p.steer);
+    return pick === null ? NaN : sig[units.bandKey(pick)];
   }
 
   /**
@@ -891,6 +1012,7 @@
    * raster.field() with the same soften to a few tenths of a dB.
    */
   function softSignal(ctx, from, to, band, offset, soften) {
+    if (units.normBandMode(band) === 'auto') return autoPoint(ctx, from, to, offset, soften);
     const s = softenOf(soften);
     if (!(s > 0)) return signal(ctx, from, to, band, offset);
     return clamp(softRawSignal(ctx, from, to, band, s) + (offset || 0), MIN_SIGNAL, MAX_SIGNAL);
@@ -913,13 +1035,75 @@
     return !!(node && WIRELESS.includes(node.mode));
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // band steering (SPEC 13): which band a steering client (band steering, Wi-Fi 7 MLO) uses at a place
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Default thresholds of the steering rule (dBm): 6 GHz from -70, else 5 GHz from -72, else 2.4 GHz. */
+  const STEER = PJ.STEER_DEFAULT;
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+  /**
+   * The bands the router sends, ascending: from a project (net.routerBands), a routerBands map {'2.4':bool,...} or a
+   * list of bands. Nothing usable (or no band on) -> the default [2.4, 5].
+   * @returns {number[]}
+   */
+  function routerBandList(src) {
+    let list;
+    if (Array.isArray(src)) list = src.map((b) => units.normBand(b));
+    else {
+      const map = isObj(src) && isObj(src.net) ? src.net.routerBands : src;
+      list = isObj(map) ? E.BANDS.filter((b) => map[units.bandKey(b)] === true) : [];
+    }
+    const out = E.BANDS.filter((b) => list.includes(b));
+    return out.length ? out : E.BANDS.filter((b) => PJ.ROUTER_BANDS_DEFAULT[units.bandKey(b)]);
+  }
+
+  /** The steering thresholds {six, five} (dBm) of a project (model.steer) or a {six, five} object; garbage -> defaults. */
+  function steerOf(src) {
+    const st = isObj(src) && isObj(src.model) ? src.model.steer : src;
+    const one = (v, def) => (isNum(v) ? clamp(v, PJ.STEER_MIN, PJ.STEER_MAX) : def);
+    return { six: one(isObj(st) ? st.six : undefined, STEER.six), five: one(isObj(st) ? st.five : undefined, STEER.five) };
+  }
+
+  /**
+   * THE steering rule (SPEC 13): 6 GHz when the router sends it and its signal >= steer.six, else 5 GHz when sent and
+   * >= steer.five, else 2.4 GHz when sent, else (a router without 2.4 GHz) the strongest band it sends.
+   * @param {{'2.4'?:number,'5'?:number,'6'?:number}} sig signal per band (missing / NaN = the band is not there)
+   * @param {Array|object} bands the router's bands (routerBandList() input)
+   * @param {{six:number, five:number}} [steer] thresholds (steerOf() input)
+   * @returns {2.4|5|6|null} null only when no band of the router has a signal
+   */
+  function steerBand(sig, bands, steer) {
+    const list = routerBandList(bands);
+    const st = steerOf(steer);
+    const at = (b) => {
+      const v = isObj(sig) ? sig[units.bandKey(b)] : undefined;
+      return isNum(v) ? v : null;
+    };
+    const has = (b) => list.includes(b) && at(b) !== null;
+    if (has(6) && at(6) >= st.six) return 6;
+    if (has(5) && at(5) >= st.five) return 5;
+    if (has(2.4)) return 2.4;
+    let best = null;
+    for (const b of list) if (at(b) !== null && (best === null || at(b) > at(best))) best = b;
+    return best;
+  }
+
+  /** True for the band mode 'auto' or a state / params object whose band is 'auto'. */
+  function isAuto(v) {
+    return units.normBandMode(isObj(v) ? (v.band !== undefined ? v.band : v.targetBand) : v) === 'auto';
+  }
+
   /**
    * Node description for field params from a project, or null when no second node is configured.
-   * @returns {{mode:string,pos:{x:number,y:number},power:number,bands:object,backhaulBand:number,backhaulThreshold:number}|null}
+   * maxMbps = the node's throughput ceiling the user entered (SPEC 10), null when unknown.
+   * @returns {{mode:string,pos:{x:number,y:number},power:number,bands:object,backhaulBand:number,backhaulThreshold:number,
+   *            maxMbps:number|null}|null}
    */
   function nodeParams(project) {
-    const n = project.node;
-    if (!n || n.mode === 'none') return null;
+    const n = project && project.node;
+    if (!n || n.mode === 'none' || !n.pos) return null;
     return {
       mode: n.mode,
       pos: { x: n.pos.x, y: n.pos.y },
@@ -927,6 +1111,7 @@
       bands: { ...n.bands },
       backhaulBand: n.backhaulBand,
       backhaulThreshold: n.backhaulThreshold,
+      maxMbps: isNum(n.maxMbps) && n.maxMbps > 0 ? n.maxMbps : null,
     };
   }
 
@@ -936,20 +1121,28 @@
    * measurements were taken in that situation).
    * @param {object} project
    * @param {'trial'|'today'} [which='trial']
-   * @param {{band?:number, offsets?:object, soften?:number}} [opts] offsets from offsets(); default all 0. soften
-   *        (metres) is copied into the state only when given (the default SOFTEN applies everywhere otherwise)
-   * @returns {{band:number, router:{x,y}, node:object|null, offsets:object, baseline:{x,y}, soften?:number}}
+   * @param {{band?:number|'auto', offsets?:object, soften?:number}} [opts] band default view.band; offsets from
+   *        offsets(); default all 0. soften (metres) is copied into the state only when given (the default SOFTEN
+   *        applies everywhere otherwise)
+   * @returns {{band:number|'auto', router:{x,y}, node:object|null, offsets:object, baseline:{x,y}, soften?:number,
+   *            bands?:number[], steer?:{six:number, five:number}}} bands / steer only in the band mode 'auto' (SPEC 13)
    */
   function fieldParams(project, which, opts) {
     const o = opts || {};
     const today = which === 'today';
+    const band = units.normBandMode(o.band) || units.normBandMode(project.view && project.view.band) || 5;
     const st = {
-      band: units.normBand(o.band) || project.view.band,
+      band,
       router: today ? { ...project.net.baseline } : { ...project.net.router },
       node: today ? null : nodeParams(project),
       offsets: o.offsets || { '2.4': 0, '5': 0, '6': 0 },
       baseline: { ...project.net.baseline },
     };
+    if (band === 'auto') {
+      // band mode Auto (SPEC 13): every place on the band a steering client would use there
+      st.bands = routerBandList(project);
+      st.steer = steerOf(project);
+    }
     if (o.soften !== undefined) st.soften = softenOf(o.soften);
     return st;
   }
@@ -963,6 +1156,7 @@
    * @param {{router:{x,y}, node?:object|null, offsets?:object, soften?:number}} state as produced by fieldParams()
    */
   function combinedSignal(ctx, p, band, state) {
+    if (units.normBandMode(band) === 'auto') return steeredSignal(ctx, p, { ...state, band: 'auto' }).signal;
     const off = offsetFor(state.offsets, band);
     let s = softSignal(ctx, state.router, p, band, off, state.soften);
     if (nodeActive(state.node, band)) {
@@ -983,18 +1177,75 @@
   }
 
   /**
+   * The signal a band-steering client gets at p (SPEC 13): the combined signal (router + node where it serves that
+   * band, softened, calibrated) of every band the router sends, and the band the steering rule picks there. A state
+   * with one band gives that band.
+   * @param {object} ctx
+   * @param {{x,y}} p normalized
+   * @param {object} state fieldParams() result
+   * @returns {{band:2.4|5|6|null, signal:number|null, byBand:{'2.4':number|null,'5':number|null,'6':number|null},
+   *            nodeWins:boolean}}
+   */
+  function steeredSignal(ctx, p, state) {
+    const auto = isAuto(state);
+    const one = units.normBand(state && state.band);
+    const bands = auto ? routerBandList(state.bands) : one === null ? [] : [one];
+    const byBand = { '2.4': null, '5': null, '6': null };
+    const wins = { '2.4': false, '5': false, '6': false };
+    for (const b of bands) {
+      const k = units.bandKey(b);
+      const off = offsetFor(state.offsets, b);
+      let s = softSignal(ctx, state.router, p, b, off, state.soften);
+      if (nodeActive(state.node, b)) {
+        const sn = softSignal(ctx, state.node.pos, p, b, off + (state.node.power || 0), state.soften);
+        if (sn > s) {
+          s = sn;
+          wins[k] = true;
+        }
+      }
+      byBand[k] = s;
+    }
+    const band = auto ? steerBand(byBand, bands, state.steer) : bands.length ? bands[0] : null;
+    const k = band === null ? null : units.bandKey(band);
+    return { band, signal: k === null ? null : byBand[k], byBand, nodeWins: k !== null && wins[k] };
+  }
+
+  /**
    * Everything a tooltip needs at point p - softened exactly like the heat map (state.soften, default SOFTEN), so the
    * number matches the colour under the pointer.
    * @param {object} ctx
    * @param {{x,y}} p normalized
    * @param {object} state fieldParams() result (needs band, router, node, offsets, baseline; optional soften)
-   * @returns {{router:number, node:number|null, combined:number, baseline:number|null, bestSource:'router'|'node',
-   *            backhaul:number|null, weakBackhaul:boolean}}
-   *          router = trial router only; node = second node only (null when off for this band); combined = max of both;
-   *          baseline = today's router alone (null when state.baseline missing).
+   * @returns {{band:number, router:number, node:number|null, combined:number, baseline:number|null,
+   *            bestSource:'router'|'node', backhaul:number|null, weakBackhaul:boolean, byBand?:object,
+   *            baselineBand?:number|null, steered?:true}}
+   *          band = the band of the numbers; router = trial router only; node = second node only (null when off for
+   *          this band); combined = max of both; baseline = today's router alone (null when state.baseline missing).
+   *          Band mode 'auto' (SPEC 13): band = the band a steering client uses at p in the trial, byBand = the trial's
+   *          combined signal per band, baseline / baselineBand = what a steering client gets there today.
    */
   function pointSignalDetail(ctx, p, state) {
-    const band = state.band;
+    if (isAuto(state)) {
+      // band mode Auto (SPEC 13): the numbers of the band a steering client uses here in the trial; the baseline is
+      // what a steering client gets here TODAY (on its own band), so combined - baseline is the change it notices
+      const st = steeredSignal(ctx, p, state);
+      const d = detailOn(ctx, p, state, st.band === null ? 5 : st.band);
+      d.byBand = st.byBand;
+      d.steered = true;
+      d.baselineBand = null;
+      d.baseline = null;
+      if (state.baseline) {
+        const t = steeredSignal(ctx, p, { band: 'auto', bands: state.bands, steer: state.steer, router: state.baseline, node: null, offsets: state.offsets, soften: state.soften });
+        d.baseline = t.signal;
+        d.baselineBand = t.band;
+      }
+      return d;
+    }
+    return detailOn(ctx, p, state, state.band);
+  }
+
+  /** pointSignalDetail() on one band. */
+  function detailOn(ctx, p, state, band) {
     const off = offsetFor(state.offsets, band);
     const sf = state.soften;
     const router = softSignal(ctx, state.router, p, band, off, sf);
@@ -1005,6 +1256,7 @@
     const backhaul = backhaulSignal(ctx, state);
     const nodeWins = node !== null && node > router;
     return {
+      band: units.normBand(band),
       router,
       node,
       combined,
@@ -1021,6 +1273,117 @@
 
   const profileKey = (s) => String(s === undefined || s === null ? '' : s).trim().toLowerCase();
 
+  /** dB: a measurement farther than this from the fitted model is an outlier (flagged, not used; SPEC 9). */
+  const OUTLIER_DB = 12;
+  const cmpKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+  /**
+   * Robust offset of a set of residuals (dB) - the rule of the FITTED model (SPEC 9), shared by calibrate() and
+   * fitCalibration() so the stored fit and the live calibration agree:
+   *   >= 4 values: the mean, after dropping - one at a time - the value farthest from the mean while it is more than
+   *               OUTLIER_DB away (at most a quarter of the values, at least one);
+   *   3 values:    the median; a value more than OUTLIER_DB from it is dropped (the offset is then the mean of the others);
+   *   1-2 values:  the median (nothing can be told apart).
+   * The result does not depend on the order of the values: sums run in `keys` order (e.g. measurement ids), ties of the
+   * "farthest" value go to the smaller key.
+   * @param {number[]} res residuals
+   * @param {string[]} [keys] one per residual (default: the index)
+   * @returns {{offset:number, rms:number, outliers:number[]}} rms of the kept values around the offset; outliers =
+   *          indices into res
+   */
+  function robustOffset(res, keys, weights) {
+    const m = res.length;
+    if (!m) return { offset: 0, rms: 0, outliers: [] };
+    const k = keys || res.map((_, i) => String(i).padStart(6, '0'));
+    const order = res.map((_, i) => i).sort((a, b) => cmpKey(k[a], k[b]) || a - b);
+    // optional weights (SPEC 13: points of an inferred band count less); all 1 = exactly the unweighted rule
+    const wt = Array.isArray(weights) && weights.length === m && weights.some((v) => v !== 1) ? weights.map((v) => (isNum(v) && v > 0 ? v : 1)) : null;
+    const wOf = (i) => (wt ? wt[i] : 1);
+    const alive = new Uint8Array(m).fill(1);
+    const outliers = [];
+    const meanAlive = () => {
+      let s = 0;
+      let c = 0;
+      for (const i of order) {
+        if (!alive[i]) continue;
+        s += wOf(i) * res[i];
+        c += wOf(i);
+      }
+      return s / c;
+    };
+    const farthest = (centre) => {
+      let worst = -1;
+      let wd = OUTLIER_DB;
+      for (const i of order) {
+        if (!alive[i]) continue;
+        const d = Math.abs(res[i] - centre);
+        if (d > wd) {
+          wd = d;
+          worst = i;
+        }
+      }
+      return worst;
+    };
+    let offset;
+    if (m >= 4) {
+      const cap = Math.max(1, Math.floor(m / 4));
+      for (;;) {
+        offset = meanAlive();
+        if (outliers.length >= cap) break;
+        const worst = farthest(offset);
+        if (worst < 0) break;
+        alive[worst] = 0;
+        outliers.push(worst);
+      }
+    } else {
+      offset = wt
+        ? weightedMedian(
+            order.map((i) => res[i]),
+            order.map((i) => wt[i]),
+          )
+        : E.util.median(order.map((i) => res[i]));
+      if (m === 3) {
+        const worst = farthest(offset);
+        if (worst >= 0) {
+          alive[worst] = 0;
+          outliers.push(worst);
+          offset = meanAlive();
+        }
+      }
+    }
+    let ss = 0;
+    let c = 0;
+    for (const i of order) {
+      if (!alive[i]) continue;
+      ss += wOf(i) * (res[i] - offset) * (res[i] - offset);
+      c += wOf(i);
+    }
+    return { offset, rms: Math.sqrt(ss / c), outliers: outliers.sort((a, b) => a - b) };
+  }
+
+  /**
+   * Weighted median: the value where the cumulative weight (values sorted) reaches half of the total; exactly half ->
+   * the mean of the two neighbours, so equal weights give the plain median.
+   * @param {number[]} values
+   * @param {number[]} weights positive, one per value
+   * @returns {number} 0 for no values
+   */
+  function weightedMedian(values, weights) {
+    const n = values.length;
+    if (!n) return 0;
+    const idx = values.map((_, i) => i).sort((a, b) => values[a] - values[b] || a - b);
+    let total = 0;
+    for (let i = 0; i < n; i++) total += weights[i];
+    const half = total / 2;
+    let cum = 0;
+    for (let j = 0; j < n; j++) {
+      cum += weights[idx[j]];
+      if (Math.abs(cum - half) <= 1e-9 * total) return j + 1 < n ? (values[idx[j]] + values[idx[j + 1]]) / 2 : values[idx[j]];
+      if (cum > half) return values[idx[j]];
+    }
+    return values[idx[n - 1]];
+  }
+
   /**
    * Calibration offset for one band: median of (measured - prediction(baseline -> point)) over the measurements of
    * that band (all taken with the router at the baseline). rms = sqrt(mean((residual - offset)^2)). The prediction is
@@ -1029,18 +1392,24 @@
    * Measurements of `opts.device` are preferred; if that device has none on the band, all devices are used.
    * Speed-test points without a measured signal (value null, SPEC 6.2) never take part: calibrating the model with
    * its own prediction would be circular.
+   * With a calibration fit in the context (ctx.fit, SPEC 9) the prediction uses the fitted n / wallFactor and the
+   * offset follows robustOffset(): the mean with > 12 dB outliers dropped from 4 points on (flagged in used[] and
+   * listed in `outliers`), the median below - and with no point on that band the fit's stored offset of the band
+   * (the router's strength does not depend on where it stands). Without a fit: exactly the plain median as always.
    * @param {object} ctx
    * @param {Array<object>} measurements project.measurements
    * @param {number} band
    * @param {{device?:string, baseline:{x,y}, soften?:number}} opts
    * @returns {{offset:number, rms:number, n:number, fallback:boolean, suspicious:boolean,
-   *            used:Array<{id,x,y,measured:number,predicted:number,residual:number}>}}
-   *          suspicious: |offset| > 20 dB (wrong band, scale or walls - tell the user)
+   *            used:Array<{id,x,y,measured:number,predicted:number,residual:number,outlier?:true}>,
+   *            fitted?:true, outliers?:string[]}}
+   *          suspicious: |offset| > 20 dB (wrong band, scale or walls - tell the user); fitted/outliers only with a fit
    */
   function calibrate(ctx, measurements, band, opts) {
     const o = opts || {};
     const b = units.normBand(band);
-    const all = (measurements || []).filter((m) => units.normBand(m.band) === b && isNum(m.value));
+    // odd data (null entries, NaN positions) never throws: such points simply do not calibrate
+    const all = (Array.isArray(measurements) ? measurements : []).filter((m) => m && typeof m === 'object' && units.normBand(m.band) === b && isNum(m.value) && isNum(m.x) && isNum(m.y));
     let list = all;
     let fallback = false;
     if (o.device) {
@@ -1049,15 +1418,104 @@
       if (own.length) list = own;
       else if (all.length) fallback = true;
     }
-    if (!list.length || !o.baseline) return { offset: 0, rms: 0, n: 0, fallback: false, suspicious: false, used: [] };
+    const fit = ctx && ctx.fit;
+    if (!list.length || !o.baseline) {
+      const stored = fit && b !== null ? fit.offsets[units.bandKey(b)] : null;
+      if (isNum(stored)) return { offset: stored, rms: 0, n: 0, fallback: false, suspicious: Math.abs(stored) > 20, used: [], fitted: true, outliers: [] };
+      return { offset: 0, rms: 0, n: 0, fallback: false, suspicious: false, used: [] };
+    }
     const used = list.map((m) => {
       const predicted = softRawSignal(ctx, o.baseline, m, b, o.soften);
-      return { id: m.id, x: m.x, y: m.y, measured: m.value, predicted, residual: m.value - predicted };
+      const u = { id: m.id, x: m.x, y: m.y, measured: m.value, predicted, residual: m.value - predicted };
+      if (m.bandInferred === true) u.inferred = true;
+      return u;
     });
+    // SPEC 13: a point whose band was inferred (the user did not know it) counts with INFERRED_WEIGHT
+    const weights = used.some((u) => u.inferred) ? used.map((u) => (u.inferred ? INFERRED_WEIGHT : 1)) : null;
+    if (fit) {
+      const r = robustOffset(
+        used.map((u) => u.residual),
+        used.map((u) => String(u.id)),
+        weights,
+      );
+      for (const i of r.outliers) used[i].outlier = true;
+      return { offset: r.offset, rms: r.rms, n: used.length, fallback, suspicious: Math.abs(r.offset) > 20, used, fitted: true, outliers: r.outliers.map((i) => used[i].id) };
+    }
+    if (weights) {
+      const offset = weightedMedian(
+        used.map((u) => u.residual),
+        weights,
+      );
+      let ss = 0;
+      let sw = 0;
+      used.forEach((u, i) => {
+        ss += weights[i] * (u.residual - offset) * (u.residual - offset);
+        sw += weights[i];
+      });
+      return { offset, rms: Math.sqrt(ss / sw), n: used.length, fallback, suspicious: Math.abs(offset) > 20, used };
+    }
     const offset = E.util.median(used.map((u) => u.residual));
     let ss = 0;
     for (const u of used) ss += (u.residual - offset) * (u.residual - offset);
     return { offset, rms: Math.sqrt(ss / used.length), n: used.length, fallback, suspicious: Math.abs(offset) > 20, used };
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // measurements without a known band (SPEC 13: "Nevím (automaticky)" stores band null)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** Weight of a point whose band was inferred, in calibrate() and in a fit's offsets. */
+  const INFERRED_WEIGHT = 0.5;
+  const unknownBand = (m) => isObj(m) && (m.band === null || units.normBandMode(m.band) === 'auto');
+
+  /**
+   * The band a steering client most likely used at p TODAY (router at net.baseline, no second node): the steering
+   * rule on the (calibrated, softened) signals of the router's bands there.
+   * @param {object} ctx
+   * @param {object} project
+   * @param {{x,y}} p
+   * @param {{offsets?:object, soften?:number}} [opts] offsets default: the calibration of the known-band points
+   * @returns {{band:2.4|5|6|null, signals:{'2.4':number|null,'5':number|null,'6':number|null}}}
+   */
+  function inferBand(ctx, project, p, opts) {
+    const o = opts || {};
+    const bl = project && project.net && project.net.baseline;
+    if (!ctx || !bl || !isNum(bl.x) || !isNum(bl.y) || !p || !isNum(p.x) || !isNum(p.y)) return { band: null, signals: { '2.4': null, '5': null, '6': null } };
+    const offsets = o.offsets || knownOffsets(ctx, project, o.soften);
+    const st = steeredSignal(ctx, { x: p.x, y: p.y }, { band: 'auto', bands: routerBandList(project), steer: steerOf(project), router: bl, node: null, offsets, soften: o.soften });
+    return { band: st.band, signals: st.byBand };
+  }
+
+  /** Calibration offsets of the measurements whose band is known (the basis of the band guess). */
+  function knownOffsets(ctx, project, soften) {
+    const out = { '2.4': 0, '5': 0, '6': 0 };
+    const device = project.goal ? project.goal.device : undefined;
+    const baseline = project.net ? project.net.baseline : undefined;
+    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, project.measurements, b, { device, baseline, soften }).offset;
+    return out;
+  }
+
+  /**
+   * project.measurements with every unknown band (null) inferred (SPEC 13): such a point becomes a copy
+   * {...m, band, bandInferred:true}; every other entry is the same object. Same order and length. Points that cannot
+   * be inferred (no position / baseline) stay as they are.
+   * @param {object} ctx
+   * @param {object} project
+   * @param {{offsets?:object, soften?:number}} [opts] offsets default: the calibration of the known-band points
+   *        (whatever view.calibrate says - they only serve the guess)
+   * @returns {Array<object>}
+   */
+  function resolveBands(ctx, project, opts) {
+    const o = opts || {};
+    const list = project && Array.isArray(project.measurements) ? project.measurements : [];
+    if (!list.some(unknownBand)) return list.slice();
+    let offsets = o.offsets || null;
+    return list.map((m) => {
+      if (!unknownBand(m) || !isNum(m.x) || !isNum(m.y)) return m;
+      if (!offsets) offsets = knownOffsets(ctx, project, o.soften);
+      const r = inferBand(ctx, project, m, { offsets, soften: o.soften });
+      return r.band === null ? m : { ...m, band: r.band, bandInferred: true };
+    });
   }
 
   /**
@@ -1070,7 +1528,11 @@
   function calibrateAll(ctx, project, opts) {
     const out = {};
     const soften = opts && opts.soften;
-    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, project.measurements, b, { device: project.goal.device, baseline: project.net.baseline, soften });
+    const device = project.goal ? project.goal.device : undefined;
+    const baseline = project.net ? project.net.baseline : undefined;
+    // points without a known band take part on their inferred band, with a lower weight (SPEC 13)
+    const list = Array.isArray(project.measurements) && project.measurements.some(unknownBand) ? resolveBands(ctx, project, { soften }) : project.measurements;
+    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, list, b, { device, baseline, soften });
     return out;
   }
 
@@ -1083,7 +1545,7 @@
    */
   function offsets(ctx, project, opts) {
     const out = { '2.4': 0, '5': 0, '6': 0 };
-    if (project.view.calibrate === false) return out;
+    if (project.view && project.view.calibrate === false) return out;
     const cal = calibrateAll(ctx, project, opts);
     for (const k of Object.keys(out)) out[k] = cal[k].offset;
     return out;
@@ -1118,16 +1580,31 @@
     nodeParams,
     fieldParams,
     combinedSignal,
+    steeredSignal,
     backhaulSignal,
     pointSignalDetail,
+    routerBandList,
+    steerOf,
+    steerBand,
+    isAuto,
+    inferBand,
+    resolveBands,
+    weightedMedian,
     calibrate,
     calibrateAll,
     offsets,
     profileKey,
+    robustOffset,
+    activeFit,
+    wallCount,
     MIN_SIGNAL,
     MAX_SIGNAL,
     SOFTEN,
     SOFTEN_MAX,
     BARRIER_DB,
+    OUTLIER_DB,
+    INFERRED_WEIGHT,
+    STEER,
+    FIT_BOUNDS: Object.freeze({ n: Object.freeze([FIT_N_MIN, FIT_N_MAX]), wallFactor: Object.freeze([FIT_WF_MIN, FIT_WF_MAX]) }),
   };
 })();

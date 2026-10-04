@@ -614,6 +614,7 @@ test('contours (soften 0 = exact lattice over the whole canvas): a weak router l
 
 test('analysis.run: today vs trial', () => {
   const p = P.create({ template: 'demo', lang: 'cs' });
+  p.view.band = 5; // the 5 GHz map (the demo opens in the band mode Auto, SPEC 13 - see steer.test.mjs)
   const a0 = E.analysis.run(p, { cell: 4 });
   assert.equal(a0.today.length, a0.trial.length);
   assert.deepEqual(Array.from(a0.diff.slice(0, 2000)).filter((v) => v !== 0 && !Number.isNaN(v)), [], 'trial == today at the start');
@@ -626,7 +627,7 @@ test('analysis.run: today vs trial', () => {
   assert.ok(a1.delta.coverage > 10 && a1.delta.mean > 0);
   assert.equal(a1.params.today.node, null);
   assert.equal(a1.targetRooms, null);
-  assert.equal(a1.perRoom.trial.size, 6);
+  assert.equal(a1.perRoom.trial.size, 7);
   // a single room as the goal
   p.goal.room = 3;
   const a2 = E.analysis.run(p, { cell: 8 });

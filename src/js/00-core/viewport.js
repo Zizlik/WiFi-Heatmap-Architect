@@ -74,7 +74,7 @@
 
     function notify() {
       for (const fn of Array.from(listeners)) {
-        try { fn(view); } catch (e) { console.error('[WH.viewport] onChange failed:', e); }
+        try { fn(view); } catch (e) { console.error('[WH.viewport] onChange failed:', e); if (globalThis.WH.diag) globalThis.WH.diag.caught(e, 'viewport.onChange'); }
       }
     }
 

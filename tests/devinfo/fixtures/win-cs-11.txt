@@ -1,0 +1,30 @@
+
+V systému je 1 rozhraní:
+
+    Název                  : Wi-Fi
+    Popis                  : Intel(R) Wi-Fi 6 AX201 160MHz
+    GUID                   : 0b4d6c62-1d2e-4b1f-9a62-2f9a8d1c3e55
+    Fyzická adresa         : 3c:58:c2:9a:11:07
+    Typ rozhraní           : Primární
+    Stav                   : připojeno
+    SSID                   : Doma u Nováků
+    BSSID přístupového bodu : 74:83:c2:1a:2b:3c
+    Pásmo                  : 5 GHz
+    Kanál                  : 44
+    Připojená šifra Akm    : [ akm = 00-0f-ac:02, cipher = 00-0f-ac:04 ]
+    Typ sítě               : Infrastruktura
+    Typ radiového příjmu   : 802.11ac
+    Ověřování              : WPA2-Personal
+    Šifra                  : CCMP
+    Režim připojení        : Automatické připojení
+    Rychlost příjmu (Mb/s) : 866,7
+    Rychlost odesílání (Mb/s) : 780
+    Signál                 : 81%
+    Rssi                   : -61
+    Profil                 : Doma u Nováků
+    Nakonfigurováno QoS MSCS       : 0
+    Nakonfigurováno mapování QoS   : 0
+    Mapování QoS povoleno zásadami : 0
+
+    Stav hostované sítě    : Není k dispozici
+

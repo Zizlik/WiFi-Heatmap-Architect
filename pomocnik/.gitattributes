@@ -1,0 +1,9 @@
+# Line endings for the helper scripts (pomocnik/): Windows launchers keep CRLF (+ UTF-8 BOM in .ps1) byte for byte,
+# shell/Python scripts must have LF or they fail on macOS/Linux ("bad interpreter: /bin/bash^M").
+*.cmd      -text
+*.ps1      -text
+*.command  text eol=lf
+*.sh       text eol=lf
+*.py       text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf

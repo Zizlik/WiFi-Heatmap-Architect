@@ -74,6 +74,15 @@
     return b === 2.4 || b === 5 || b === 6 ? b : null;
   }
 
+  /**
+   * A band OR the band mode 'auto' (SPEC 13): 'auto' (any case, trimmed) -> 'auto', anything else as normBand().
+   * @returns {2.4|5|6|'auto'|null}
+   */
+  function normBandMode(b) {
+    if (typeof b === 'string' && b.trim().toLowerCase() === 'auto') return 'auto';
+    return normBand(b);
+  }
+
   /** Band as object key ('2.4' | '5' | '6'). */
   function bandKey(b) {
     return String(normBand(b) ?? b);
@@ -86,5 +95,5 @@
     return v === 2.4 && E.text.lang(lang) === 'cs' ? '2,4' : String(v);
   }
 
-  E.units = { QUALITY, pctToDbm, dbmToPct, qualityOf, qualityIndex, formatMbps, formatDbm, normBand, bandKey, bandLabel };
+  E.units = { QUALITY, pctToDbm, dbmToPct, qualityOf, qualityIndex, formatMbps, formatDbm, normBand, normBandMode, bandKey, bandLabel };
 })();

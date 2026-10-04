@@ -35,6 +35,8 @@
   let warnedLive = false;
   let warnedUpdate = false;
   const regs = new Set();
+  /** A bug caught here (a throwing listener or mutator) also goes to the error diary (WH.diag, Help -> Report a problem). */
+  const diagCaught = (e, where) => { try { if (g.WH.diag) g.WH.diag.caught(e, where); } catch (x) { /* never let the diary break the store */ } };
 
   // ---------------------------------------------------------------------------------------------------------------
   // snapshots & signatures
@@ -113,7 +115,7 @@
       if (reg.all) hit = list[0];
       else for (const tp of reg.topics) if (set.has(tp)) { hit = tp; break; }
       if (!hit) continue;
-      try { reg.fn(Object.assign({ topic: hit }, payload)); } catch (e) { console.error(`[WH.store] listener for "${hit}" failed:`, e); }
+      try { reg.fn(Object.assign({ topic: hit }, payload)); } catch (e) { console.error(`[WH.store] listener for "${hit}" failed:`, e); diagCaught(e, `store:${hit}`); }
     }
     if (g.WH.bus) for (const tp of list) g.WH.bus.emit(`store:${tp}`, payload);
   }
@@ -135,7 +137,7 @@
     if (!autosaveEnabled || !project) return false;
     const io = g.WH.io;
     if (!io || typeof io.saveLocal !== 'function') return false;
-    try { io.saveLocal(project); return true; } catch (e) { console.error('[WH.store] autosave failed:', e); return false; }
+    try { io.saveLocal(project); return true; } catch (e) { console.error('[WH.store] autosave failed:', e); diagCaught(e, 'store.autosave'); return false; }
   }
 
   let saveTimer = 0;
@@ -206,6 +208,7 @@
     let ret;
     try { ret = mutator(project); } catch (e) {
       console.error(`[WH.store] commit "${label}" threw - rolled back:`, e);
+      diagCaught(e, `store.commit:${label}`);
       restore(before);
       return false;
     }
@@ -241,6 +244,7 @@
     }
     try { if (mutator(project) === false) return false; } catch (e) {
       console.error('[WH.store] live mutator threw:', e);
+      diagCaught(e, `store.live:${gesture.label}`);
       return false;
     }
     const explicit = asList(topics);
@@ -293,6 +297,7 @@
     const bgBefore = bgOf(project);
     try { if (mutator(project) === false) return false; } catch (e) {
       console.error('[WH.store] update mutator threw:', e);
+      diagCaught(e, 'store.update');
       return false;
     }
     const after = signatures(project);
@@ -345,7 +350,7 @@
       }
     } catch (e) { /* storage blocked / corrupt: defaults */ }
     if (!prefs.collapsed || typeof prefs.collapsed !== 'object' || Array.isArray(prefs.collapsed)) prefs.collapsed = {};
-    if (!['auto', 'light', 'dark'].includes(prefs.theme)) prefs.theme = 'auto';
+    if (!['auto', 'light', 'dark', 'oled'].includes(prefs.theme)) prefs.theme = 'auto';   // SPEC 12: dark = Deep dark, oled = OLED black
     return prefs;
   }
 

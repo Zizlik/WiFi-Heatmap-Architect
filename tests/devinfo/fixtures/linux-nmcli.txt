@@ -1,0 +1,6 @@
+IN-USE  SSID                BSSID              CHAN  FREQ      RATE        SIGNAL  SECURITY
+        Soused              F0:9F:C2:44:55:66  6     2437 MHz  130 Mbit/s  45      WPA1 WPA2
+*       Domov 5G            74:83:C2:1A:2B:3C  36    5180 MHz  540 Mbit/s  74      WPA2
+        Domov               74:83:C2:1A:2B:3B  1     2412 MHz  195 Mbit/s  70      WPA2
+        Kavárna U Lípy      0C:EA:14:01:02:03  149   5745 MHz  270 Mbit/s  38      WPA2 WPA3
+        --                  0C:EA:14:01:02:04  44    5220 MHz  270 Mbit/s  30      WPA2

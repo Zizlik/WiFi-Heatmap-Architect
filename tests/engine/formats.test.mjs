@@ -103,7 +103,7 @@ test('buildSvg: language and markers options, size', () => {
   const en = P.buildSvg(p, { lang: 'en' });
   assert.match(cs, /<title>Půdorys pro Wi-Fi<\/title>/);
   assert.match(en, /<title>Floor plan for Wi-Fi<\/title>/);
-  assert.ok(cs.includes('Obývací pokoj'));
+  assert.ok(cs.includes('Obývák s kuchyní'));
   assert.ok(cs.length < 60000, `demo svg is ${cs.length} bytes`);
   // today marker only when it differs from the trial position
   assert.ok(!/stroke-dasharray="5 4"/.test(cs));
@@ -114,7 +114,7 @@ test('buildSvg: language and markers options, size', () => {
   assert.ok(!/stroke-dasharray="5 4"/.test(nomark));
   assert.equal(P.parseSvgText(nomark).project.net.router.x, P.sanitize(moved).net.router.x);
   // the visual contains the room names as text
-  assert.ok(cs.includes('>Kuchyň</text>'));
+  assert.ok(cs.includes('>Ložnice</text>'));
   // withBackground:false drops the image from the metadata
   const bg = clone(p);
   bg.plan.background = 'data:image/png;base64,iVBORw0KGgo=';

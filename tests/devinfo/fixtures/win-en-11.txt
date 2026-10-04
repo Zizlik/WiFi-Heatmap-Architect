@@ -1,0 +1,30 @@
+
+There is 1 interface on the system:
+
+    Name                   : Wi-Fi
+    Description            : Intel(R) Wi-Fi 6 AX201 160MHz
+    GUID                   : 0b4d6c62-1d2e-4b1f-9a62-2f9a8d1c3e55
+    Physical address       : 3c:58:c2:9a:11:07
+    Interface type         : Primary
+    State                  : connected
+    SSID                   : Domov 5G
+    AP BSSID               : 74:83:c2:1a:2b:3c
+    Band                   : 5 GHz
+    Channel                : 36
+    Connected Akm-cipher   : [ akm = 00-0f-ac:02, cipher = 00-0f-ac:04 ]
+    Network type           : Infrastructure
+    Radio type             : 802.11ax
+    Authentication         : WPA2-Personal
+    Cipher                 : CCMP
+    Connection mode        : Auto Connect
+    Receive rate (Mbps)    : 1201
+    Transmit rate (Mbps)   : 1201
+    Signal                 : 92%
+    Rssi                   : -49
+    Profile                : Domov 5G
+    QoS MSCS Configured         : 0
+    QoS Map Configured          : 0
+    QoS Map Allowed by Policy   : 0
+
+    Hosted network status  : Not available
+

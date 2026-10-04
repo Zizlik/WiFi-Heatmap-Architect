@@ -1,0 +1,2 @@
+# Test fixtures that must keep their exact bytes (CRLF line endings are part of what the parser test checks)
+tests/devinfo/fixtures/*-crlf.txt -text

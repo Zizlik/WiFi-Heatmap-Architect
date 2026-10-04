@@ -1,0 +1,146 @@
+/* ==========================================================================
+   36-devinfo.css - stage 6 (SPEC 8, 8.1, 8.2 app side): the "Změřit vše" row and
+   live checklist in the measurement form, the Wi-Fi details chip, the
+   "Info o zařízení" card (inline in the form or in a side drawer), the per-OS
+   command tips with Copy buttons (also in Help) and the helper downloads.
+   Colours only from tokens; every icon box is a grid with place-items:center.
+   ========================================================================== */
+
+/* ---- the form: "Změřit vše" + device info --------------------------------- */
+.pl-mall__row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pl-mall__go { flex: 1 1 auto; min-width: 0; justify-content: center; }
+.pl-mall__row > .hint { flex: none; }
+@media (pointer: coarse) {
+  .pl-mall__go { min-height: 52px; }
+  .pl-mall__info-btn.btn--icon { width: 52px; min-height: 52px; }
+}
+
+/* Wi-Fi details handed in (pasted, helper link, helper) */
+.pl-wchip {
+  display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+  padding: 2px 2px 2px 10px; border-radius: var(--r-pill);
+  background: var(--accent-soft); color: var(--accent-soft-ink); font-size: var(--fs-sm); font-weight: 600;
+}
+.pl-wchip__ico { display: grid; place-items: center; flex: none; width: 16px; height: 16px; }
+.pl-wchip__t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-wchip > .btn { flex: none; color: inherit; }
+
+/* the live checklist */
+.pl-mall {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2);
+}
+.pl-mall__steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.pl-mall__step { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 8px; align-items: start; }
+.pl-mall__ico { display: grid; place-items: center; width: 20px; height: 20px; color: var(--muted); }
+.pl-mall__step[data-state="ok"] .pl-mall__ico { color: var(--ok); }
+.pl-mall__step[data-state="failed"] .pl-mall__ico { color: var(--warn); }
+.pl-mall__step[data-state="running"] .pl-mall__ico { color: var(--accent); }
+/* waiting for the user's answer (SPEC 13: the band) - a circled "?" in the accent, like the other circled states */
+.pl-mall__step[data-state="wait"] .pl-mall__ico { color: var(--accent); }
+.pl-mall__txt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pl-mall__head { display: flex; align-items: center; gap: 6px; min-height: 20px; font-weight: 650; font-size: var(--fs-sm); color: var(--ink); }
+.pl-mall__kind { display: grid; place-items: center; flex: none; width: 16px; height: 16px; color: var(--muted); }
+.pl-mall__step[data-state="pending"] .pl-mall__head { color: var(--muted); }
+.pl-mall__info { font-size: var(--fs-sm); line-height: 1.4; color: var(--ink-2); overflow-wrap: anywhere; }
+.pl-mall__info:empty { display: none; }
+.pl-mall__extra:empty { display: none; }
+.pl-mall__extra { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding-top: 4px; }
+.pl-mall__extra > .progress { width: 100%; }
+.pl-mall__note { color: var(--muted); line-height: 1.4; }
+.pl-mall__consent {
+  display: flex; flex-direction: column; gap: 8px; width: 100%;
+  padding: 10px; border: 1px solid var(--accent-line); border-radius: var(--r-sm); background: var(--accent-wash);
+}
+.pl-mall__consent > p { margin: 0; color: var(--ink-2); line-height: 1.45; }
+.pl-mall__acts { display: flex; justify-content: flex-end; }
+.pl-spin { width: 16px; height: 16px; border-width: 2px; }
+
+/* ---- the device card --------------------------------------------------------- */
+.pop-panel.pl-mpop.is-wide { max-width: min(400px, calc(100vw - 16px)); }
+.pl-di-host { min-width: 0; }
+.pl-di { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.pl-di__head { display: flex; align-items: center; gap: 6px; margin: -2px 0 -4px -6px; }
+.pl-di__sec { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.pl-di__cap { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
+.pl-di__cap > .icon { color: var(--accent); }
+.pl-di__row { display: flex; align-items: center; gap: 8px; min-height: 30px; min-width: 0; font-size: var(--fs-sm); }
+.pl-di__row > .grow { min-width: 0; }
+.pl-di__row .btn { flex: none; }
+.pl-di__ok, .pl-di__off { display: grid; place-items: center; flex: none; width: 18px; height: 18px; }
+.pl-di__ok { color: var(--ok); }
+.pl-di__off { color: var(--muted); }
+.pl-di__row.is-ok { font-weight: 650; }
+.pl-di__dev { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.pl-di__devico { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+.pl-di__devtxt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pl-di__devtxt > b { overflow-wrap: anywhere; }
+.pl-di__kv { font-size: var(--fs-sm); }
+.pl-di__note { font-size: var(--fs-sm); line-height: 1.45; }
+.pl-di__cant > div { min-width: 0; }
+.pl-di__cant .hint { vertical-align: middle; }
+.pl-di__tabs { align-self: flex-start; max-width: 100%; }
+.pl-di__lead { margin: 0; font-size: var(--fs-sm); line-height: 1.45; color: var(--ink-2); }
+.pl-di__os { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+/* a command: monospace, selectable as a whole, with a Copy button */
+.pl-di__cmd {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface-2);
+}
+.pl-di__code {
+  flex: 1 1 auto; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); user-select: all; -webkit-user-select: all;
+  border-radius: var(--r-xs);
+}
+.pl-di__code:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pl-di__copy { flex: none; }
+.pl-di__copy.is-done { --btn-bg: var(--ok-soft); --btn-ink: var(--ok-ink); }
+.pl-di__alt { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+/* compact numbered steps (the help-style counters, 22 px) */
+.steps.pl-di__steps { gap: 8px; font-size: var(--fs-sm); line-height: 1.45; color: var(--ink-2); }
+.steps.pl-di__steps > li { padding: 0 0 0 32px; min-height: 22px; }
+.steps.pl-di__steps > li::before { width: 22px; height: 22px; font-size: var(--fs-xs); }
+@supports (text-box: trim-both cap alphabetic) {
+  .steps.pl-di__steps > li::before { height: auto; padding-block: calc((22px - 1cap) / 2); }
+}
+.pl-di__steps > li > span { display: block; padding-top: 1px; overflow-wrap: anywhere; }
+
+/* the helper */
+.pl-di__more > summary { gap: 8px; font-weight: 650; font-size: var(--fs-sm); }
+.pl-di__more > summary > .icon { color: var(--accent); flex: none; }
+.pl-di__helper { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.pl-di__dl { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; min-width: 0; }
+/* file names keep their diacritics and descenders: never clipped (the row wraps instead) */
+.pl-di__file { max-width: 100%; text-decoration: none; }
+.pl-di__gh { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; color: var(--accent); font-weight: 600; text-decoration: none; }
+.pl-di__gh:hover { text-decoration: underline; }
+.pl-di__gh > .icon { flex: none; }
+
+/* paste + what was found */
+.pl-di__paste { gap: 8px; }
+.pl-di__ta { width: 100%; min-height: 64px; font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.4; }
+.pl-di__phint { margin: 0; }
+.pl-di__found:empty { display: none; }
+.pl-di__found .notice { align-items: flex-start; }
+
+/* the drawer (Measurements card / help) */
+.pl-di-drawer .modal__body { padding-top: 12px; }
+
+/* help panel: three OS blocks + the helper downloads */
+.help-subhead { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: .9333rem; color: var(--ink); text-transform: none; letter-spacing: 0; }
+.help-subhead > .icon { color: var(--accent); flex: none; }
+.pl-di--help { gap: 8px; margin-top: 8px; }
+.pl-di__osblock { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); min-width: 0; }
+.pl-di__osblock .pl-di__cmd { background: var(--surface); }
+.pl-di__osh { display: flex; align-items: center; gap: 8px; margin: 0; font-size: .9333rem; color: var(--ink); text-transform: none; letter-spacing: 0; }
+.pl-di__osh > .icon { flex: none; }
+.pl-di__dlall { display: flex; flex-direction: column; gap: 8px; }
+.pl-di__dlrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.pl-di__dlrow > .pl-di__dl { margin-top: 0; }
+.pl-di__dlos { min-width: 64px; font-size: var(--fs-sm); font-weight: 650; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pl-spin { animation-duration: 2.4s; }
+}

@@ -9,7 +9,8 @@
  *     worker to take over and reloads the page once it did (never on its own: work in progress is not interrupted)
  *   - looks for a new version again when the app comes back to the foreground (at most every 30 minutes, online only)
  *   - remembers the browser's install offer (beforeinstallprompt) so File menu can show "Install as an app"
- *   - keeps <meta name="theme-color"> in line with a manually chosen theme (this part also runs on file://)
+ *   - keeps <meta name="theme-color"> in line with a manually chosen theme: light #fff, Deep dark #111113, OLED #000
+ *     (auto = the two media-specific metas of the template); this part also runs on file://
  *
  *   WH.pwa = { enabled, supported, registration, updateReady, canInstall(), install(), applyUpdate(), checkForUpdate() } */
 (function () {
@@ -21,7 +22,8 @@
   const MANIFEST = 'manifest.webmanifest';
   const SW_URL = './sw.js';
   const TOUCH_ICON = 'assets/apple-touch-icon.png';
-  const THEME_COLOR = { light: '#ffffff', dark: '#142038' };   // = header surface (--glass on --bg) per theme
+  // = header surface (--glass over --bg) per palette: light, Deep dark, OLED black (SPEC 12)
+  const THEME_COLOR = { light: '#ffffff', dark: '#111113', oled: '#000000' };
   const RECHECK_MS = 30 * 60 * 1000;
 
   const hasDom = typeof document !== 'undefined' && typeof location !== 'undefined';
@@ -53,7 +55,7 @@
     if (!hasDom) return;
     const forced = document.documentElement.getAttribute('data-theme');
     for (const m of Array.from(document.querySelectorAll('meta[name="theme-color"][data-scheme]'))) {
-      const scheme = forced === 'light' || forced === 'dark' ? forced : m.getAttribute('data-scheme');
+      const scheme = THEME_COLOR[forced] ? forced : m.getAttribute('data-scheme');
       const want = THEME_COLOR[scheme] || THEME_COLOR.light;
       if (m.getAttribute('content') !== want) m.setAttribute('content', want);
     }

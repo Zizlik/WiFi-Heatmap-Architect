@@ -102,7 +102,9 @@
   function setTool(tool, quiet) {
     if (tool !== 'router' && tool !== 'measure') return;
     if (tool === 'router' && PL.mm && PL.mm.active) { PL.mm.exit(); return; }
+    const prev = S.tool;
     S.tool = tool;
+    if (tool === 'measure' && prev !== 'measure') PL.ensurePoints();
     if (st) {
       st.toolBtns.router.setAttribute('aria-pressed', String(tool === 'router'));
       st.toolBtns.measure.setAttribute('aria-pressed', String(tool === 'measure'));
@@ -136,7 +138,9 @@
     if (kind === 'inlet') dot.append(ui().icon('globe', 16));
     b.append(dot);
     if (kind === 'today') b.append(el('span.pl-mk__label', { 'data-i18n': 'planner.mk.todayShort' }, t('planner.mk.todayShort')));
-    if (kind === 'meas') b.append(el('span.pl-mk__val'));
+    // the value label (full / short text, see 15-whatif.js) and the numbered badge used when even the short text has
+    // no room; the label is placed by layoutLabels() (right, left, above, below)
+    if (kind === 'meas') { b._val = el('span.pl-mk__val'); b._no = el('span.pl-mk__no', { 'aria-hidden': 'true' }, el('span.pl-mk__nt')); b.append(b._val, b._no); }
     b.addEventListener('pointerdown', onMkDown);
     b.addEventListener('pointermove', onMkMove);
     b.addEventListener('pointerup', onMkUp);
@@ -182,7 +186,7 @@
     drag = null;
     st.el.classList.remove('is-dragging');
     try { d.b.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-    if (d.began && !d.cancelled) finishGesture(d.kind);
+    if (d.began && !d.cancelled) finishGesture(d.kind, d.id);
     if (d.moved) d.b.dataset.dragged = '1';
   }
   function onMkClick(e) {
@@ -227,7 +231,7 @@
     const k = kbd;
     kbd = null;
     clearTimeout(k.timer);
-    finishGesture(k.kind);
+    finishGesture(k.kind, k.id);
   }
 
   let gStart = null; // baseline when the current gesture began (moving it invalidates measurements)
@@ -236,9 +240,14 @@
     store().begin(KIND[kind].undo);
   }
 
-  async function finishGesture(kind) {
+  async function finishGesture(kind, id) {
     const s = store();
     if (!s.gestureOpen) return;
+    // a measurement dropped onto a wall line (or off the floor) steps inside its room (same undo step)
+    if (kind === 'meas' && id) {
+      const m = KIND.meas.get(s.project, id);
+      if (m && PL.measOff(m)) { const q = PL.insidePoint(m, 0.25); s.live((p) => KIND.meas.set(p, q, id), ['measurements']); }
+    }
     if (kind === 'today' && s.project.measurements.length && !PL.same(s.project.net.baseline, gStart)) {
       const ok = await ui().confirm({ title: t('planner.today.confirmT'), body: t('planner.today.confirmB', { n: s.project.measurements.length }), ok: t('planner.today.confirmOk'), danger: true });
       if (!s.gestureOpen) return;
@@ -352,44 +361,164 @@
       }
       if (x !== o.x || y !== o.y) M.inlet.style.transform = `translate(${snap(x)}px,${snap(y)}px) translate(-50%,-50%)`;
     }
-    // measurement dots (keyed by id). Label: the measured dBm; in the Speed view (and for speed-only points without a
-    // signal) "↓ 245 / ↑ 38" with the arrows drawn as icons.
+    // measurement dots (keyed by id). Label (15-whatif.js): the measured dBm, "↓ 245 / ↑ 38" in the Speed view (and for
+    // speed-only points), "−72 → −58 (+14)" / "↓120 → ≈310" while the router is moved or a second node is on. Every dot
+    // keeps a label: crowded ones get the short form, then a numbered badge (the list in the sidebar has the numbers).
     const seen = new Set();
     const pal = p.view.palette;
-    const speedView = p.view.layer === 'speed';
-    for (const m of p.measurements) {
+    const dots = [];
+    const view = p.view.layer;
+    // layer "Body měření" off: no dots on the map (the list in the sidebar stays); a row clicked there still shows its
+    // own dot for a moment (S.peek, PL.showMeas)
+    const showPts = p.view.points !== false;
+    p.measurements.forEach((m, i) => {
       seen.add(m.id);
       let b = st.meas.get(m.id);
       if (!b) { b = markerEl('meas', m.id); st.meas.set(m.id, b); st.layer.append(b); }
       const sig = Number.isFinite(m.value);
-      const sp = (speedView || !sig) && m.download !== null && m.upload !== null;
-      const key = `${m.value}|${m.band}|${pal}|${p.view.band}|${m.name}|${m.download}|${m.upload}|${sp}`;
+      const lab = PL.wi.label(m, i, view);
+      const key = `${lab.key}|${m.value}|${m.band}|${pal}|${p.view.band}|${m.name}|${WH.i18n.lang}`;
       if (b._key !== key) {
         b._key = key;
         if (sig) { const c = WH.engine.raster.signalColor(m.value, pal); b.firstChild.style.background = `rgb(${c[0]},${c[1]},${c[2]})`; } else b.firstChild.style.background = '';
         b.classList.toggle('is-nosig', !sig);
-        b.classList.toggle('is-speed', sp);
-        const lab = b.lastChild;
-        if (sp) lab.replaceChildren(ui().icon('arrow-down', 16), el('span', PL.mbps(m.download)), el('span.pl-mk__sep', '/'), ui().icon('arrow-up', 16), el('span', PL.mbps(m.upload)));
-        else lab.textContent = sig ? WH.util.fmt(m.value, 0) : '—';
-        b.classList.toggle('is-other', m.band !== p.view.band);
-        b.setAttribute('aria-label', sig
-          ? t('planner.mk.measAria', { name: m.name, v: WH.util.dbm(m.value), band: PL.band(m.band) })
-          : t('planner.mk.measAriaSpeed', { name: m.name, d: PL.mbps(m.download), u: PL.mbps(m.upload), band: PL.band(m.band) }));
+        b.classList.toggle('is-other', PL.bands.isOther(m));
+        PL.wi.fill(b._val, lab);
+        b._no.firstChild.textContent = String(lab.no);
+        b._size = null;
+        const aria = sig
+          ? t('planner.mk.measAria', { name: m.name, v: WH.util.dbm(m.value), band: PL.bands.info(m).text })
+          : t('planner.mk.measAriaSpeed', { name: m.name, d: PL.mbps(m.download), u: PL.mbps(m.upload), band: PL.bands.info(m).text });
+        b.setAttribute('aria-label', PL.wi.active() && lab.tone ? `${aria} ${lab.text}` : aria);
       }
-      b.hidden = !has;
+      b.hidden = !has || !(showPts || S.peek === m.id);
       pos(b, m);
-      // keep the label inside the stage: measured once per content change, flipped to the left near the right edge
-      if (!b._lw || b._lk !== b._key) { b._lk = b._key; b._lw = b.hidden ? 0 : b.lastChild.offsetWidth; }
-      const sx = vp.toScreen(m).x;
-      b.classList.toggle('is-flip', sx + 10 + b._lw > st.el.clientWidth - 6 && sx - 10 - b._lw > 6);
-    }
+      // on a wall line / off the floor (SPEC 10): a warning ring on the dot, the list offers "Posunout dovnitř"
+      const offKey = `${m.x},${m.y},${S.planVer},${p.scale.mpp}`;
+      if (b._offKey !== offKey) { b._offKey = offKey; b.classList.toggle('is-off', has && PL.measOff(m)); }
+      if (!b.hidden) dots.push({ b, m, i, s: vp.toScreen(m), tone: lab.tone, d: lab.tone ? Math.abs((PL.wi.row(m.id) || {}).delta || 0) : 0 });
+    });
     for (const [id, b] of st.meas) if (!seen.has(id)) { b.remove(); st.meas.delete(id); }
+    layoutLabels(dots);
     if (tipOwner && tipOwner !== 'map' && (tipOwner.hidden || !tipOwner.isConnected)) hideTip();
     if (S.pending) {
       pos(S.pending.anchor, S.pending.at);
       if (S.pending.h) S.pending.h.reposition();
     }
+  }
+
+  /**
+   * Place the value labels of the measurement dots (SPEC 10): each label tries right, left, above, below of its dot -
+   * full text first, then the short form ("+14", "−63", "↓245") - and takes the first spot that stays inside the stage
+   * and clear of the other dots, labels, markers and the floating controls. When even the short form has no room the dot
+   * shows its number (the sidebar list has the same numbers). Labels are DOM over the canvas, so they always sit above
+   * the range lines; their solid background + halo keeps them legible on any colour.
+   */
+  let ctrlCache = { at: 0, key: '', rects: [] };
+  function controlRects() {
+    const now = performance.now();
+    const key = `${st.el.clientWidth}x${st.el.clientHeight}|${st.sbSlot.hidden}|${!!(PL.mm && PL.mm.active)}|${st.prog.hidden}`;
+    if (key === ctrlCache.key && now - ctrlCache.at < 400) return ctrlCache.rects;
+    const sr = st.el.getBoundingClientRect();
+    const ox = sr.left + st.el.clientLeft;
+    const oy = sr.top + st.el.clientTop;
+    const rects = [...st.el.querySelectorAll(':scope > .stage__slot > *, :scope > .pl-bottom > *, :scope > .pl-progress')]
+      .filter((n) => n.offsetWidth && !n.closest('[hidden]') && getComputedStyle(n).visibility !== 'hidden')
+      .map((n) => { const r = n.getBoundingClientRect(); return { l: r.left - ox - 4, t: r.top - oy - 4, r: r.right - ox + 4, b: r.bottom - oy + 4 }; });
+    ctrlCache = { at: now, key, rects };
+    return rects;
+  }
+  const GAP = 10;   // dot radius + a little air
+  function layoutLabels(dots) {
+    if (!dots.length) { if (S.badges) { S.badges = 0; PL.notifySide(); } return; }
+    const W0 = st.el.clientWidth;
+    const H0 = st.el.clientHeight;
+    for (const d of dots) {
+      const b = d.b;
+      if (!b._size) {
+        // measured once per content change: both lengths (CSS shows one of them through data-lv)
+        b.dataset.lv = '0';
+        const w0 = b._val.offsetWidth;
+        const h = b._val.offsetHeight || 18;
+        b.dataset.lv = '1';
+        b._size = { w: [w0, b._val.offsetWidth], h };
+        delete b.dataset.lv;
+      }
+    }
+    const hit = (r, list, own) => list.some((o) => (!own || o.own !== own) && r.l < o.r && r.r > o.l && r.t < o.b && r.b > o.t);
+    const obst = dots.map((d) => ({ l: d.s.x - 9, t: d.s.y - 9, r: d.s.x + 9, b: d.s.y + 9, own: d.b }));
+    for (const k of ['router', 'node', 'inlet', 'today']) {
+      const mk = st.mk[k];
+      if (mk.hidden) continue;
+      const q = k === 'router' ? PL.P().net.router : k === 'node' ? PL.P().node.pos : k === 'inlet' ? PL.P().net.optic : PL.P().net.baseline;
+      const c = st.vp.toScreen(q);
+      const r = k === 'router' ? 19 : 16;
+      obst.push({ l: c.x - r, t: c.y - r, r: c.x + r, b: c.y + r + (k === 'today' ? 20 : 0) });
+    }
+    // the numbered pins of the "Prvotní měření" guide (28-calib-wizard.js) while it is open
+    const cs = PL.calib && PL.calib.isOpen && PL.calib.isOpen() ? PL.calib.state() : null;
+    if (cs && cs.step === 'measure') {
+      for (const s of cs.spots) {
+        if (s.state === 'done') continue;
+        const c = st.vp.toScreen({ x: Number.isFinite(s.ax) ? s.ax : s.x, y: Number.isFinite(s.ay) ? s.ay : s.y });
+        obst.push({ l: c.x - 17, t: c.y - 17, r: c.x + 17, b: c.y + 17 });
+      }
+    }
+    const ctrls = controlRects();
+    // the room names drawn on the canvas (10-core drawScene): a label first looks for a spot that leaves them readable
+    const names = S.roomLabs || [];
+    const placed = [];
+    const zoomedOut = st.vp.view.scale / (st.vp.fitScale || 1) < 0.75;
+    // the biggest changes get the room first; otherwise the list order
+    const order = dots.slice().sort((a, b) => b.d - a.d || a.i - b.i);
+    let badges = 0;
+    // beside the dot, above / below it, then diagonally off one of its corners
+    const SIDES = ['r', 'l', 't', 'b', 'tr', 'tl', 'br', 'bl'];
+    const offset = (s, ww, h) => {
+      if (s === 'r') return [GAP, -h / 2];
+      if (s === 'l') return [-GAP - ww, -h / 2];
+      if (s === 't') return [-ww / 2, -GAP - h + 2];
+      if (s === 'b') return [-ww / 2, GAP - 2];
+      return [s[1] === 'r' ? 7 : -7 - ww, s[0] === 't' ? -6 - h : 6];
+    };
+    for (const d of order) {
+      const b = d.b;
+      const { w, h } = b._size;
+      const sides = SIDES.slice();
+      if (b._side && b._side !== 'r' && sides.includes(b._side)) sides.unshift(sides.splice(sides.indexOf(b._side), 1)[0]);   // stable while dragging
+      let pick = null;
+      // full text clear of the room names, the short form clear of them, then (crowded small maps, phones) the
+      // full / short text over a name - a room name stays readable before a label keeps its long form
+      const lvs = zoomedOut ? [1] : [0, 1];
+      find: for (const soft of names.length ? [true, false] : [false]) {
+        for (const lv of lvs) {
+          const ww = w[lv];
+          for (const s of sides) {
+            const [dx, dy] = offset(s, ww, h);
+            const r = { l: d.s.x + dx, t: d.s.y + dy, r: d.s.x + dx + ww, b: d.s.y + dy + h };
+            if (r.l < 4 || r.t < 4 || r.r > W0 - 4 || r.b > H0 - 4) continue;
+            if (hit(r, obst, b) || hit(r, placed) || hit(r, ctrls) || (soft && hit(r, names))) continue;
+            pick = { lv, s, dx, dy, r };
+            break find;
+          }
+        }
+      }
+      if (pick) {
+        placed.push(pick.r);
+        b.dataset.lv = String(pick.lv);
+        b._side = pick.s;
+        b._val.style.transform = `translate(${Math.round(pick.dx)}px,${Math.round(pick.dy)}px)`;
+        b._lr = { l: pick.dx, t: pick.dy, r: pick.dx + w[pick.lv], b: pick.dy + h };
+      } else {
+        // no room at all: the dot's number (top right of the dot), the full text stays in its tooltip and the list
+        b.dataset.lv = '2';
+        b._lr = { l: 2, t: -20, r: 18, b: -4 };
+        const g = b._no.firstChild;
+        if (g.dataset.glyph !== g.textContent) centerGlyph(g);
+        badges += 1;
+      }
+    }
+    if (S.badges !== badges) { S.badges = badges; PL.notifySide(); }
   }
 
   function markerLabels() {
@@ -447,24 +576,31 @@
     if (!room || !S.ctx || !S.offs) { hideTip(); return; }
     const d = E.model.pointSignalDetail(S.ctx, p, E.model.fieldParams(pr, 'trial', { offsets: S.offs }));
     const nodeOn = pr.node.mode !== 'none';
+    const auto = E.model.isAuto(pr.view.band);
     const out = [
       el('div.pl-tip__title', room.name),
-      line(el('i.pl-sw', { style: { background: PL.qVar(d.combined) } }), el('b.num', WH.util.dbm(d.combined)), el('span.pl-tip__dot', '·'), el('span', PL.qWord(d.combined))),
+      line(el('i.pl-sw', { style: { background: PL.qVar(d.combined) } }), el('b.num', WH.util.dbm(d.combined)), el('span.pl-tip__dot', '·'), el('span', PL.qWord(d.combined)),
+        // Auto (SPEC 13): the band a steering device would use here
+        auto && d.band ? el('span.pl-tip__dot', '·') : null, auto && d.band ? el('span', PL.bands.ghz(d.band)) : null),
     ];
     if ((PL.moved() || nodeOn) && Number.isFinite(d.baseline)) out.push(line({ class: 'text-muted' }, t('planner.tip.delta', { d: PL.db(d.combined - d.baseline) })));
     // what the walls on the way cost on this band (2.4 GHz gets through more easily, SPEC 7.1)
-    const wl = PL.pathLoss(pr.net.router, p, pr.view.band);
+    const wl = PL.pathLoss(pr.net.router, p, auto ? d.band : pr.view.band);
     if (Number.isFinite(wl) && wl >= 0.5) out.push(line({ class: 'text-muted' }, t('planner.tip.walls', { d: WH.util.fmt(wl, 0) })));
     if (nodeOn && d.node !== null) out.push(line({ class: 'text-muted' }, t(d.bestSource === 'node' ? 'planner.tip.fromNode' : 'planner.tip.fromRouter')));
     if (d.weakBackhaul) out.push(line({ class: 'pl-tip__warn' }, t('planner.tip.weakBackhaul')));
     if (S.sp) {
       const sp = S.sp;
-      if (sp.reason === 'node') out.push(line({ class: 'text-muted' }, t('planner.tip.speedNode')));
-      else if (!sp.curve) out.push(line({ class: 'text-muted' }, t('planner.tip.speedNone')));
+      if (!sp.curve) out.push(line({ class: 'text-muted' }, t('planner.tip.speedNone')));
       else {
-        const r = E.speed.predict(sp.curve, d.router, E.speed.toLimits(PL.speedLimits(pr)));
-        if (r) out.push(speedLine(r.down, r.up));
-        else out.push(line({ class: 'text-muted' }, t('planner.tip.speedWeak')));
+        // the same rule as the Speed map (SPEC 10): the stronger source, the node's link and ceiling, the plan
+        const ps = E.speed.pointSpeed(S.ctx, p, E.model.fieldParams(pr, 'trial', { offsets: S.offs }), sp.curve, PL.speedLimits(pr), { backhaulCurve: sp.bhCurve || undefined, link: sp.link || undefined });
+        if (ps.known) out.push(speedLine(ps.down, ps.up));
+        else out.push(line({ class: 'text-muted' }, t(ps.reason === 'backhaul' ? 'planner.tip.speedBh' : 'planner.tip.speedWeak')));
+        const k = ps.known && ps.limitedBy ? ps.limitedBy : null;
+        if (k) out.push(line({ class: 'pl-tip__cap' }, ui().icon('lock', 16), el('span', PL.wi.capText({ k, v: ps.capDown }))));
+        // the map's speeds keep the planning reserve, the ceilings are the raw numbers: say why they differ
+        if (ps.known && pr.goal.reserve > 0) out.push(line({ class: 'text-muted text-xs' }, t('planner.tip.reserve', { r: WH.util.fmtPct(pr.goal.reserve) })));
       }
     }
     showTipAt(out, cx, cy);
@@ -485,17 +621,48 @@
     const m = KIND.meas.get(pr, b.dataset.id);
     if (!m) return;
     const sig = Number.isFinite(m.value);
-    const out = [el('div.pl-tip__title', m.name), line(sig ? el('b.num', WH.util.dbm(m.value)) : el('span', t('planner.m.sigEstimated')), el('span.pl-tip__dot', '·'), el('span', `${PL.band(m.band)} ${t('planner.ghz')}`))];
-    if (S.ctx && S.offs) {
-      const model = WH.engine.model.softSignal(S.ctx, pr.net.baseline, m, m.band, WH.engine.model.offsetFor(S.offs, m.band));
+    const bi = PL.bands.info(m);
+    const out = [el('div.pl-tip__title', m.name), line(sig ? el('b.num', WH.util.dbm(m.value)) : el('span', t('planner.m.sigEstimated')), el('span.pl-tip__dot', '·'), el('span', bi.text))];
+    if (bi.kind === 'none') out.push(line({ class: 'pl-tip__warn' }, t('planner.bd.unverified')));
+    if (S.ctx && S.offs && bi.band) {
+      const model = WH.engine.model.softSignal(S.ctx, pr.net.baseline, m, bi.band, WH.engine.model.offsetFor(S.offs, bi.band));
       out.push(line({ class: 'text-muted' }, sig ? t('planner.tip.model', { v: WH.util.dbm(model), d: PL.db(m.value - model) }) : t('planner.tip.modelOnly', { v: WH.util.dbm(model) })));
     }
     if (m.download !== null || m.upload !== null) out.push(speedLine(m.download, m.upload));
     if (Number.isFinite(m.ping)) out.push(line({ class: 'text-muted' }, t('planner.m.pingJitter', { p: WH.util.fmt(m.ping, 0), j: WH.util.fmt(Number.isFinite(m.jitter) ? m.jitter : 0, 0) })));
     if (m.device) out.push(line({ class: 'text-muted' }, PL.icon(PL.dev.iconOf(m.device), 16), PL.dev.label(m.device)));
+    if (m.wifi && PL.wifiLine) { const wl = PL.wifiLine(m.wifi); if (wl) out.push(line({ class: 'text-muted' }, PL.icon('wifi', 16), wl)); }
+    // SPEC 10: what the moved router / the second node would do here (measured, model today / new, predicted, the limit)
+    out.push(...PL.wi.tip(m));
+    if (PL.measOff(m)) out.push(line({ class: 'pl-tip__warn' }, t('planner.wi.off')));
     showTipAt(out, cx, cy);
     tipOwner = b;
   }
+  /** Show one measurement on the map: its tooltip at the dot and a short pulse (the what-if list in the sidebar). */
+  PL.showMeas = (id) => {
+    let b = st && st.meas.get(id);
+    if (!b) return;
+    // layer "Body měření" off: this one dot comes up for the pulse, then hides again
+    if (b.hidden && PL.P().view.points === false && PL.P().plan.rooms.length) {
+      clearTimeout(S.peekTimer);
+      S.peek = id;
+      place();
+      S.peekTimer = setTimeout(() => { S.peek = null; if (tipOwner === b) hideTip(); place(); }, 3300);
+      b = st.meas.get(id);
+    }
+    if (!b || b.hidden) return;
+    const r = b.getBoundingClientRect();
+    const sr = st.el.getBoundingClientRect();
+    if (r.right < sr.left || r.left > sr.right || r.bottom < sr.top || r.top > sr.bottom) { PL.panBy(sr.left + sr.width / 2 - (r.left + r.width / 2), sr.top + sr.height / 2 - (r.top + r.height / 2)); }
+    requestAnimationFrame(() => {
+      markerTip(b);
+      b.classList.remove('is-pulse');
+      void b.offsetWidth;
+      b.classList.add('is-pulse');
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => { if (tipOwner === b) hideTip(); b.classList.remove('is-pulse'); }, 3200);
+    });
+  };
 
   // ---------------------------------------------------------------------------------------------------------------
   // actions: move router, back to today, mark as today, measurements
@@ -582,12 +749,18 @@
     let r = null;
     try {
       r = await E.optimize.find(ctx, grid, {
-        band: p.view.band, goalRoom: g.room === 'all' ? null : g.room, allowedRoom: g.allowedRoom === 'any' ? null : g.allowedRoom,
+        // Auto (SPEC 13): the router's own bands + steering thresholds, so a 6 GHz router is searched on 6 GHz too
+        band: p.view.band, bands: E.model.routerBandList(p), steer: E.model.steerOf(p),
+        goalRoom: g.room === 'all' ? null : g.room, allowedRoom: g.allowedRoom === 'any' ? null : g.allowedRoom,
         threshold: p.model.threshold, excluded: g.excluded, router: { ...p.net.router }, node: E.model.nodeParams(p), offsets: { ...S.offs }, speed,
       }, { onProgress: (f) => st.progBar.setValue(f), signal: ac.signal });
     } catch (e) {
       if (e && e.name === 'AbortError') ui().toast({ i18n: 'planner.opt.cancelled' }, { ms: 2200 });
-      else { console.error('[planner] optimizer failed', e); ui().toast({ i18n: e && /^err\./.test(e.message) ? e.message : 'planner.opt.failed' }, { kind: 'error' }); }
+      else {
+        // an engine refusal (err.*) is an explained situation, anything else a bug: both get the specific toast
+        const known = !!(e && /^err\./.test(e.message));
+        PL.report(e, 'planner.optimize', { bug: !known, toast: { i18n: known ? e.message : 'planner.opt.failed' } });
+      }
     } finally {
       S.opt = null;
       if (st) { st.prog.hidden = true; st.el.classList.remove('stage--loading'); }
@@ -628,11 +801,18 @@
       return { cls: 'legend--diff', title: t('planner.legend.diff'), hint: 'diffView', stops: ['--diff-neg', '--diff-zero', '--diff-pos'], words: [['planner.legend.worse', 0], ['planner.legend.same', 0.5], ['planner.legend.better', 1]], ticks: [[0, PL.db(-10)], [0.5, '0'], [1, PL.db(10)]] };
     }
     if (S.mode === 'speed') {
-      return { cls: 'pl-legend--speed', title: t('planner.legend.speed', { d: PL.mbps(g.targetDown), u: PL.mbps(g.targetUp) }), hint: 'speedView', stops: ['--heat-1', '--heat-3', '--heat-5', '--heat-6'], words: [['planner.legend.below', 0], ['planner.legend.meets', 1]], ticks: [0, 50, 100, 150].map((n, i) => [i / 3, WH.util.fmtPct(n)]), unknown: true };
+      // SPEC 10: what the hatch means ("omezí propojení s routerem (≈ 300 Mb/s)")
+      let cap = '';
+      if (S.capHatch && S.sp && S.sp.capKind) {
+        const l = S.sp.link || {};
+        const v = S.sp.capKind === 'device' ? p.node.maxMbps : Number.isFinite(l.capDown) ? l.capDown : l.down;
+        cap = t('planner.legend.cap', { what: PL.wi.capNoun({ k: S.sp.capKind, v: Number.isFinite(v) ? v : null }) });
+      }
+      return { cls: 'pl-legend--speed', title: t('planner.legend.speed', { d: PL.mbps(g.targetDown), u: PL.mbps(g.targetUp) }), hint: 'speedView', stops: ['--heat-1', '--heat-3', '--heat-5', '--heat-6'], words: [['planner.legend.below', 0], ['planner.legend.meets', 1]], ticks: [0, 50, 100, 150].map((n, i) => [i / 3, WH.util.fmtPct(n)]), unknown: true, cap };
     }
     const cb = v.palette === 'cb';
     return {
-      cls: cb ? 'legend--cb' : '', title: t('planner.legend.signal', { b: PL.band(v.band) }), hint: 'dbm',
+      cls: cb ? 'legend--cb' : '', title: t('planner.legend.signal', { b: PL.bandText(v.band) }), hint: 'dbm',
       stops: [1, 2, 3, 4, 5, 6].map((i) => (cb ? `--heat-cb-${i}` : `--heat-${i}`)),
       // each word sits over its own part of the scale (weak -75..-67, good -67..-50), so the "good from" marker
       // falls between "Weak" and "Good"
@@ -643,12 +823,22 @@
   }
   PL.legendSpec = legendSpec;
 
+  /** Auto: [[band, % of the target floor]] of the trial scenario (the bands the router sends, 6 -> 2.4), else null. */
+  function zoneShare() {
+    const a = S.a;
+    const p = PL.P();
+    if (!a || !WH.engine.model.isAuto(p.view.band) || !a.bandShare || !a.bandShare.trial) return null;
+    const sh = a.bandShare.trial;
+    const out = [6, 5, 2.4].filter((b) => Number.isFinite(sh[WH.engine.units.bandKey(b)]) && WH.engine.model.routerBandList(p).includes(b)).map((b) => [b, Math.round(sh[WH.engine.units.bandKey(b)])]);
+    return out.length > 1 ? out : null;
+  }
   let legendKey = '';
   function renderLegend() {
     if (!st) return;
     const L = legendSpec();
     const p = PL.P();
-    const key = JSON.stringify(L) + p.view.ranges + p.model.rangeThreshold + WH.i18n.lang;
+    const rb = WH.engine.model.routerBandList(p);
+    const key = JSON.stringify(L) + p.view.ranges + p.model.rangeThreshold + WH.i18n.lang + JSON.stringify(zoneShare()) + rb.join(',');
     if (key === legendKey) return;
     legendKey = key;
     const box = st.legend;
@@ -662,8 +852,16 @@
       ticks,
     ];
     if (L.unknown) parts.push(el('div.pl-legend__extra', el('i.pl-sw.pl-sw--unknown'), t('planner.legend.unknown')));
+    if (L.cap) parts.push(el('div.pl-legend__extra.pl-legend__cap', el('i.pl-sw.pl-sw--cap'), el('span', L.cap)));
+    // Auto (SPEC 13): where a steering device would be on which band ("Kde budeš na 6 / 5 / 2,4 GHz")
+    const zs = zoneShare();
+    if (zs) {
+      const list = rb.slice().reverse().map((b) => PL.band(b)).join(' / ');
+      parts.push(el('div.pl-legend__extra.pl-legend__zones', el('span.text-muted', t('planner.legend.zones', { list })),
+        zs.map(([b, v]) => el('span.pl-zone', el('i.pl-zone__sw', { style: { background: `var(${PL.BAND_VAR[b]})` } }), `${PL.band(b)}${WH.util.NBSP}${t('planner.ghz')} ${WH.util.fmtPct(v)}`)), ui().hint('steer')));
+    }
     if (p.view.ranges && S.mode !== 'speed') {
-      parts.push(el('div.pl-legend__extra.pl-legend__ranges', BANDS.map((b) => el('span', el(`i.pl-dash.pl-dash--b${String(b).replace('.', '')}`, { style: { borderColor: `var(${PL.BAND_VAR[b]})` } }), PL.band(b))), el('span.text-muted', t('planner.legend.rangeAt', { v: WH.util.dbm(p.model.rangeThreshold) })), ui().hint('rangeThreshold')));
+      parts.push(el('div.pl-legend__extra.pl-legend__ranges', rb.map((b) => el('span', el(`i.pl-dash.pl-dash--b${String(b).replace('.', '')}`, { style: { borderColor: `var(${PL.BAND_VAR[b]})` } }), PL.band(b))), el('span.text-muted', t('planner.legend.rangeAt', { v: WH.util.dbm(p.model.rangeThreshold) })), ui().hint('rangeThreshold')));
     }
     box.replaceChildren(...parts);
   }
@@ -673,8 +871,17 @@
     if (!st) return;
     const v = PL.P().view;
     st.views.setValue(v.layer, true);
+    // SPEC 13: Auto only while the router sends ≥ 2 bands; how many measurements each band has (a count on its button)
+    const autoOk = PL.bands.autoOk(PL.P());
+    const ab = st.bands.button('auto');
+    ab.hidden = !autoOk;
+    st.bands.setDisabled('auto', !autoOk);
     st.bands.setValue(v.band, true);
-    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.values || v.ranges);
+    PL.bands.paintCounts(st.bands);
+    // a dot on Vrstvy while the map hides a layer it shows by default (SPEC 10.2) - e.g. the measurement dots stay hidden
+    // after a reload; layers switched ON (range lines, dBm numbers) are visible on the map anyway
+    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.points === false || v.whatif === false);
+    if (layersPop) layersPop.sync();
     const p = PL.P();
     st.noplan.hidden = p.plan.rooms.length > 0;
     paintBanner(p, v);
@@ -691,32 +898,28 @@
     const show = v.layer === 'speed' && !!sp && !sp.ratio && p.plan.rooms.length > 0;
     let key = '';
     if (show) {
-      const node = sp.reason === 'node';
+      // (a second node no longer makes the speed unknown - SPEC 10 - so the banner is only about the speed tests)
       const d = sp.diag || { count: 0, needs: 'tests' };
-      key = [node ? 'node' : d.needs, d.count, v.band, p.goal.device].join('|');
+      key = [d.needs, d.count, v.band, p.goal.device].join('|');
       st.sb._dkey = key;
       const ck = [key, WH.i18n.lang, S.tool, S.measVer].join('|');
       if (st.sb._key !== ck) {
         st.sb._key = ck;
         const n = Math.min(2, d.count || 0);
         st.sbSteps.replaceChildren(...[0, 1].map((i) => el('i' + (i < n ? '.is-on' : ''))));
-        st.sbSteps.hidden = node;
-        st.sbCount.hidden = node;
         st.sbCount.textContent = `${n} / 2`;
-        st.sbTitle.textContent = t(node ? 'planner.sb.nodeT' : 'planner.sb.title');
+        st.sbTitle.textContent = t('planner.sb.title');
         // the sentence in two lengths: phones show the short one (container query), the "?" explains the rest
         let k = 'planner.sb.why';
-        if (node) k = 'planner.sb.nodeB';
-        else if (S.tool === 'measure' && !PL.isPhone()) k = 'planner.sb.clickMap';
+        if (S.tool === 'measure' && !PL.isPhone()) k = 'planner.sb.clickMap';
         else if (d.needs === 'spread') k = 'planner.sb.spread';
         else {
           const dev = String(p.goal.device || '').toLowerCase();
-          const other = p.measurements.some((m) => m.band === v.band && m.download !== null && m.upload !== null && String(m.device || '').toLowerCase() !== dev);
+          const other = p.measurements.some((m) => (v.band === 'auto' || PL.bands.info(m).band === v.band) && m.download !== null && m.upload !== null && String(m.device || '').toLowerCase() !== dev);
           if (other && n < 2) k = 'planner.sb.otherDev';
         }
-        const prm = { device: PL.dev.label(p.goal.device), band: PL.band(v.band) };
+        const prm = { device: PL.dev.label(p.goal.device), band: PL.bandText(v.band) };
         st.sbSub.replaceChildren(el('span.pl-sb__long', t(k, prm)), el('span.pl-sb__short', t(WH.i18n.has(k + 'Short') ? k + 'Short' : k, prm)));
-        st.sbAdd.hidden = node;
       }
     }
     if (show && S.sbHidden !== undefined && S.sbHidden !== key) S.sbHidden = undefined;
@@ -759,10 +962,31 @@
     const tx = (w - bw * scale) / 2 - x0 * scale;
     const ty = head - y0 * scale;
     const col = PL.col;
-    PL.drawScene(c, { s: scale, tx, ty, dpr, w, h, z: 1.25, bg: col('--stage-bg') });
+    const roomLabs = [];
+    PL.drawScene(c, { s: scale, tx, ty, dpr, w, h, z: 1.25, bg: col('--stage-bg'), roomLabs });
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     const fam = PL.font();
     const sc = (q) => [q.x * W * scale + tx, q.y * H * scale + ty];
+    // value labels like on screen: right / left / above / below of the dot, clear of the other labels, dots, markers
+    // and room names - the full text first, then the short one ("+14", "↓245"), else the full text to the right
+    const taken = [...roomLabs];
+    const box = (q, r) => { const [x, y] = sc(q); return { l: x - r, t: y - r, r: x + r, b: y + r }; };
+    // the layers as on screen: "Body měření" off = no dots, "Předpověď u bodů" off = the measured values only (wi.label)
+    const pts = p.view.points !== false ? p.measurements : [];
+    for (const ms of pts) taken.push(box(ms, 8));
+    taken.push(box(p.net.router, 16), box(p.net.optic, 10));
+    if (p.node.mode !== 'none') taken.push(box(p.node.pos, 15));
+    if (PL.moved()) taken.push(box(p.net.baseline, 13));
+    const hits = (a) => a.l < 2 || a.t < head || a.r > w - 2 || a.b > h - foot || taken.some((b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t);
+    const spot = (txt, x, y) => {
+      const tw = c.measureText(txt).width;
+      const hh = 8;
+      for (const [lx, cy] of [[x + 9, y], [x - 9 - tw, y], [x - tw / 2, y - 10 - hh], [x - tw / 2, y + 10 + hh]]) {
+        const r = { l: lx - 2, t: cy - hh, r: lx + tw + 2, b: cy + hh };
+        if (!hits(r)) return { x: lx, y: cy, r };
+      }
+      return null;
+    };
     const disc = (q, r, fill, txt, dashed, ink) => {
       const [x, y] = sc(q);
       c.beginPath();
@@ -775,21 +999,29 @@
       c.setLineDash([]);
       if (txt) { c.fillStyle = ink; c.font = `800 ${Math.round(r * 0.95)}px ${fam}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(txt, x, y + 0.5); }
     };
-    for (const ms of p.measurements) {
+    for (const ms of pts) {
+      const i = p.measurements.indexOf(ms);
       const sig = Number.isFinite(ms.value);
       disc(ms, 6, sig ? `rgb(${WH.engine.raster.signalColor(ms.value, p.view.palette)})` : col('--pl-unknown'), '');
       const [x, y] = sc(ms);
-      const sp = (S.mode === 'speed' || !sig) && ms.download !== null && ms.upload !== null;
-      const label = sp ? t('planner.mk.speedLabel', { d: PL.mbps(ms.download), u: PL.mbps(ms.upload) }) : sig ? WH.util.fmt(ms.value, 0) : '';
+      // the same words as on screen ("−72 → −58 (+14)" while the scenario differs from today)
+      const lab = PL.wi.label(ms, i, S.mode === 'speed' ? 'speed' : p.view.layer);
+      const label = lab.text.replace(/^—$/, '');
       if (!label) continue;
       c.font = `700 11px ${fam}`;
       c.textAlign = 'left';
       c.textBaseline = 'middle';
+      const short = lab.shortText && lab.shortText !== label ? lab.shortText : '';
+      let at = spot(label, x, y);
+      let txt = label;
+      if (!at && short) { at = spot(short, x, y); txt = short; }
+      if (!at) at = { x: x + 9, y, r: null };
+      if (at.r) taken.push(at.r);
       c.lineWidth = 3;
       c.strokeStyle = col('--map-halo');
-      c.strokeText(label, x + 9, y);
+      c.strokeText(txt, at.x, at.y);
       c.fillStyle = col('--map-label');
-      c.fillText(label, x + 9, y);
+      c.fillText(txt, at.x, at.y);
     }
     disc(p.net.optic, 9, col('--pl-inlet'), '');
     if (PL.moved()) {
@@ -809,8 +1041,8 @@
     const target = p.goal.room === 'all' ? t('planner.res.all') : PL.roomName(p.goal.room);
     const st2 = a ? a.stats : null;
     let title = '';
-    if (S.mode === 'speed' && S.sp && S.sp.stats) title = t('planner.export.speed', { b: PL.band(p.view.band), target, v: WH.util.fmtPct(S.sp.stats.coverage) });
-    else if (st2) title = t(S.mode === 'diff' ? 'planner.export.diff' : 'planner.export.title', { b: PL.band(p.view.band), target, v: WH.util.fmtPct(st2.trial.coverage), a: WH.util.fmtPct(st2.today.coverage) });
+    if (S.mode === 'speed' && S.sp && S.sp.stats) title = t('planner.export.speed', { b: PL.bandText(p.view.band), target, v: WH.util.fmtPct(S.sp.stats.coverage) });
+    else if (st2) title = t(S.mode === 'diff' ? 'planner.export.diff' : 'planner.export.title', { b: PL.bandText(p.view.band), target, v: WH.util.fmtPct(st2.trial.coverage), a: WH.util.fmtPct(st2.today.coverage) });
     c.textAlign = 'left';
     c.textBaseline = 'alphabetic';
     c.fillStyle = col('--ink');
@@ -853,22 +1085,62 @@
     return b;
   }
 
+  let layersPop = null;   // the open "Vrstvy" popover {h, sync}: follows L / P and every change while it is open
   function openLayers(btn) {
     const v = PL.P().view;
+    const sws = {};
     const sw = (key, prop, hint, k) => {
       const s = ui().switch({ checked: !!v[prop], i18n: key, hint, onChange: (on) => setView({ [prop]: on }) });
+      s.dataset.layer = prop;
       if (k) s.append(el('span.pl-kbdchip', ui().kbd(k)));   // the "?" stays next to the words, the key goes to the right edge
+      sws[prop] = s;
       return s;
     };
-    ui().popover(btn, el('div.stack.gap-3.pl-layers',
+    // why "Předpověď u bodů" is greyed: in its "?" (data-hint-note) and, for screen readers, on the switch itself
+    const why = el('span.sr-only', { id: WH.util.uid('pl-why') });
+    const content = el('div.stack.gap-3.pl-layers',
       el('div.row.fw-700', el('span', t('planner.layers.title')), ui().hint('layers')),
       sw('planner.layers.ranges', 'ranges', 'ranges', 'L'),
       sw('planner.layers.walls', 'walls'),
       sw('planner.layers.furniture', 'furniture'),
       sw('planner.layers.labels', 'labels'),
-      sw('planner.layers.values', 'values')),
-    { placement: 'top', align: 'start', width: 272 });
+      sw('planner.layers.values', 'values'),
+      sw('planner.layers.points', 'points', 'layerPoints'),
+      sw('planner.layers.whatif', 'whatif', 'layerWhatIf', 'P'),
+      why);
+    const sync = () => {
+      const q = PL.P().view;
+      for (const [prop, s] of Object.entries(sws)) s.setChecked(!!q[prop]);
+      const r = PL.wi.layerWhy();
+      const w = sws.whatif;
+      w.input.disabled = !!r;
+      w.classList.toggle('is-disabled', !!r);
+      const hb = w.querySelector('.hint');
+      if (hb) { if (r) hb.dataset.hintNote = `planner.layers.why.${r}`; else delete hb.dataset.hintNote; }
+      why.textContent = r ? t(`planner.layers.why.${r}`) : '';
+      if (r) w.input.setAttribute('aria-describedby', why.id); else w.input.removeAttribute('aria-describedby');
+    };
+    sync();
+    const h = ui().popover(btn, content, { placement: 'top', align: 'start', width: 312, onClose: () => { if (layersPop && layersPop.h === h) layersPop = null; } });
+    layersPop = { h, sync };
   }
+
+  let wiToast = null;
+  /** P: the layer "Předpověď u bodů" on / off with a short toast (+ why it has nothing to show right now). */
+  function toggleWhatIf() {
+    const on = PL.P().view.whatif === false;
+    setView({ whatif: on });
+    const r = on ? PL.wi.layerWhy() : null;
+    if (wiToast) wiToast.close();
+    wiToast = ui().toast({ text: t(on ? 'planner.layers.whatifOn' : 'planner.layers.whatifOff') + (r ? `. ${t(`planner.layers.why.${r}`)}` : '') }, { kind: 'info', ms: r ? 5000 : 2200 });
+  }
+  PL.toggleWhatIf = toggleWhatIf;
+  /** Measuring with the dots hidden would put every new point out of sight: the layer "Body měření" comes back on. */
+  PL.ensurePoints = () => {
+    if (!st || PL.P().view.points !== false) return;
+    setView({ points: true });
+    ui().toast({ i18n: 'planner.layers.pointsBack' }, { kind: 'info', ms: 4000 });
+  };
 
   function mount(root) {
     const U = WH.util;
@@ -886,11 +1158,16 @@
     diffLabel.after(el('span.pl-short', { 'data-i18n': 'planner.view.diffShort' }, t('planner.view.diffShort')));
     const tl = el('div.stage__slot.stage__tl', el('div.toolbar', views, ui().hint('viewSwitch')));
     // top-right: band switch
-    const bands = ui().segmented(BANDS.map((b) => ({ value: b, label: PL.band(b), tip: `planner.band.tip${String(b).replace('.', '')}`, kbd: 'B' })), {
+    // SPEC 13: 2,4 · 5 · 6 · Auto (Auto while the router sends ≥ 2 bands; each band shows its measurement count)
+    const bands = ui().segmented([...BANDS.map((b) => ({ value: b, label: PL.band(b), tip: `planner.band.tip${String(b).replace('.', '')}`, kbd: 'B' })), { value: 'auto', i18n: 'planner.bd.auto', tip: 'planner.bd.autoTip', kbd: 'B' }], {
       value: PL.P().view.band, aria: 'planner.band.aria', onChange: (b) => setView({ band: b }),
     });
-    BANDS.forEach((b) => { const k = `planner.band.tip${String(b).replace('.', '')}`; const btn = bands.button(b); btn.setAttribute('data-i18n-aria', k); btn.setAttribute('aria-label', t(k)); });
-    const tr = el('div.stage__slot.stage__tr', el('div.toolbar', bands, el('span.toolbar__label', { 'data-i18n': 'planner.ghz' }, t('planner.ghz')), ui().hint('band')));
+    bands.classList.add('pl-bands');
+    BANDS.forEach((b) => { const k = `planner.band.tip${String(b).replace('.', '')}`; const btn = bands.button(b); btn.setAttribute('aria-label', t(k)); });
+    bands.button('auto').classList.add('pl-bands__auto');
+    // the unit belongs to the numbers: "2,4 · 5 · 6 GHz · Auto" (not "Auto GHz"); decorative - every button's label says GHz
+    bands.button('auto').before(el('span.toolbar__label.pl-bands__unit', { 'data-i18n': 'planner.ghz', 'aria-hidden': 'true' }, t('planner.ghz')));
+    const tr = el('div.stage__slot.stage__tr', el('div.toolbar', bands, ui().hint('band')));
     // bottom: tools | legend | zoom
     const toolBtns = { router: toolButton('router', 'router', 'planner.tool.router', 'R'), measure: toolButton('measure', 'measure', 'planner.tool.measure', 'M') };
     const layersBtn = ui().button({ icon: 'layers', i18n: 'planner.tool.layers', variant: 'ghost', tip: 'planner.tool.layers.tip', onClick: () => openLayers(layersBtn) });
@@ -983,9 +1260,17 @@
     canvas.addEventListener('pointerleave', () => { hoverEv = null; hideTip(); });
     vstage.addEventListener('click', (e) => {
       if (!fromMap(e)) return;
-      const w = toWorld(e.clientX, e.clientY);
-      const room = PL.roomAt(w);
+      let w = toWorld(e.clientX, e.clientY);
+      let room = PL.roomAt(w);
+      if (!room && PL.P().plan.rooms.length) {
+        // a tap on the thick outer wall line / just outside the flat counts for the room behind it (SPEC 10: a point
+        // never stays on the wall line - measPoint steps it inside)
+        const f = WH.engine.project.nearestFloor(PL.P().plan, w);
+        if (f && Math.hypot((f.x - w.x) * W, (f.y - w.y) * H) * st.vp.view.scale <= 12) { w = PL.measPoint(f); room = PL.roomAt(w); }
+      }
       if (!room) return;
+      // "Prvotní měření" guide (28-calib-wizard.js): a tap near a suggested-spot pin selects it / places "my own spot"
+      if (PL.calib && PL.calib.mapClick && PL.calib.mapClick(w)) return;
       if (S.tool === 'measure') {
         // the phone sheet stays open: a tap elsewhere moves a new point (a mistap), or switches to a new one
         const pend = S.pending;
@@ -1025,6 +1310,9 @@
       const onlyView = e.topics.every((x) => x === 'view' || x === 'history' || x === 'meta' || x === 'prefs');
       const a = JSON.parse(lastView);
       lastView = view;
+      // the engine context carries the measured model fit (model.fit) only while calibration is on: undo, the agent tools
+      // or any other path that flips view.calibrate needs a fresh context
+      if (a.calibrate !== PL.P().view.calibrate) S.geomDirty = true;
       if (a.layer !== 'speed' && PL.P().view.layer === 'speed') S.sbHidden = undefined;   // banner x lasts until the view is entered again
       if (!S.visible) { S.stale = true; return; }
       if (tipOwner === 'map') hideTip();
@@ -1069,9 +1357,16 @@
     const busy = () => !!drag;
     K('r', 'planner.keys.router', () => setTool('router'), { order: 1 });
     K('m', 'planner.keys.measure', () => setTool(S.tool === 'measure' ? 'router' : 'measure'), { order: 2 });
-    K('b', 'planner.keys.band', () => { if (busy()) return; const v = PL.P().view.band; setView({ band: BANDS[(BANDS.indexOf(v) + 1) % 3] }); ui().announce(PL.band(PL.P().view.band) + ' ' + t('planner.ghz')); }, { order: 3 });
+    K('b', 'planner.keys.band', () => {
+      if (busy()) return;
+      const cyc = PL.bands.autoOk(PL.P()) ? [...BANDS, 'auto'] : BANDS;
+      const v = PL.P().view.band;
+      setView({ band: cyc[(cyc.indexOf(v) + 1) % cyc.length] });
+      ui().announce(PL.bandText(PL.P().view.band));
+    }, { order: 3 });
     K('v', 'planner.keys.view', () => { const v = PL.P().view.layer; const n = VIEWS[(VIEWS.indexOf(v) + 1) % 3]; setView({ layer: n }); ui().announce(t(`planner.view.${n}.tip`)); }, { order: 4 });
     K('l', 'planner.keys.ranges', () => { const on = !PL.P().view.ranges; setView({ ranges: on }); ui().announce(t(on ? 'planner.layers.rangesOn' : 'planner.layers.rangesOff')); }, { order: 5 });
+    K('p', 'planner.keys.whatif', () => { if (!busy()) toggleWhatIf(); }, { order: 5.5 });
     K('f', 'planner.keys.find', () => { findBest(); }, { order: 6 });
     K('d', 'planner.keys.today', () => { if (!busy()) backToToday(); }, { order: 7 });
     K(['arrowleft', 'arrowright', 'arrowup', 'arrowdown'], 'planner.keys.arrows', (e) => {
@@ -1107,15 +1402,15 @@
     if (!p || !p.plan.rooms.length) return;
     const E = WH.engine.project;
     const off = (q) => q && !E.floorMaskAt(p.plan, q);
-    const bad = off(p.net.router) || off(p.net.baseline) || off(p.node.pos) || p.measurements.some(off);
+    // measurements are not moved silently: the list flags them with an undoable "Posunout dovnitř" (SPEC 10)
+    const bad = off(p.net.router) || off(p.net.baseline) || off(p.node.pos);
     if (!bad) return;
     const fix = (q) => (off(q) ? PL.pt(E.nearestFloor(p.plan, q)) : q);
     store().update((pr) => {
       pr.net.router = fix(pr.net.router);
       pr.net.baseline = fix(pr.net.baseline);
       pr.node.pos = fix(pr.node.pos);
-      pr.measurements.forEach((m) => { const q = fix(m); m.x = q.x; m.y = q.y; });
-    }, ['net', 'node', 'measurements'], { quiet: true });
+    }, ['net', 'node'], { quiet: true });
     ui().toast({ i18n: 'planner.snapped' }, { kind: 'info' });
   }
 

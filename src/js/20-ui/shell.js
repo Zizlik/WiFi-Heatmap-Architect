@@ -64,14 +64,15 @@
       } catch (e) {
         reg.failed = true;
         console.error(`[WH.views] mounting "${name}" failed:`, e);
+        const rec = WH.diag ? WH.diag.record(e, { kind: 'caught', context: `views.mount:${name}`, notify: false }) : null;
         root.replaceChildren();
         showViewError(name);
-        ui.toast({ i18n: 'shell.view.error' }, { kind: 'error' });
+        ui.toast({ i18n: 'shell.view.error', action: rec && ui.diag ? { i18n: 'app.err.details', fn: () => ui.diag.showDetails(rec.id) } : undefined }, { kind: 'error' });
         return;
       }
     }
     if (reg.mounted) {
-      try { if (typeof reg.impl.show === 'function') reg.impl.show(); } catch (e) { console.error(`[WH.views] show() of "${name}" failed:`, e); }
+      try { if (typeof reg.impl.show === 'function') reg.impl.show(); } catch (e) { console.error(`[WH.views] show() of "${name}" failed:`, e); if (WH.diag) WH.diag.caught(e, `views.show:${name}`); }
     }
   }
 
@@ -131,16 +132,32 @@
   }));
 
   // ===================================================================================================================
-  // Theme
+  // Theme (SPEC 12): Automaticky (OS: light <-> Deep dark) · Světlý · Deep dark · OLED černá
+  //   pref 'theme' = 'auto' | 'light' | 'dark' | 'oled'
+  //   <html data-theme="light|dark|oled"> only when forced (auto = no attribute, CSS follows prefers-color-scheme)
+  //   <html data-scheme="light|dark"> always: the colour scheme in effect (OLED is a dark scheme) for module CSS
+  //   theme.effective() -> 'light' | 'dark' (scheme)   theme.resolved() -> 'light' | 'dark' | 'oled' (palette)
   // ===================================================================================================================
-  const THEMES = ['auto', 'light', 'dark'];
-  const THEME_ICON = { auto: 'contrast', light: 'sun', dark: 'moon' };
+  const THEMES = ['auto', 'light', 'dark', 'oled'];
+  const THEME_ICON = { auto: 'contrast', light: 'sun', dark: 'moon', oled: 'moon-star' };
+  /** Mini previews for the picker: page / surface / line / accent / ink of each palette (data, not tokens: the picker
+   *  shows the OTHER themes too). 'auto' is drawn half light, half Deep dark. */
+  const THEME_PREVIEW = {
+    light: { bg: '#f3f6fb', surface: '#ffffff', line: '#cdd6e3', accent: '#0f766e', ink: '#13233a' },
+    dark: { bg: '#0a0a0b', surface: '#161618', line: '#2e2e33', accent: '#2dd4bf', ink: '#f2f2f3' },
+    oled: { bg: '#000000', surface: '#000000', line: '#2a2a2e', accent: '#2dd4bf', ink: '#f4f4f5' },
+  };
   const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
   let cssCache = {};
 
   const theme = {
+    list: () => THEMES.slice(),
     get() { const v = WH.store.prefs.theme; return THEMES.includes(v) ? v : 'auto'; },
-    effective() { const v = theme.get(); return v === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : v; },
+    /** The concrete palette in use: 'light' | 'dark' (Deep dark) | 'oled'. */
+    resolved() { const v = theme.get(); return v === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : v; },
+    /** The colour scheme in use: 'light' | 'dark' (OLED counts as dark - canvas code that only knows light/dark keeps working). */
+    effective() { return theme.resolved() === 'light' ? 'light' : 'dark'; },
+    isDark() { return theme.effective() === 'dark'; },
     set(v) {
       if (!THEMES.includes(v)) return;
       WH.store.setPref('theme', v);
@@ -149,27 +166,79 @@
     cycle() { theme.set(THEMES[(THEMES.indexOf(theme.get()) + 1) % THEMES.length]); },
     apply() {
       const v = theme.get();
-      if (v === 'auto') document.documentElement.removeAttribute('data-theme');
-      else document.documentElement.setAttribute('data-theme', v);
+      const root = document.documentElement;
+      if (v === 'auto') root.removeAttribute('data-theme');
+      else root.setAttribute('data-theme', v);
+      root.setAttribute('data-scheme', theme.effective());
       cssCache = {};
       paintThemeButtons();
-      WH.bus.emit('theme:changed', { theme: v, effective: theme.effective() });
+      WH.bus.emit('theme:changed', { theme: v, effective: theme.effective(), resolved: theme.resolved() });
     },
+    menu: (anchor) => openThemeMenu(anchor),
+    picker: () => themePicker(),
   };
 
   function paintThemeButtons() {
     const v = theme.get();
-    for (const b of Array.from(document.querySelectorAll('#btn-theme, [data-theme-cycle]'))) {
+    for (const b of Array.from(document.querySelectorAll('#btn-theme, [data-theme-menu]'))) {
       const svg = b.querySelector('svg.icon');
       if (svg) svg.replaceWith(ui.icon(THEME_ICON[v], 20));
       b.setAttribute('data-tip', `shell.theme.${v}`);
       b.setAttribute('aria-label', t(`shell.theme.${v}`));
     }
+    for (const p of Array.from(document.querySelectorAll('.theme-picker'))) paintPicker(p);
   }
   if (mq && mq.addEventListener) {
     mq.addEventListener('change', () => {
-      if (theme.get() === 'auto') { cssCache = {}; WH.bus.emit('theme:changed', { theme: 'auto', effective: theme.effective() }); }
+      if (theme.get() !== 'auto') return;
+      cssCache = {};
+      document.documentElement.setAttribute('data-scheme', theme.effective());
+      WH.bus.emit('theme:changed', { theme: 'auto', effective: theme.effective(), resolved: theme.resolved() });
     });
+  }
+
+  /** Header / welcome / File menu: a small radio menu "Automaticky · Světlý · Deep dark · OLED černá". */
+  function openThemeMenu(anchor) {
+    if (!anchor) return null;
+    const cur = theme.get();
+    return ui.menu(anchor, [
+      { heading: true, i18n: 'theme.menu' },
+      ...THEMES.map((v) => ({ i18n: `theme.${v}`, icon: THEME_ICON[v], radio: true, checked: v === cur, onClick: () => theme.set(v) })),
+    ], { align: 'end' });
+  }
+
+  /** Help panel: the same choice as four preview tiles (radio group, arrow keys move and choose). */
+  function themePicker() {
+    const U = WH.util;
+    const root = U.el('div.theme-picker', { role: 'radiogroup', 'data-i18n-aria': 'theme.menu' });
+    for (const v of THEMES) {
+      const sw = U.el('span.theme-opt__swatch', { 'aria-hidden': 'true' });
+      const parts = v === 'auto' ? ['light', 'dark'] : [v];
+      for (const k of parts) {
+        const c = THEME_PREVIEW[k];
+        const half = U.el('span.theme-opt__half', { style: { background: c.bg } },
+          U.el('span.theme-opt__card', { style: { background: c.surface, borderColor: c.line } },
+            U.el('span.theme-opt__line', { style: { background: c.ink } }),
+            U.el('span.theme-opt__dot', { style: { background: c.accent } })));
+        sw.append(half);
+      }
+      const b = U.el('button.theme-opt', { type: 'button', role: 'radio', 'data-theme-value': v },
+        sw,
+        U.el('span.theme-opt__text', U.el('span.theme-opt__name', { 'data-i18n': `theme.${v}` }), U.el('span.theme-opt__desc', { 'data-i18n': `theme.${v}.d` })));
+      b.addEventListener('click', () => theme.set(v));
+      root.append(b);
+    }
+    radioKeys(root, '.theme-opt', (b) => theme.set(b.getAttribute('data-theme-value')));
+    paintPicker(root);
+    return root;
+  }
+  function paintPicker(root) {
+    const cur = theme.get();
+    for (const b of Array.from(root.querySelectorAll('.theme-opt'))) {
+      const on = b.getAttribute('data-theme-value') === cur;
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+      b.tabIndex = on ? 0 : -1;
+    }
   }
 
   /** Resolved value of a CSS custom property (e.g. '--map-wall'), cached until the theme changes. For canvas drawing. */
@@ -194,6 +263,7 @@
       return p;
     } catch (e) {
       console.error('[WH.shell] creating a project failed:', e);
+      if (WH.diag) WH.diag.record(e, { context: `project.create:${template}`, notify: false });
       ui.toast({ i18n: 'io.err.generic' }, { kind: 'error' });
       return null;
     }
@@ -344,6 +414,7 @@
       }
     } catch (e) {
       console.error('[WH.shell] map export failed:', e);
+      if (WH.diag) WH.diag.record(e, { context: 'file.saveMapPng', notify: false });
       ui.toast({ i18n: 'io.err.export' }, { kind: 'error' });
     }
   }
@@ -367,7 +438,8 @@
       { i18n: 'file.demo', icon: 'home', onClick: menuDemo },
       { i18n: 'file.new', icon: 'plan', onClick: menuNew },
       { sep: true },
-      { i18n: 'file.theme', icon: THEME_ICON[theme.get()], onClick: () => theme.cycle(), hidden: !!(themeBtn && themeBtn.offsetParent) },
+      // the header's theme button is hidden on very narrow phones: the same menu opens from here
+      { i18n: 'file.theme', icon: THEME_ICON[theme.get()], onClick: () => openThemeMenu(anchor), hidden: !!(themeBtn && themeBtn.offsetParent) },
       // offered by the browser (Chrome/Edge/Android) only when the app is served over https and not installed yet
       { i18n: 'file.install', icon: 'download', onClick: installApp, hidden: !(WH.pwa && WH.pwa.canInstall()) },
       { i18n: 'file.clear', icon: 'trash', danger: true, onClick: menuClear },
@@ -418,9 +490,10 @@
     return [search, list, empty];
   }
 
-  function disclosure(titleKey, iconName, bodyNodes, open) {
+  function disclosure(titleKey, iconName, bodyNodes, open, section) {
     const U = WH.util;
     const d = U.el('details.disclosure');
+    if (section) d.setAttribute('data-help-section', section);
     if (open) d.open = true;
     d.append(U.el('summary', iconName ? ui.icon(iconName, 20) : null, U.el('span', { 'data-i18n': titleKey })), U.el('div.disclosure__body', bodyNodes));
     return d;
@@ -439,11 +512,19 @@
     nodes.push(U.el('div.card.card--soft.p-3.stack', { style: { '--gap': '8px' } },
       U.el('div', U.el('b', { 'data-i18n': 'helpPanel.tour.t' }), U.el('div.text-sm.text-muted', { 'data-i18n': 'helpPanel.tour.b' })),
       U.el('div.row.row--wrap', tourBtn, keysBtn)));
+    // SPEC 9: the guided "Prvotní měření" (50-planner/28-calib-wizard.js): closes Help, opens the Wi-Fi view and the guide
+    const calib = WH.planner && WH.planner.calib && typeof WH.planner.calib.helpBlock === 'function' ? WH.planner.calib.helpBlock(() => { if (helpHandle) helpHandle.close(); }) : null;
+    if (calib) nodes.push(calib);
     // measure guide
     const guide = U.el('div.platform-guide');
-    const PLAT = [['android', 'phone'], ['iphone', 'phone'], ['windows', 'monitor'], ['mac', 'laptop'], ['linux', 'terminal'], ['speed', 'speed'], ['rules', 'check-circle']];
+    // SPEC 13: 'steer' = Wi-Fi 7 / band steering - never ask the user to pin a device to one band
+    const PLAT = [['android', 'phone'], ['iphone', 'phone'], ['windows', 'monitor'], ['mac', 'laptop'], ['linux', 'terminal'], ['speed', 'speed'], ['rules', 'check-circle'], ['steer', 'wifi']];
     for (const [k, ic] of PLAT) guide.append(U.el('div', U.el('h4', ui.icon(ic, 18), U.el('span', { 'data-i18n': `measure.${k}.t` })), U.el('p', { 'data-i18n': `measure.${k}.b` })));
-    nodes.push(disclosure('helpPanel.measure.t', 'antenna', [U.el('p.text-muted', { 'data-i18n': 'helpPanel.measure.lead' }), guide], true));
+    // SPEC 8 / 8.2: per-OS commands that copy the Wi-Fi details (Copy buttons) + the Wi-Fi helper downloads; the
+    // block is built by the planner (50-planner/27-devinfo-ui.js, same commands as its "Info o zařízení" card)
+    const cmdTips = WH.planner && typeof WH.planner.cmdTips === 'function' ? WH.planner.cmdTips({ all: true }) : null;
+    const cmd = cmdTips ? [U.el('h4.help-subhead', ui.icon('terminal', 18), U.el('span', { 'data-i18n': 'helpPanel.cmd.t' })), U.el('p.text-sm.text-muted', { 'data-i18n': 'helpPanel.cmd.lead' }), cmdTips] : [];
+    nodes.push(disclosure('helpPanel.measure.t', 'antenna', [U.el('p.text-muted', { 'data-i18n': 'helpPanel.measure.lead' }), guide, ...cmd], true));
     // on the phone: open the published page, add it to the home screen, measure where you stand (SPEC 6.2 / 6.3)
     const phone = U.el('ol.steps');
     for (const n of [1, 2, 3]) phone.append(U.el('li', U.el('span', { 'data-i18n-html': `helpPanel.phone.${n}` })));
@@ -454,20 +535,38 @@
     nodes.push(disclosure('helpPanel.speed.t', 'lock', [privacy, U.el('p.text-sm.text-muted', { 'data-i18n': 'helpPanel.speed.note' })], false));
     nodes.push(disclosure('helpPanel.glossary.t', 'help', buildGlossary(), false));
     nodes.push(disclosure('helpPanel.model.t', 'info', [U.el('p', { 'data-i18n': 'helpPanel.model.b' }), U.el('p.text-sm', { 'data-i18n-html': 'helpPanel.model.links' })], false));
+    // SPEC 12: appearance (the same four choices as the header menu, with previews)
+    nodes.push(disclosure('helpPanel.theme.t', 'contrast', [U.el('p.text-sm.text-muted', { 'data-i18n': 'helpPanel.theme.lead' }), themePicker()], false, 'theme'));
+    // SPEC 10: "Nahlásit problém" - copy a diagnostic summary (no plan data, measurements or network names)
+    const report = ui.diag && typeof ui.diag.helpBlock === 'function' ? ui.diag.helpBlock() : null;
+    if (report) nodes.push(disclosure('diag.report.t', 'flag', [report], false, 'report'));
     nodes.push(U.el('p.text-xs.text-muted.mt-4', { style: 'line-height:1.5', 'data-i18n': 'helpPanel.footer' }));
     nodes.push(U.el('p.text-xs.text-muted.help-credits', { style: 'line-height:1.5', 'data-i18n-html': 'helpPanel.credits' }));
     return nodes;
   }
 
-  function openHelp() {
-    if (helpHandle) { helpHandle.close(); return; }
-    helpHandle = ui.dialog({
-      title: { i18n: 'helpPanel.title' },
-      content: buildHelpBody(),
-      className: 'modal--drawer',
-      onClose: () => { helpHandle = null; },
-    });
-    helpHandle.el.parentNode.classList.add('modal-backdrop--drawer');
+  /** Help drawer; opts.section ('theme' | 'report') opens that section and scrolls to it (the error details use it). */
+  function openHelp(opts) {
+    const section = opts && typeof opts === 'object' && typeof opts.section === 'string' ? opts.section : '';
+    if (helpHandle && !section) { helpHandle.close(); return; }
+    if (!helpHandle) {
+      helpHandle = ui.dialog({
+        title: { i18n: 'helpPanel.title' },
+        content: buildHelpBody(),
+        className: 'modal--drawer',
+        onClose: () => { helpHandle = null; },
+      });
+      helpHandle.el.parentNode.classList.add('modal-backdrop--drawer');
+    }
+    const d = section ? helpHandle.body.querySelector(`[data-help-section="${section}"]`) : null;
+    if (d) {
+      d.open = true;
+      requestAnimationFrame(() => {
+        try { d.scrollIntoView({ block: 'start', behavior: WH.util.prefersReducedMotion() ? 'auto' : 'smooth' }); } catch (e) { /* ignore */ }
+        const s = d.querySelector('summary');
+        if (s) { try { s.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+      });
+    }
   }
 
   // ===================================================================================================================
@@ -517,7 +616,7 @@
     K({ mode: 'global', key: '1', i18n: 'keys.modeEditor', run: () => { views.go('editor'); }, order: 1 });
     K({ mode: 'global', key: '2', i18n: 'keys.modePlanner', run: () => { views.go('planner'); }, order: 2 });
     K({ mode: 'global', key: '?', i18n: 'keys.sheet', run: () => { ui.keys.sheet(); }, allowInModal: true, order: 3 });
-    K({ mode: 'global', key: 'f1', i18n: 'keys.helpPanel', run: openHelp, allowTyping: true, order: 4 });
+    K({ mode: 'global', key: 'f1', i18n: 'keys.helpPanel', run: () => openHelp(), allowTyping: true, order: 4 });
     K({ mode: 'global', key: 'ctrl+s', i18n: 'keys.save', run: () => { if (WH.io) WH.io.saveProjectSvg(); }, allowTyping: true, order: 5 });
     K({ mode: 'global', key: 'ctrl+o', i18n: 'keys.open', run: () => { pickFile(); }, allowTyping: true, order: 6 });
     K({ mode: 'global', key: 'ctrl+z', i18n: 'keys.undo', run: doUndo, repeat: true, order: 7 });
@@ -572,8 +671,8 @@
     const keys = $('btn-keys');
     if (keys) keys.addEventListener('click', () => ui.keys.sheet());
     const help = $('btn-help');
-    if (help) help.addEventListener('click', openHelp);
-    for (const b of Array.from(document.querySelectorAll('#btn-theme, [data-theme-cycle]'))) b.addEventListener('click', () => theme.cycle());
+    if (help) help.addEventListener('click', () => openHelp());
+    for (const b of Array.from(document.querySelectorAll('#btn-theme, [data-theme-menu]'))) b.addEventListener('click', () => openThemeMenu(b));
 
     for (const sw of Array.from(document.querySelectorAll('[data-lang-switch]'))) {
       for (const b of Array.from(sw.querySelectorAll('[data-lang]'))) b.addEventListener('click', () => WH.i18n.setLang(b.getAttribute('data-lang')));

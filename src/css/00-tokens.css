@@ -1,10 +1,19 @@
 /* ==========================================================================
    00-tokens.css - design tokens (custom properties only, no selectors that
-   style elements). Light is the default; dark is applied either by the OS
-   (prefers-color-scheme, unless the user forced light) or by
-   <html data-theme="dark">.  CSS cannot share one block between a media
-   query and an attribute selector, so the dark block is written twice -
-   keep both copies identical (build.mjs --check verifies it).
+   style elements). Three palettes (SPEC 12):
+     light      - the default
+     Deep dark  - neutral near-black (no blue cast); applied by the OS
+                  (prefers-color-scheme, unless the user forced light or OLED)
+                  or by <html data-theme="dark">
+     OLED black - pure #000 page, stage and surfaces, hairline borders, no
+                  shadows; only by <html data-theme="oled">
+   CSS cannot share one block between a media query and an attribute
+   selector, so the Deep dark block is written twice - keep both copies
+   identical; the OLED block declares exactly the same properties
+   (build.mjs --check verifies both). The OLED block comes last: with a dark
+   OS both the media block and it match (same specificity), so it wins.
+   Module CSS that needs "any dark palette" can use :root[data-scheme="dark"]
+   (set by WH.ui.theme for Deep dark, OLED and auto-dark alike).
    ========================================================================== */
 
 :root {
@@ -15,6 +24,7 @@
   --surface: #ffffff;
   --surface-2: #f7f9fc;          /* inset / subtle raised areas */
   --surface-3: #eef2f8;          /* hover wash */
+  --surface-float: #ffffff;      /* floating layers: popovers, menus, toasts, dialogs, sheets, the tour card */
   --ink: #13233a;
   --ink-2: #33445c;              /* strong secondary text */
   --muted: #5b6a80;              /* >= 4.5:1 on bg, surface and surface-2 */
@@ -44,11 +54,18 @@
   --info-soft: #dbeafe;
   --info-ink: #1e3a8a;
   --focus: #2563eb;
+  --brand-bg: #0f766e;            /* the logo tile (header, welcome) - the brand stays teal in every theme */
+  --brand-ink: #ffffff;
 
   /* ---- tooltip (inverse of the page) ---------------------------------- */
   --tip-bg: #13233a;
   --tip-ink: #f3f6fb;
   --tip-line: rgba(255, 255, 255, .14);
+  --tip-kbd-bg: rgba(255, 255, 255, .14);    /* a key chip inside the tooltip */
+  --tip-kbd-line: rgba(255, 255, 255, .30);
+  --accent-kbd-bg: rgba(0, 0, 0, .20);       /* a key chip on a solid accent button (darker: white 12 px text >= 4.5:1) */
+  --accent-kbd-line: rgba(255, 255, 255, .35);
+  --switch-knob: #ffffff;
 
   /* ---- map / canvas colours (read by canvas code via WH.ui.cssVar) ----- */
   /* the stage is a design canvas (SPEC 7.5): a world-space dot grid on --stage-bg, every 5th dot --stage-dot-major,
@@ -67,7 +84,16 @@
   --map-halo: rgba(255, 255, 255, .92);
   --map-furniture: #7b8aa3;
   --map-marker-ring: #ffffff;
+  --map-marker-shadow: rgba(19, 35, 58, .35);  /* drop shadow under map markers (none in OLED) */
   --map-selection: #2563eb;
+  /* label chips on the map (measurement values, "−72 → −58 (+14)", range-line labels): drawn over heat and dashed
+     lines, so they carry their own background + hairline; deltas use the --map-delta-* colours */
+  --map-chip-bg: rgba(255, 255, 255, .96);
+  --map-chip-ink: #13233a;
+  --map-chip-line: rgba(19, 35, 58, .16);
+  --map-delta-pos: #15803d;
+  --map-delta-neg: #c2410c;
+  --map-delta-zero: #5b6a80;
 
   /* ---- heat palette, default (dBm stops -85 .. -30) ------------------- */
   --heat-1: rgb(228, 60, 46);
@@ -123,6 +149,7 @@
   --r-md: 12px;
   --r-lg: 16px;
   --r-pill: 999px;
+  /* shadows are lists, never `none` (OLED uses a transparent zero shadow): components combine them with an inset ring */
   --shadow-1: 0 1px 2px rgba(19, 35, 58, .06), 0 1px 1px rgba(19, 35, 58, .04);
   --shadow-2: 0 4px 14px rgba(19, 35, 58, .09), 0 1px 3px rgba(19, 35, 58, .06);
   --shadow-pop: 0 10px 30px rgba(19, 35, 58, .20), 0 2px 6px rgba(19, 35, 58, .10);
@@ -166,151 +193,279 @@
   --welcome-glow-2: rgba(29, 78, 216, .12);
 }
 
-/* Dark - follows the OS unless the user forced light ... */
+/* Deep dark - follows the OS unless the user forced light or OLED ... */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0c1424;
-    --surface: #142038;
-    --surface-2: #101a2e;
-    --surface-3: #1b2a47;
-    --ink: #e7eefa;
-    --ink-2: #c3d0e4;
-    --muted: #9fb0c8;
-    --line: #24344f;
-    --line-strong: #344868;
-    --control-line: #5d7194;
-    --scrim: rgba(3, 7, 14, .66);
-    --accent: #3fd0bf;
-    --accent-hover: #6fe0d2;
-    --accent-ink: #06201d;
-    --accent-soft: #12383a;
-    --accent-soft-ink: #8ae8dc;
-    --warn: #f5b14a;
-    --warn-soft: #3a2a0c;
-    --warn-ink: #fcd38a;
+    --bg: #0a0a0b;
+    --surface: #121214;
+    --surface-2: #0e0e10;
+    --surface-3: #1f1f23;
+    --surface-float: #19191c;
+    --ink: #f2f2f3;
+    --ink-2: #d4d4d8;
+    --muted: #a1a1aa;
+    --line: #26262b;
+    --line-strong: #36363d;
+    --control-line: #6b6b75;
+    --scrim: rgba(0, 0, 0, .66);
+    --accent: #2dd4bf;
+    --accent-hover: #5eead4;
+    --accent-ink: #042f2a;
+    --accent-soft: #0e2f2b;
+    --accent-soft-ink: #7cebd9;
+    --warn: #fbbf24;
+    --warn-soft: #2b2006;
+    --warn-ink: #fcd34d;
     --danger: #fb8a5c;
     --danger-hover: #fdab88;
-    --danger-soft: #3d1c10;
+    --danger-soft: #2e150b;
     --danger-ink: #fdc2a8;
-    --on-danger: #2a0e03;
+    --on-danger: #1f0a02;
     --ok: #4ade80;
-    --ok-soft: #10301d;
+    --ok-soft: #0c2716;
     --ok-ink: #a7f0c1;
-    --info: #7aa7ff;
-    --info-soft: #142a52;
-    --info-ink: #bcd2ff;
-    --focus: #7aa7ff;
-    --tip-bg: #e7eefa;
-    --tip-ink: #0c1424;
-    --tip-line: rgba(12, 20, 36, .18);
-    --stage-bg: #0b1322;
-    --stage-dot: rgba(231, 238, 250, .10);
-    --stage-dot-major: rgba(231, 238, 250, .16);
-    --stage-sheet-shadow: rgba(0, 0, 0, .50);
-    --stage-vignette: rgba(0, 0, 0, .22);
-    --stage-grid: rgba(231, 238, 250, .07);
-    --map-wall: #c7d3e6;
-    --map-wall-soft: #8a9bb5;
-    --map-room: rgba(20, 32, 56, .92);
-    --map-room-line: rgba(199, 211, 230, .38);
-    --map-label: #e7eefa;
-    --map-halo: rgba(11, 19, 34, .92);
-    --map-furniture: #7388a8;
+    --info: #8ab4ff;
+    --info-soft: #111c33;
+    --info-ink: #c3d6ff;
+    --focus: #8ab4ff;
+    --tip-bg: #f2f2f3;
+    --tip-ink: #0a0a0b;
+    --tip-line: rgba(0, 0, 0, .18);
+    --tip-kbd-bg: rgba(10, 10, 11, .07);
+    --tip-kbd-line: rgba(10, 10, 11, .25);
+    --accent-kbd-bg: rgba(4, 47, 42, .10);
+    --accent-kbd-line: rgba(4, 47, 42, .35);
+    --switch-knob: #ffffff;
+    --stage-bg: #0d0d0f;
+    --stage-dot: rgba(244, 244, 245, .10);
+    --stage-dot-major: rgba(244, 244, 245, .17);
+    --stage-sheet-shadow: rgba(0, 0, 0, .60);
+    --stage-vignette: rgba(0, 0, 0, .28);
+    --stage-grid: rgba(244, 244, 245, .07);
+    --map-wall: #d4d4d8;
+    --map-wall-soft: #8b8b94;
+    --map-room: rgba(24, 24, 27, .92);
+    --map-room-line: rgba(212, 212, 216, .36);
+    --map-label: #f4f4f5;
+    --map-halo: rgba(10, 10, 11, .92);
+    --map-furniture: #8b8b96;
     --map-marker-ring: #ffffff;
-    --map-selection: #7aa7ff;
-    --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
-    --shadow-2: 0 4px 14px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .3);
-    --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .35);
+    --map-marker-shadow: rgba(0, 0, 0, .60);
+    --map-selection: #8ab4ff;
+    --map-chip-bg: rgba(22, 22, 25, .92);
+    --map-chip-ink: #f2f2f3;
+    --map-chip-line: rgba(255, 255, 255, .16);
+    --map-delta-pos: #4ade80;
+    --map-delta-neg: #fb8a5c;
+    --map-delta-zero: #a1a1aa;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .50);
+    --shadow-2: 0 4px 14px rgba(0, 0, 0, .50), 0 1px 3px rgba(0, 0, 0, .40);
+    --shadow-pop: 0 12px 32px rgba(0, 0, 0, .65), 0 2px 6px rgba(0, 0, 0, .45);
 
       /* ---- derived tints ---- */
-      --glass: rgba(20, 32, 56, .94);
-      --stage-veil: rgba(11, 19, 34, .82);
-      --accent-line: rgba(63, 208, 191, .40);
-      --accent-glow: rgba(63, 208, 191, .24);
-      --accent-wash: #143339;
-      --accent-soft-hover: #1a4a4c;
-      --focus-glow: rgba(122, 167, 255, .35);
+      --glass: rgba(18, 18, 20, .92);
+      --stage-veil: rgba(13, 13, 15, .84);
+      --accent-line: rgba(45, 212, 191, .42);
+      --accent-glow: rgba(45, 212, 191, .26);
+      --accent-wash: #0b2522;
+      --accent-soft-hover: #14403b;
+      --focus-glow: rgba(138, 180, 255, .35);
       --danger-line: rgba(251, 138, 92, .45);
-      --hover-wash: rgba(20, 32, 56, .6);
-      --mark: rgba(245, 177, 74, .30);
-      --drop-scrim: rgba(3, 44, 41, .78);
-      --welcome-glow-1: rgba(63, 208, 191, .16);
-      --welcome-glow-2: rgba(122, 167, 255, .12);
+      --hover-wash: rgba(255, 255, 255, .06);
+      --mark: rgba(251, 191, 36, .30);
+      --drop-scrim: rgba(0, 0, 0, .78);
+      --welcome-glow-1: rgba(45, 212, 191, .12);
+      --welcome-glow-2: rgba(138, 180, 255, .07);
   }
 }
 
-/* ... or the user forced dark with the header button. Keep in sync with the block above. */
+/* ... or the user forced Deep dark. Keep in sync with the block above. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0c1424;
-  --surface: #142038;
-  --surface-2: #101a2e;
-  --surface-3: #1b2a47;
-  --ink: #e7eefa;
-  --ink-2: #c3d0e4;
-  --muted: #9fb0c8;
-  --line: #24344f;
-  --line-strong: #344868;
-  --control-line: #5d7194;
-  --scrim: rgba(3, 7, 14, .66);
-  --accent: #3fd0bf;
-  --accent-hover: #6fe0d2;
-  --accent-ink: #06201d;
-  --accent-soft: #12383a;
-  --accent-soft-ink: #8ae8dc;
-  --warn: #f5b14a;
-  --warn-soft: #3a2a0c;
-  --warn-ink: #fcd38a;
+  --bg: #0a0a0b;
+  --surface: #121214;
+  --surface-2: #0e0e10;
+  --surface-3: #1f1f23;
+  --surface-float: #19191c;
+  --ink: #f2f2f3;
+  --ink-2: #d4d4d8;
+  --muted: #a1a1aa;
+  --line: #26262b;
+  --line-strong: #36363d;
+  --control-line: #6b6b75;
+  --scrim: rgba(0, 0, 0, .66);
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-ink: #042f2a;
+  --accent-soft: #0e2f2b;
+  --accent-soft-ink: #7cebd9;
+  --warn: #fbbf24;
+  --warn-soft: #2b2006;
+  --warn-ink: #fcd34d;
   --danger: #fb8a5c;
   --danger-hover: #fdab88;
-  --danger-soft: #3d1c10;
+  --danger-soft: #2e150b;
   --danger-ink: #fdc2a8;
-  --on-danger: #2a0e03;
+  --on-danger: #1f0a02;
   --ok: #4ade80;
-  --ok-soft: #10301d;
+  --ok-soft: #0c2716;
   --ok-ink: #a7f0c1;
-  --info: #7aa7ff;
-  --info-soft: #142a52;
-  --info-ink: #bcd2ff;
-  --focus: #7aa7ff;
-  --tip-bg: #e7eefa;
-  --tip-ink: #0c1424;
-  --tip-line: rgba(12, 20, 36, .18);
-  --stage-bg: #0b1322;
-  --stage-dot: rgba(231, 238, 250, .10);
-  --stage-dot-major: rgba(231, 238, 250, .16);
-  --stage-sheet-shadow: rgba(0, 0, 0, .50);
-  --stage-vignette: rgba(0, 0, 0, .22);
-  --stage-grid: rgba(231, 238, 250, .07);
-  --map-wall: #c7d3e6;
-  --map-wall-soft: #8a9bb5;
-  --map-room: rgba(20, 32, 56, .92);
-  --map-room-line: rgba(199, 211, 230, .38);
-  --map-label: #e7eefa;
-  --map-halo: rgba(11, 19, 34, .92);
-  --map-furniture: #7388a8;
+  --info: #8ab4ff;
+  --info-soft: #111c33;
+  --info-ink: #c3d6ff;
+  --focus: #8ab4ff;
+  --tip-bg: #f2f2f3;
+  --tip-ink: #0a0a0b;
+  --tip-line: rgba(0, 0, 0, .18);
+  --tip-kbd-bg: rgba(10, 10, 11, .07);
+  --tip-kbd-line: rgba(10, 10, 11, .25);
+  --accent-kbd-bg: rgba(4, 47, 42, .10);
+  --accent-kbd-line: rgba(4, 47, 42, .35);
+  --switch-knob: #ffffff;
+  --stage-bg: #0d0d0f;
+  --stage-dot: rgba(244, 244, 245, .10);
+  --stage-dot-major: rgba(244, 244, 245, .17);
+  --stage-sheet-shadow: rgba(0, 0, 0, .60);
+  --stage-vignette: rgba(0, 0, 0, .28);
+  --stage-grid: rgba(244, 244, 245, .07);
+  --map-wall: #d4d4d8;
+  --map-wall-soft: #8b8b94;
+  --map-room: rgba(24, 24, 27, .92);
+  --map-room-line: rgba(212, 212, 216, .36);
+  --map-label: #f4f4f5;
+  --map-halo: rgba(10, 10, 11, .92);
+  --map-furniture: #8b8b96;
   --map-marker-ring: #ffffff;
-  --map-selection: #7aa7ff;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
-  --shadow-2: 0 4px 14px rgba(0, 0, 0, .40), 0 1px 3px rgba(0, 0, 0, .3);
-  --shadow-pop: 0 10px 30px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .35);
+  --map-marker-shadow: rgba(0, 0, 0, .60);
+  --map-selection: #8ab4ff;
+  --map-chip-bg: rgba(22, 22, 25, .92);
+  --map-chip-ink: #f2f2f3;
+  --map-chip-line: rgba(255, 255, 255, .16);
+  --map-delta-pos: #4ade80;
+  --map-delta-neg: #fb8a5c;
+  --map-delta-zero: #a1a1aa;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .50);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .50), 0 1px 3px rgba(0, 0, 0, .40);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, .65), 0 2px 6px rgba(0, 0, 0, .45);
 
     /* ---- derived tints ---- */
-    --glass: rgba(20, 32, 56, .94);
-    --stage-veil: rgba(11, 19, 34, .82);
-    --accent-line: rgba(63, 208, 191, .40);
-    --accent-glow: rgba(63, 208, 191, .24);
-    --accent-wash: #143339;
-    --accent-soft-hover: #1a4a4c;
-    --focus-glow: rgba(122, 167, 255, .35);
+    --glass: rgba(18, 18, 20, .92);
+    --stage-veil: rgba(13, 13, 15, .84);
+    --accent-line: rgba(45, 212, 191, .42);
+    --accent-glow: rgba(45, 212, 191, .26);
+    --accent-wash: #0b2522;
+    --accent-soft-hover: #14403b;
+    --focus-glow: rgba(138, 180, 255, .35);
     --danger-line: rgba(251, 138, 92, .45);
-    --hover-wash: rgba(20, 32, 56, .6);
-    --mark: rgba(245, 177, 74, .30);
-    --drop-scrim: rgba(3, 44, 41, .78);
-    --welcome-glow-1: rgba(63, 208, 191, .16);
-    --welcome-glow-2: rgba(122, 167, 255, .12);
+    --hover-wash: rgba(255, 255, 255, .06);
+    --mark: rgba(251, 191, 36, .30);
+    --drop-scrim: rgba(0, 0, 0, .78);
+    --welcome-glow-1: rgba(45, 212, 191, .12);
+    --welcome-glow-2: rgba(138, 180, 255, .07);
 }
+
+/* OLED black - only when chosen. Pure black everywhere, 1 px hairlines instead of shadows (black cannot show
+   them), popovers barely lifted, no large grey areas; accents carry the hierarchy. Same properties as Deep dark. */
+:root[data-theme="oled"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --surface: #000000;
+  --surface-2: #08080a;
+  --surface-3: #18181b;
+  --surface-float: #0b0b0c;
+  --ink: #f4f4f5;
+  --ink-2: #d4d4d8;
+  --muted: #a1a1aa;
+  --line: #1f1f22;
+  --line-strong: #2e2e33;
+  --control-line: #66666f;
+  --scrim: rgba(0, 0, 0, .80);
+  --accent: #2dd4bf;
+  --accent-hover: #5eead4;
+  --accent-ink: #042f2a;
+  --accent-soft: #072622;
+  --accent-soft-ink: #7cebd9;
+  --warn: #fbbf24;
+  --warn-soft: #1f1704;
+  --warn-ink: #fcd34d;
+  --danger: #fb8a5c;
+  --danger-hover: #fdab88;
+  --danger-soft: #230f07;
+  --danger-ink: #fdc2a8;
+  --on-danger: #1f0a02;
+  --ok: #4ade80;
+  --ok-soft: #071d10;
+  --ok-ink: #a7f0c1;
+  --info: #8ab4ff;
+  --info-soft: #0b1528;
+  --info-ink: #c3d6ff;
+  --focus: #8ab4ff;
+  --tip-bg: #1c1c1f;
+  --tip-ink: #f4f4f5;
+  --tip-line: rgba(255, 255, 255, .20);
+  --tip-kbd-bg: rgba(255, 255, 255, .10);
+  --tip-kbd-line: rgba(255, 255, 255, .26);
+  --accent-kbd-bg: rgba(4, 47, 42, .10);
+  --accent-kbd-line: rgba(4, 47, 42, .35);
+  --switch-knob: #ffffff;
+  --stage-bg: #000000;
+  --stage-dot: rgba(255, 255, 255, .07);
+  --stage-dot-major: rgba(255, 255, 255, .12);
+  --stage-sheet-shadow: rgba(0, 0, 0, 0);
+  --stage-vignette: rgba(0, 0, 0, 0);
+  --stage-grid: rgba(255, 255, 255, .06);
+  --map-wall: #d4d4d8;
+  --map-wall-soft: #85858f;
+  --map-room: rgba(12, 12, 13, .96);
+  --map-room-line: rgba(212, 212, 216, .32);
+  --map-label: #f4f4f5;
+  --map-halo: rgba(0, 0, 0, .92);
+  --map-furniture: #85858f;
+  --map-marker-ring: #ffffff;
+  --map-marker-shadow: rgba(0, 0, 0, 0);
+  --map-selection: #8ab4ff;
+  --map-chip-bg: rgba(0, 0, 0, .90);
+  --map-chip-ink: #f4f4f5;
+  --map-chip-line: rgba(255, 255, 255, .22);
+  --map-delta-pos: #4ade80;
+  --map-delta-neg: #fb8a5c;
+  --map-delta-zero: #a1a1aa;
+  --shadow-1: 0 0 0 0 transparent;
+  --shadow-2: 0 0 0 0 transparent;
+  --shadow-pop: 0 0 0 0 transparent;
+
+  /* ---- derived tints ---- */
+  --glass: rgba(0, 0, 0, .90);
+  --stage-veil: rgba(0, 0, 0, .86);
+  --accent-line: rgba(45, 212, 191, .45);
+  --accent-glow: rgba(45, 212, 191, .28);
+  --accent-wash: #041a17;
+  --accent-soft-hover: #0d3631;
+  --focus-glow: rgba(138, 180, 255, .35);
+  --danger-line: rgba(251, 138, 92, .45);
+  --hover-wash: rgba(255, 255, 255, .07);
+  --mark: rgba(251, 191, 36, .30);
+  --drop-scrim: rgba(0, 0, 0, .86);
+  --welcome-glow-1: rgba(45, 212, 191, .07);
+  --welcome-glow-2: rgba(0, 0, 0, 0);
+}
+
+/* Compatibility for module tokens that only know light + Deep dark (SPEC 12): with OLED forced on a LIGHT OS their
+   `:root[data-theme="dark"]` / prefers-color-scheme blocks do not match, so the planner's band / node / inlet colours
+   and the editor's opacities would fall back to their light values on a black stage. These copies of their Deep dark
+   values keep them legible; a module that defines its own `:root[data-theme="oled"]` values wins (same specificity,
+   later file). */
+:root[data-theme="oled"] {
+  --pl-range-24: #67e8f9;
+  --pl-range-5: #a5b4fc;
+  --pl-range-6: #f9a8d4;
+  --pl-node: #60a5fa;
+  --pl-node-ink: #000000;
+  --pl-inlet: #f5b14a;
+  --pl-inlet-ink: #000000;
+}
+:root[data-theme="oled"] .ed { --ed-room-a: .3; --ed-furn-a: .3; --ed-label-sub: .8; }
 
 /* Roomier layout on large screens */
 @media (min-width: 1440px) {

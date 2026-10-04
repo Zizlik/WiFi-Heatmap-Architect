@@ -14,7 +14,8 @@ Contents: 1 Build & load order - 2 DOM contract - 3 Layout contract - 4 Tokens -
 ```
 node build.mjs            # writes index.cs.html (default cs), index.html (default en), sw.js, manifest.webmanifest
 node build.mjs --check    # + syntax check, i18n completeness (cs/en keys + placeholders), mandatory hint keys,
-                          #   no external URLs, template ids, dark-token sync, size <= 1.5 MB (no minifier),
+                          #   no external URLs, template ids, theme-token sync (Deep dark x2 identical, OLED = same
+                          #   properties), size <= 2 MB (no minifier),
                           #   PWA manifest/icons/service-worker version. Exit code 1 on errors.
 node build.mjs --dry      # do not write the files (with --check: also catches a stale committed sw.js / manifest)
 node build.mjs --out=DIR  # isolated build (HTML + sw.js + manifest + assets/ icons) for QA
@@ -26,6 +27,10 @@ node build.mjs --out=DIR  # isolated build (HTML + sw.js + manifest + assets/ ic
   (short SHA-256 of both HTML outputs + manifest + icons) and the precache list. Icons are committed PNGs in `assets/`
   (`icon-192.png`, `icon-512.png`, `icon-maskable-512.png`, `apple-touch-icon.png`, rendered from the brand SVG).
   `src/js/20-ui/pwa.js` adds the manifest link and registers the worker **only on http(s)** - file:// stays request-free.
+* **Build id + source map** (stage 7): the template's `{{BUILD}}` becomes `window.WH_BUILD = {v, files}` - `v` = short SHA-256 of
+  template + CSS + JS (same in both languages), `files` = `[[line, 'src/js/…'], …]`, the HTML line of every file's
+  `/* ===== src/js/… ===== */` marker (rendered in two passes, both one line, so no line moves). `WH.diag` uses it to name
+  the source file of a stack frame inside the one inline script (`50-planner/25-measure.js:123`).
 
 Tests: engine `node tests/engine/run-all.mjs`; centring/clipping guard `qa/s5-centering.mjs` (SPEC 7.2, see section 5) (on Node >= 21 `node --test tests/engine` does not work; use that or `node --test "tests/engine/*.test.mjs"`). UI: headless-Chrome scripts live in the QA scratchpad, they load the built `index.cs.html`.
 
@@ -52,7 +57,10 @@ Tests: engine `node tests/engine/run-all.mjs`; centring/clipping guard `qa/s5-ce
 | `#sr-live` | screen-reader announcements: `WH.ui.announce(text)` |
 
 `<html lang>` is kept in sync with the active language. `body[data-view="planner|editor"]` tells CSS which view is on.
-`<html data-theme="light|dark">` is set only when the user forced a theme; absent = follow the OS.
+`<html data-theme="light|dark|oled">` is set only when the user chose a theme (dark = Deep dark, oled = OLED black); absent =
+follow the OS (light <-> Deep dark). `<html data-scheme="light|dark">` is ALWAYS set (by the pre-paint script in the template and
+by `WH.ui.theme`): the colour scheme in effect - OLED and auto-dark count as dark. Module CSS that needs "any dark palette" should
+use `:root[data-scheme="dark"]` instead of repeating the prefers-color-scheme / data-theme pair.
 
 ## 3. Layout contract for views
 
@@ -80,7 +88,10 @@ viewport (no page scroll, panels scroll inside); below that the page scrolls nor
 * Toasts never cover the plan or the stage (stage 5): on desktop (>= 900 px) `WH.ui` docks the stack to the **bottom of the
   side panel** (`.sidebar` of the visible view - Wi-Fi sidebar / editor inspector), as wide as its cards, bottom edge level
   with the stage's bottom edge, growing upwards; only if an open `.pop-panel`, `.menu` or `[data-toast-avoid]` element sits
-  there does it move to the top of the panel, below the panel's own `position: sticky` children (the planner's action bar).
+  there does it move to the top of the panel, below the panel's own `position: sticky` children (the planner's action bar),
+  or right below an avoided element at the top of the panel (e.g. the head of the "Prvotní měření" guide) - whichever
+  covers the least. While a side drawer (`.modal--drawer`: Help, Info o zařízení) is open the stack goes over the stage
+  instead (re-placed when a dialog opens or closes).
   While docked at the bottom the panel gets that much extra scroll room (`--toast-pad` on the `.sidebar`, added to its
   `padding-bottom`), so whatever the stack covers can be scrolled up into view; it is removed when the last toast closes.
   A view without a `.sidebar` falls back to the top of the stage between / below the top toolbars (toast body click-through,
@@ -91,6 +102,9 @@ viewport (no page scroll, panels scroll inside); below that the page scrolls nor
   visible on phones with `data-toast-avoid`.
 * Slots (`.stage__tl|tr|tc|bl|br|bc|cl|cr`) have `pointer-events:none` so the map stays pannable between controls; their children are
   clickable. `tc`/`bc` span the stage width and centre their content (a `.legend` is `min(420px, 100%)` wide).
+  Wi-Fi mode (stage 7b): the band switch reads `2,4 · 5 · 6 GHz · Auto` (the unit sits inside the segmented control, before
+  Auto); on stages ≤ 400 px wide (phones) the `tr` slot takes a second row under `tl` - code that reserves room at the
+  top reads the slots' real bottoms (`offsetTop + offsetHeight`), never a fixed height.
 * Stage states: `.stage--loading` (dims + thin progress line on the top edge), `<div class="stage__state">` for a centred empty/loading message.
 * Put the viewport on the **stage** element: `WH.viewport(stageEl, {...})`. Mouse wheel/drag over `.toolbar, .legend, .pop-panel, .menu, .popover, [data-no-wheel]` is ignored by the viewport.
 
@@ -112,13 +126,34 @@ Everything inside a view is yours; the shell only guarantees the root element, `
 
 ## 4. Tokens (css/00-tokens.css)
 
-All colours are CSS custom properties on `:root`, redefined for dark (`prefers-color-scheme` unless `data-theme="light"`, and `data-theme="dark"`).
-`build.mjs --check` fails when the two dark blocks differ - edit both. **Never hard-code colours in component CSS; use tokens.**
+All colours are CSS custom properties on `:root`. Three palettes (SPEC 12):
+* **light** (default) - the values below the first column;
+* **Deep dark** - neutral near-black, no blue cast (bg `#0a0a0b`, surface `#121214`, raised `#19191c`, line `#26262b`, ink `#f2f2f3`,
+  muted `#a1a1aa`, accent `#2dd4bf`); applied by `prefers-color-scheme: dark` unless `data-theme="light"` (media block) and by
+  `data-theme="dark"` - two identical blocks;
+* **OLED black** - `data-theme="oled"` only: `#000` page, stage and surfaces, 1 px hairlines (`#1f1f22` / `#2e2e33`), floating
+  layers barely lifted (`#0b0b0c`), NO shadows (zero transparent shadows), no large grey areas, dot grid `rgba(255,255,255,.07)`.
+  The OLED block declares exactly the same properties as Deep dark and comes last (with a dark OS both match; it wins).
+`build.mjs --check` fails when the Deep dark blocks differ or the OLED block lacks / adds a property - edit all three.
+**Never hard-code colours in component CSS; use tokens.** Shadows are always lists (`--shadow-1` may be `0 0 0 0 transparent`, never
+`none`), so `box-shadow: var(--shadow-1), inset 0 0 0 1px …` stays valid in every palette.
+Module tokens that exist only in light + Deep dark (the planner's `--pl-*`, the editor's `.ed` opacities) get a compatibility copy
+of their Deep dark values under `:root[data-theme="oled"]` at the end of 00-tokens.css (OLED on a LIGHT OS would otherwise show
+their light values on black); a module that defines its own OLED values wins (same specificity, later file).
+Contrast audit (stage 7, `qa/s7-contrast.mjs`): 53 token pairs per palette (text >= 4.5:1, focus / control lines / walls >= 3:1)
+plus every visible text element of welcome, planner (+ Speed), editor, Help, menus, toasts and the error details in all three.
 
-* Surfaces/ink: `--bg --surface --surface-2 --surface-3 --ink --ink-2 --muted --line --line-strong --control-line --scrim`
-* Brand/semantic: `--accent --accent-hover --accent-ink --accent-soft --accent-soft-ink`, `--warn(-soft|-ink)`, `--danger(-hover|-soft|-ink) --on-danger`, `--ok(-soft|-ink)`, `--info(-soft|-ink)`, `--focus`
+* Surfaces/ink: `--bg --surface --surface-2 --surface-3 --surface-float --ink --ink-2 --muted --line --line-strong --control-line --scrim`
+  (`--surface-float` = floating layers: popovers, menus, toasts, dialogs, drawers, the tour card - **use it for your own sheets /
+  popovers too**: white in light, lifted `#19191c` in Deep dark, `#0b0b0c` in OLED)
+* Brand/semantic: `--accent --accent-hover --accent-ink --accent-soft --accent-soft-ink`, `--warn(-soft|-ink)`, `--danger(-hover|-soft|-ink) --on-danger`, `--ok(-soft|-ink)`, `--info(-soft|-ink)`, `--focus`, `--brand-bg --brand-ink` (logo tile, teal in every theme)
+* Small parts: `--tip-bg --tip-ink --tip-line --tip-kbd-bg --tip-kbd-line` (tooltip; inverse of the page except OLED, where it is a dark chip), `--accent-kbd-bg --accent-kbd-line` (a `<kbd>` on a solid accent button), `--switch-knob`
 * Derived tints (precomputed): `--glass --stage-veil --accent-line --accent-glow --accent-wash --accent-soft-hover --focus-glow --danger-line --hover-wash --mark --drop-scrim`
-* Map/canvas: `--stage-bg --stage-dot --stage-dot-major --stage-sheet-shadow --stage-vignette --stage-grid --map-wall --map-wall-soft --map-room --map-room-line --map-label --map-halo --map-furniture --map-marker-ring --map-selection`
+* Map/canvas: `--stage-bg --stage-dot --stage-dot-major --stage-sheet-shadow --stage-vignette --stage-grid --map-wall --map-wall-soft --map-room --map-room-line --map-label --map-halo --map-furniture --map-marker-ring --map-marker-shadow --map-selection`
+* Map labels (stage 7, SPEC 10 "−72 → −58 (+14)"): `--map-chip-bg --map-chip-ink --map-chip-line` (a label chip drawn over heat and dashed
+  range lines), `--map-delta-pos --map-delta-neg --map-delta-zero` (the "+14" / "−6" / "±0" text on such a chip; >= 4.5:1 on the chip in
+  every palette, also when the chip lies on the darkest heat colour - light chip bg is 96 % white for that). Canvas code: read
+  them with `WH.ui.cssVar()` and redraw on `theme:changed`.
 * Heat: `--heat-1..6` (default palette, -85 -> -30 dBm), `--heat-cb-1..6` (colour-blind), `--diff-neg --diff-zero --diff-pos`, quality: `--q-excellent --q-veryGood --q-good --q-weak --q-veryWeak --q-unusable`
 * Type: `--font --font-mono`, sizes `--fs-xs(12) --fs-sm(13) --fs-md(15) --fs-lg(17) --fs-xl(21) --fs-2xl(28) --fs-hero(42)`; base 15 px, tabular numbers on `.num/.tnum/.kv dd/.badge/.legend/kbd`
 * Space (8-pt grid): `--sp-1(4) --sp-2(8) --sp-3(12) --sp-4(16) --sp-5(20) --sp-6(24) --sp-8(32) --sp-10(40) --sp-12(48)`
@@ -126,17 +161,18 @@ All colours are CSS custom properties on `:root`, redefined for dark (`prefers-c
 * Layout: `--header-h --sidebar-w --inspector-w --rail-w --gutter --stage-pad`; z-index: `--z-stage-ui(5) --z-header(50) --z-drawer --z-menu(280) --z-modal(300) --z-welcome(400) --z-drop --z-popover(500) --z-toast(600) --z-tour(700)`
 
 Reading colours in canvas/JS: `WH.ui.cssVar('--map-wall')` (cached, refreshed on theme change). Redraw on bus `theme:changed`.
+Never branch on `effective() === 'dark'` to pick a colour - read the token (OLED differs from Deep dark).
 
 ### 4.1 Stage canvas (SPEC 7.5) - both stages look like a design-tool canvas
 
-| token | light | dark | use |
-|---|---|---|---|
-| `--stage-bg` | `#eef2f8` | `#0b1322` | canvas colour (`.stage` background; fill it yourself if your canvas is opaque) |
-| `--stage-dot` | `rgba(19,35,58,.13)` | `rgba(231,238,250,.10)` | minor grid dots |
-| `--stage-dot-major` | `rgba(19,35,58,.21)` | `rgba(231,238,250,.16)` | every 5th dot (major grid, ~1.6x alpha) |
-| `--stage-sheet-shadow` | `rgba(19,35,58,.16)` | `rgba(0,0,0,.50)` | soft drop shadow under the plan so it reads as a sheet lying on the canvas |
-| `--stage-vignette` | `rgba(19,35,58,.05)` | `rgba(0,0,0,.22)` | optional soft darkening towards the stage edges |
-| `--stage-veil` | `rgba(238,242,248,.82)` | `rgba(11,19,34,.82)` | `.stage__state` overlay (derived from `--stage-bg`) |
+| token | light | Deep dark | OLED | use |
+|---|---|---|---|---|
+| `--stage-bg` | `#eef2f8` | `#0d0d0f` | `#000000` | canvas colour (`.stage` background; fill it yourself if your canvas is opaque) |
+| `--stage-dot` | `rgba(19,35,58,.13)` | `rgba(244,244,245,.10)` | `rgba(255,255,255,.07)` | minor grid dots |
+| `--stage-dot-major` | `rgba(19,35,58,.21)` | `rgba(244,244,245,.17)` | `rgba(255,255,255,.12)` | every 5th dot (major grid, ~1.6x alpha) |
+| `--stage-sheet-shadow` | `rgba(19,35,58,.16)` | `rgba(0,0,0,.60)` | transparent | soft drop shadow under the plan so it reads as a sheet lying on the canvas (OLED: none - black cannot show it) |
+| `--stage-vignette` | `rgba(19,35,58,.05)` | `rgba(0,0,0,.28)` | transparent | optional soft darkening towards the stage edges |
+| `--stage-veil` | `rgba(238,242,248,.82)` | `rgba(13,13,15,.84)` | `rgba(0,0,0,.86)` | `.stage__state` overlay (derived from `--stage-bg`) |
 
 Recipe (each view draws it itself, in WORLD space): dot spacing is a real-world step chosen so the on-screen spacing
 stays ~14-35 CSS px - the planner uses 1-2-5 steps in metres via `scale.mpp` (0.01 ... 50 m), the editor multiples of
@@ -180,7 +216,9 @@ cap height + alphabetic baseline (`text-box: trim-both cap alphabetic`), so `ali
 the icon / box (Segoe UI's tall ascent otherwise puts text ~1 px low). `kbd`, `.badge--count` text and the help "steps"
 numbers are centred the same way. Put text in such a span (not a bare text node) when it sits next to an icon in a
 fixed-height control; never trim text that clips (`overflow:hidden` / ellipsis) - accents would be cut.
-**Popovers** `.popover` (rich hint bubble, one shared element `#wh-popover`) / `.popover--tip` (tooltip), `.pop-panel` (generic floating panel next to a button, `WH.ui.popover`), `.menu` (`.menu__item --danger`, `.menu__icon .menu__label .menu__kbd .menu__sep .menu__note .menu__heading`).
+**Popovers** `.popover` (rich hint bubble, one shared element `#wh-popover`) / `.popover--tip` (tooltip), `.pop-panel` (generic floating panel next to a button, `WH.ui.popover`), `.menu` (`.menu__item --danger`, `.menu__icon .menu__label .menu__kbd .menu__sep .menu__note .menu__heading`, `.menu__check` + optional `.menu__icon` for checkable / radio items). All floating layers sit on `--surface-float` with a `--line-strong` hairline.
+**Theme picker** `.theme-picker[role=radiogroup] > .theme-opt[role=radio][data-theme-value]` (`__swatch __half __card __line __dot __text __name __desc`) - built by `WH.ui.theme.picker()`.
+**Diagnostics** `.diag-kv` (when / where / context / message grid), `.diag-pre` (`--full`; selectable monospace block), `.diag-status` (`.is-bad`), `.diag-stack` (stack disclosure), `.diag-dialog`, `.diag-report` (`__copy __show`).
 **Overlays** `.modal-backdrop > .modal` (`--sm --wide --drawer`; `.modal__head .modal__title .modal__body .modal__foot`), `.toast` (`--ok --warn --error`, `.toast__icon .toast__text .toast__action .toast__close`), `.drop-overlay`.
 **Icon holder** `.icon-badge` (56 px round tint, `--sm` 40 px) for a 24 px icon in empty states, overlays, cards. **Feedback** `.progress` (`--indeterminate`, `.progress__bar`, `--p` 0..1), `.spinner`, `.skeleton`, `.notice` (`--warn --ok --danger --muted`; use an 18 px icon - it is centred on the first text line), `.empty-state` (`__icon __title`), `.dropzone` (`.is-over`, also usable as `<button class="dropzone">`), `.meter` (`style="--v:.72;--c:var(--q-good)"`).
 **Lists** `.list` > `.list-row` (`.is-selected`, `--static`, `__main __title __sub`), `.kv` (`<dl class="kv"><div><dt/><dd/></div></dl>`), `.disclosure` (styled `<details>`; `__body`).
@@ -191,8 +229,8 @@ Focus: every control gets a 2 px `--focus` ring on `:focus-visible`. Touch targe
 
 ## 6. Icons - `WH.ui.icon(name, size = 20)` / `WH.ui.iconHtml(name, size)` / `<span data-icon="name" data-size="22"></span>`
 
-24x24 grid, 1.75 px round stroke, `currentColor`, `aria-hidden`, `display:block`. **Rendered at 16, 18, 20 or 24 px only** (other sizes snap to the nearest of these). For larger illustrations put a 24 px icon in `.icon-badge` (56 px round holder) or `.empty-state__icon`. Every icon keeps >= 1.5 units padding and is centred (checked by QA). 94 icons:
-`plan wifi cursor rect polygon wall door sofa ruler autowall move undo redo zoom-in zoom-out fit grid image layers eye eye-off router home pin sparkles target measure antenna node mesh repeater cable globe speed signal gauge bed box fridge books table folder-open download upload save file-image lock external plus minus x check trash copy edit chevron-down chevron-up chevron-right chevron-left arrow-right arrow-left arrow-up arrow-down menu more search settings list palette refresh play flag lightbulb sidebar help keyboard sun moon contrast info warning alert-circle check-circle circle help-q phone laptop monitor desktop tablet board tv gamepad terminal`
+24x24 grid, 1.75 px round stroke, `currentColor`, `aria-hidden`, `display:block`. **Rendered at 16, 18, 20 or 24 px only** (other sizes snap to the nearest of these). For larger illustrations put a 24 px icon in `.icon-badge` (56 px round holder) or `.empty-state__icon`. Every icon keeps >= 1.5 units padding and is centred (checked by QA). 95 icons (stage 7: `moon-star` = OLED black; the theme menu uses `contrast` Auto, `sun` Light, `moon` Deep dark, `moon-star` OLED):
+`plan wifi cursor rect polygon wall door sofa ruler autowall move undo redo zoom-in zoom-out fit grid image layers eye eye-off router home pin sparkles target measure antenna node mesh repeater cable globe speed signal gauge bed box fridge books table folder-open download upload save file-image lock external plus minus x check trash copy edit chevron-down chevron-up chevron-right chevron-left arrow-right arrow-left arrow-up arrow-down menu more search settings list palette refresh play flag lightbulb sidebar help keyboard sun moon moon-star contrast info warning alert-circle check-circle circle help-q phone laptop monitor desktop tablet board tv gamepad terminal`
 (furniture presets: `bed` bed/sofa, `box` metal cabinet/wardrobe, `fridge`, `books`, `table`, `sofa`. Measurement devices (SPEC 7.4):
 `phone` Telefon, `laptop` Notebook, `desktop` Počítač (PC), `tablet` Tablet, `board` Raspberry Pi (chip board), `tv` Televize / TV box,
 `gamepad` Herní konzole, custom names -> `edit` or `monitor`. `help-q` is the bold "?" of the hint button - not for general use.)
@@ -206,7 +244,15 @@ uses `info` (the `gauge` looked like the Speed view's icon).
 * **"?" hint** (rich popover): `WH.ui.hint('band')` returns the button (`<button class="hint" data-hint="band"><svg class="icon icon-help-q">`); or write `<span data-hint="band"></span>` anywhere in markup/templates (replaced automatically, also in DOM added later; the span's classes are copied onto the button). Content: `help.<key>.t` (title), `.b` (1-3 sentences), optional `.more`. Hover (150 ms, mouse), keyboard focus and click/tap (click pins) open it; Esc, outside press, scroll, resize close it.
 * **Tooltip with shortcut** (small): `<button data-tip="planner.tool.router" data-kbd="R">` or `WH.ui.tip(el, 'planner.tool.router', 'R')`. `data-tip` is an **i18n key**; `data-kbd` accepts `R`, `Ctrl+S`, `ctrl+shift+z`, `?`, `arrowleft`. Icon-only elements get their `aria-label` from the tooltip text (+ the key). Position hint: `data-tip-pos="top|bottom|left|right"`.
 * **All existing help keys** (cs+en, written in plain language): `estimate mode dbm quality palette band band24 band5 band6 threshold coverage avgSignal p10 target roomsCount viewSwitch speedView diffView layers ranges rangeThreshold today trial baseline inlet cable optimize allowedArea nearSignal decay wallLoss scale calibration measurement residual unitPct device speedTarget reserve plan wan wanPort ontPort link cableCategory secondAp apCable meshCable meshWifi repeater backhaul power wallMaterial doorLoss furnitureLoss blocksSignal snap trace opacity autoWalls`.
+  Stage 7 (SPEC 13): `bandSteering` - "Wi-Fi 7 a automatické přepínání pásem" (one network for all bands, MLO, never pin a device
+  to one band, every measurement records its band, the Auto map); use `WH.ui.hint('bandSteering')` next to the Auto band switch /
+  the phone band picker instead of writing your own. `help.band.more` also mentions Auto.
+  Planner map layers (2026-10-04): `layerPoints` ("Body měření"), `layerWhatIf` ("Předpověď u bodů", key `P`) in `50-planner/strings-layers.js`.
   Need another one? Add `help.<newKey>.t|b|(more)` in **your own** strings file (cs+en); it shows up in the Help panel glossary automatically.
+* **State note in a hint**: `hintButton.dataset.hintNote = 'i18n.key'` adds one highlighted line (`.popover__note`, warn tint) under the
+  title, read at show time - use it to say why the control next to the "?" is greyed right now (the planner's layer
+  "Předpověď u bodů": "Teď není co ukázat: zatím nemáš žádné měření."); delete the attribute when the reason is gone. The help
+  key itself stays the same (the glossary shows it once).
 * `WH.ui.enhance(root)` (idempotent) = `i18n.applyDom` + `[data-icon]` + `[data-hint]` + tooltip aria-labels + range fills. A `MutationObserver` runs it for every element added to the page, so you normally never call it.
 
 ## 8. i18n rules
@@ -221,7 +267,8 @@ uses `info` (the `gauge` looked like the Speed view's icon).
 ## 9. Runtime API
 
 ### 9.1 `WH.util`
-`$(id) $$(sel, root) el(tag, attrs?, ...children) svgEl(tag, attrs?, ...children) clamp lerp debounce(fn,ms){.cancel,.flush} throttleRaf(fn){.cancel} uid(prefix) clone fmt fmtPct dbm isTyping(e) download(blobOrString, filename, mime) readFileText(file) on(target, ev, fn, opts)->off escapeHtml slug once deepEqual prefersReducedMotion NBSP MINUS isMac`.
+`$(id) $$(sel, root) el(tag, attrs?, ...children) svgEl(tag, attrs?, ...children) clamp lerp debounce(fn,ms){.cancel,.flush} throttleRaf(fn){.cancel} uid(prefix) clone fmt fmtPct dbm isTyping(e) download(blobOrString, filename, mime) copyText(text)->Promise<bool> readFileText(file) on(target, ev, fn, opts)->off escapeHtml slug once deepEqual prefersReducedMotion NBSP MINUS isMac`.
+`copyText` = Clipboard API, falling back to `execCommand('copy')` on a hidden textarea; never throws.
 `el('div.card.p-3#id', {class, style:{}|'', dataset:{}, html (trusted), text, onclick: fn, 'aria-label': 'x', hidden: bool}, child, 'text', [more], null)` - falsy children are skipped, arrays flattened.
 
 ### 9.2 `WH.i18n`
@@ -246,7 +293,8 @@ toast(msg | {text|i18n, params, action:{label|i18n, fn}}, {kind:'info|ok|warn|er
 confirm({title, body (string|Node), ok, cancel, danger}) -> Promise<boolean>
 dialog({title, content, wide, small, actions:[{label|i18n, variant, primary, result, onClick(close) /*return false keeps open*/, autofocus}], onClose, initialFocus, className}) -> {el, body, close(), closed:Promise, setTitle}
 popover(anchorEl, content, {title, placement:'bottom|top|left|right', align:'start|center|end', width, onClose, autofocus}) -> {el, close, reposition}   // focuses the first control that is not a "?" hint; a window resize (phone keyboard!) repositions menus/panels, it closes them only when the anchor is gone; scrolling moves them with the anchor, and an inner scroll box (sidebar, inspector) that carries the anchor out of view closes them; a caller may replace `handle.reposition` with its own placement (resize / scroll then use it)
-menu(anchorEl, items|()=>items, {align}) -> {el, close}      items: {label|i18n, icon, kbd, onClick, danger, disabled, checked, sep:true, note, heading, hidden}
+menu(anchorEl, items|()=>items, {align}) -> {el, close}      items: {label|i18n, icon, kbd, onClick, danger, disabled, checked, radio, sep:true, note, heading, hidden}
+                                                             (checked !== undefined -> check column (+ icon); radio:true -> menuitemradio, opens focused on the checked item)
 button({label|i18n, icon, variant, size, onClick, kbd, tip, block, pressed, disabled, ariaLabel}) iconButton({icon, tip, kbd, onClick, size, variant, pressed}) badge(text, kind)
 segmented(items:[{value, label|i18n, icon, tip, kbd, disabled}], {value, onChange(value,item), aria, size:'sm', pill, block}) -> el with .value .setValue(v, silent) .setDisabled(v, bool) .button(v)
 switch({checked, label|i18n, onChange(bool), hint, disabled, end}) -> label.switch with .input .setChecked(b)
@@ -263,7 +311,12 @@ modalCount()  blockInput(+1|-1)  focusables(container)  textOf(def)
 ```
 Shortcuts: matched on what the layout produces (`e.key`), `ctrl` = Ctrl or Cmd, Shift is ignored for digits/symbols, ignored while typing (inputs/select/textarea/contenteditable/range) and while a dialog or the tour is open. `run` returning `false` = "not handled". The global ones (`1 2 ? F1 Ctrl+S Ctrl+O Ctrl+Z Ctrl+Shift+Z/Ctrl+Y + - 0 Esc`) are registered by the shell; **do not re-register them**. `+ - 0` emit bus `viewport:zoom {factor}` / `viewport:fit`, which every *visible* `WH.viewport` handles itself. Mode-scoped keys (`R`, `M`, `V`, ...) are yours: use `mode:'planner'` / `'editor'` and an `i18n` description - the cheat sheet is generated from the registrations. Mouse/touch help lines in the sheet are fixed (`keys.mouse.*`).
 
-`WH.ui.theme` = `{get() set(v) cycle() effective() apply()}` (`auto|light|dark`); bus `theme:changed {theme, effective}`.
+`WH.ui.theme` = `{list() get() set(v) cycle() resolved() effective() isDark() apply() menu(anchor) picker()}` (SPEC 12). Values
+`auto|light|dark|oled` (pref `theme`; dark = Deep dark, oled = OLED black). `resolved()` -> the palette in use
+(`light|dark|oled`); `effective()` -> the colour SCHEME (`light|dark`; OLED is dark, so canvas code that only knew light/dark keeps
+working); `menu(anchor)` opens the radio menu (header `#btn-theme`, welcome `[data-theme-menu]`, File -> "Vzhled…" on phones where
+the header button is hidden); `picker()` -> the Help panel's preview tiles. Bus `theme:changed {theme, effective, resolved}`.
+The template's pre-paint script applies a saved theme (`data-theme`, `data-scheme`) before first paint.
 
 ### 9.6 `WH.viewport(hostEl, opts) -> vp`   (alias `WH.viewport.create`)
 World = canvas px (0..1080 x 0..942, from `WH.engine.CANVAS`); public points are normalized 0..1. `vp.view = {scale, tx, ty}`: host-relative px = world px * scale + t, measured from the host's **padding box** (inside the 1 px `.stage` border) - exactly where an `inset:0` canvas/svg/marker layer starts. `toWorld/toClient` do the border maths; views must not add their own `clientLeft/clientTop` compensation.
@@ -291,24 +344,78 @@ WH.views.go(name, {updateHash=true}) / .current / .impl(name) / .isMounted(name)
 * Foreign SVGs are never rendered inline: a whitelisted copy is rasterised via `<img>` to a white-paper PNG (<= 1800 px wide, < 7 MB).
 
 ### 9.9 `WH.shell` / `WH.app`
-`WH.shell.{boot, onReady(fn), openHelp, startTour, showWelcome, hideWelcome, openFileMenu, isWelcomeOpen(), autoBoot}`, `WH.app.{go, route, view}` + from `90-app`: `version`, `agentTools.{register, tools, coverageSnapshot, speedSnapshot}` (optional WebMCP tools, registered only when `document.modelContext.registerTool` exists) and a safety net that turns an unexpected error into one friendly toast (the console still gets the error). First run (no saved project): a demo project is put in the store (not saved) behind the welcome overlay; choosing a card initialises the real project and routes to Wi-Fi (demo), Floor plan (blank / traced image) or Wi-Fi (SVG project).
+`WH.shell.{boot, onReady(fn), openHelp({section?: 'theme'|'report'}), startTour, showWelcome, hideWelcome, openFileMenu, isWelcomeOpen(), autoBoot}`, `WH.app.{go, route, view}` + from `90-app`: `version`, `agentTools.{register, tools, coverageSnapshot, speedSnapshot}` (optional WebMCP tools, registered only when `document.modelContext.registerTool` exists) and a safety net that turns an unexpected error into one friendly toast with **Podrobnosti** (the console still gets the error). First run (no saved project): a demo project is put in the store (not saved) behind the welcome overlay; choosing a card initialises the real project and routes to Wi-Fi (demo), Floor plan (blank / traced image) or Wi-Fi (SVG project).
 
 ### 9.10 `WH.pwa` (src/js/20-ui/pwa.js)
 `{ enabled /* http(s) */, supported /* service worker usable */, registration, updateReady, canInstall(), install(), applyUpdate(), checkForUpdate(), syncThemeColor() }`.
 A waiting new version shows the toast "Je k dispozici nová verze aplikace. [Načíst]" (`pwa.update` / `pwa.reload`); Reload =
 `SKIP_WAITING` to the worker, then one page reload. File menu shows "Nainstalovat jako aplikaci" only after the browser fired
-`beforeinstallprompt`. `<meta name="theme-color">` (light `#ffffff` / dark `#142038`) follows a forced theme. Offline state for
+`beforeinstallprompt`. `<meta name="theme-color">` (light `#ffffff` / Deep dark `#111113` / OLED `#000000` = the header surface) follows a chosen theme; auto keeps the per-scheme pair of the template. Offline state for
 features that need the network (speed test): read `navigator.onLine` and listen to `online`/`offline`.
 
 **Language at start** (`WH.i18n`, SPEC 6.2): saved pref > browser language cs/sk -> `cs` > the file default (`WH_DEFAULT_LANG`).
 `WH.i18n.browserLang()` returns `'cs'|'en'|null`.
+
+### 9.11 Stage 6: one-click measuring, device info, the Wi-Fi helper, the calibration guide (planner, SPEC 8 / 8.1 / 8.2 / 9)
+Full signatures live in the file headers; the public pieces other modules use:
+* `WH.devinfo` (36-devinfo, pure / Node-testable, see ENGINE-API §12): `parse(text)`, `fromObject(json)`, `fromHash('#wifi=…')`,
+  `toHash(obj)`, `toWifi(connection)`, `COMMANDS` (the per-OS command lines). From 50-planner/27: `detect()` -> OS / device /
+  browser / connection of this device (Client Hints + UA fallback), `parseUa(ua)`, `guessOs()`.
+* `WH.planner.measureAll({point, band?, name?, value?, wifi?, source?, onStep?, consent?}, signal)` -> `{measurement|null,
+  steps:[{key:'device'|'wifi'|'speed'|'save', state, info}], data, cancelled}`; `mallChecklist({onCancel, onHow, onLayout,
+  noCancel})` (the live checklist element), `wifiLine(w, {signal, noBand})`, `wifiFound(w)`, `wifiDbm(w)`, `measSummary(m)`,
+  `wifiPending.{get,set,clear}` (details waiting for the next measurement, 15 min).
+* Helper client (only file allowed to `fetch()` the loopback helper besides 36-devinfo: `50-planner/26-*`):
+  `helperStatus({timeout, signal, ask, onAsk})` -> `{connected, blocked?:'prompt'|'denied'}` (probe only on a user action;
+  on an https page with the browser's Local Network Access permission still undecided it does not probe unless `ask`),
+  `helperWifi(signal)`, `helperPermission()`. Chrome logs a refused loopback request ("net::ERR_CONNECTION_REFUSED") when no
+  helper runs - page code cannot silence it; QA suites that press "Změřit vše" ignore exactly that line.
+* `WH.planner.openDevInfo()` (drawer), `devInfoButton()`, `devInfoCard({onUse, onBack, onLayout})`, `cmdTips({all})` (Help).
+* `WH.planner.calib.{open, close, isOpen, state, progress, entryButton({idle, before, ...button}), helpBlock(close), cta(),
+  resultSection(), throughputSection(), homeData(), fitText(p), applyFit(), resetFit(), mapClick(w)}`; progress lives in the
+  pref `planner.calib` (saved only when it changed). The guide's own panel shows "Bod N uložený · Zpět" (no toasts over it).
+* `project.model.fit` (engine `fitProject`) is applied by the engine context only while `view.calibrate` is on: anything that
+  flips `view.calibrate` must rebuild the context (`PL.S.geomDirty = true`; 20-stage's store listener does it).
+
+### 9.12 Diagnostics (SPEC 10): `WH.diag`, `WH.ui.diag`, `WH.app.reportError`
+* **`WH.diag`** (00-core/diag.js, pure, memory only): the last 20 errors of the page session -
+  `record(err, {kind, where, context, notify})`, `caught(err, where)`, `list()` (newest first), `last()`, `get(id)`, `count()`,
+  `clear()`, `subscribe(fn)`, `whereOf(stack)`, `cleanStack(stack)`, `scrub(text)`, `mapLine(line)`, `build {v, files}`.
+  Record: `{id, t, kind: 'error'|'rejection'|'caught'|'reported', name, message, where, stack (<= 12 lines), context, count}`.
+  Every text is scrubbed before it is kept: URLs -> file name only (a page from disk would name the user's folders), Windows /
+  home paths, MAC/BSSID, SSIDs (`SSID : …` lines of command output incl. names with spaces, `ssid=…`, `"ssid":"…"`,
+  free text `SSID "…"`), IPv4 (not 127.0.0.1), e-mails, data: URLs, and the user's own words found in the live
+  project (measurement SSIDs/BSSIDs + pending Wi-Fi details, room / measurement / device / project names) -> `[…]`. Stack frames of
+  the bundle are mapped to source files via `WH_BUILD.files` ("at save (50-planner/25-measure.js:123:15)").
+  Framework try/catches feed it: bus / store / i18n / viewport / keys listeners, store mutators, view mount/show, widget callbacks
+  (`caught` -> the friendly toast); io and shell handled failures record with `notify:false` (they show their own toast).
+* **`WH.app.reportError(err, context, opts)`** (90-app) - for HANDLED but noteworthy errors in your module (a speed test that
+  failed, a helper probe that timed out unexpectedly, a parse that threw, a save that failed): it keeps the error in the diary
+  (`kind:'reported'`) WITHOUT the generic toast and logs it with `console.debug` (QA counts errors / warnings only).
+  `opts.toast` (text or `{i18n, params}`) shows YOUR specific message with a **Podrobnosti** button (`opts.kind` 'error'|'warn',
+  `opts.ms`); `opts.log` = 'debug' (default) | 'info' | 'warn' | 'error' | false; `opts.where` overrides the location. AbortError is
+  ignored (returns null). Returns the record. Also `WH.app.showErrorDetails(id?)`, `WH.app.errors()`, `WH.app.diagnostics()`
+  (summary text), `WH.app.copyDiagnostics()`.
+  ```js
+  try { await WH.speedtest.run(o, signal); }
+  catch (e) { WH.app.reportError(e, 'measure.speedtest', { toast: { i18n: 'planner.m.speedFailed' } }); }
+  ```
+* **Safety net**: an uncaught error, unhandled rejection or a caught framework bug -> ONE friendly toast per 15 s ("Něco se
+  nepovedlo…" + **Podrobnosti**); `ResizeObserver loop` noise and AbortError are ignored; a cross-origin "Script error." (a
+  browser extension - all app code is inline, so it is never ours) goes to the diary only (`context:'foreign-script'`), no toast.
+* **`WH.ui.diag`** (20-ui/diagnostics.js): `showDetails(id?)` - the "Co se pokazilo" dialog (Kdy / Kde / Co aplikace dělala /
+  Zpráva, stack disclosure, **Zkopírovat podrobnosti**, **Nahlásit problém** -> Help); `helpBlock()` - Help -> "Nahlásit problém"
+  (what the report contains and leaves out, error count, **Zkopírovat diagnostiku**, "Ukázat, co se zkopíruje" preview, GitHub
+  issues link); `summary({first})` / `copy({first})` - app version + build, browser / OS / device, page kind (`file://` or
+  scheme + host, never a path), mode, language, theme, window, touch, online, storage, the errors with stacks. **No plan data,
+  measurements, SSIDs, BSSIDs, MACs or file paths.** Copy failure (no clipboard) selects the text for Ctrl+C.
 
 ## 10. Events (bus)
 
 | topic | payload | when |
 |---|---|---|
 | `lang:changed` | `{lang}` | after `i18n.setLang` changed the language (DOM already re-translated) |
-| `theme:changed` | `{theme, effective}` | theme button, or OS scheme change while `auto` |
+| `theme:changed` | `{theme, effective, resolved}` | theme menu / picker, or OS scheme change while `auto` |
 | `view:changed` | `{name, prev}` | after a view became current |
 | `app:ready` | `{firstRun}` | first view is on screen |
 | `project:imported` | `{kind:'project'|'tracing_image'|'background', name, undoable}` | a file was imported. **Editor: on `tracing_image` activate the Rectangle tool.** |

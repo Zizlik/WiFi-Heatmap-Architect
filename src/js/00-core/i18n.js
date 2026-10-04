@@ -201,7 +201,7 @@
     if (typeof document !== 'undefined') applyDom(document);
     if (changed) {
       for (const fn of Array.from(listeners)) {
-        try { fn(lang); } catch (e) { console.error('[i18n] onChange listener failed:', e); }
+        try { fn(lang); } catch (e) { console.error('[i18n] onChange listener failed:', e); if (g.WH.diag) g.WH.diag.caught(e, 'i18n.onChange'); }
       }
       if (g.WH.bus) g.WH.bus.emit('lang:changed', { lang });
     }

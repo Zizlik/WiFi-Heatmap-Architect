@@ -1,0 +1,25 @@
+
+V systému je 1 rozhraní:
+
+    Název                  : Wi-Fi
+    Popis                  : Intel(R) Wi-Fi 6E AX211 160MHz
+    GUID                   : 3a9e77b1-5c0d-4f6a-9e21-7d8c6b5a4f30
+    Fyzická adresa         : a0:59:50:11:22:33
+    Typ rozhraní           : Primární
+    Stav                   : připojeno
+    SSID                   : Chalupa_6E
+    BSSID přístupového bodu : 9c:05:d6:aa:bb:cc
+    Pásmo                  : 6 GHz
+    Kanál                  : 37
+    Typ sítě               : Infrastruktura
+    Typ radiového příjmu   : 802.11ax
+    Ověřování              : WPA3-Personal
+    Šifra                  : GCMP-256
+    Režim připojení        : Automatické připojení
+    Rychlost příjmu (Mb/s) : 2402
+    Rychlost odesílání (Mb/s) : 2402
+    Signál                 : 84%
+    Rssi                   : -58
+    Profil                 : Chalupa_6E
+
+    Stav hostované sítě    : Není k dispozici

@@ -4,6 +4,8 @@
  *
  *   get_wifi_coverage            read the illustrative coverage estimate (router/today, band, target, coverage, rooms)
  *   get_wifi_speed_estimate      read the empirical speed scenario (needs >= 2 speed tests, same device + band)
+ *   (band mode Auto, SPEC 13: bandGHz null + bandMode 'auto', the router's bands and where a steering device would be
+ *   on which band; "Nevím" measurements count on the band the engine infers for them)
  *   export_wifi_floorplan        the plan as structured data (wifi-floor-v2 + v3 project), without the raster background
  *   export_wifi_floorplan_svg    the SVG the "Save project as SVG" command writes
  *   import_wifi_floorplan        import an SVG (project or tracing background) or a PNG/JPEG/WebP data URL, undoable
@@ -38,6 +40,25 @@
   function analyse(p) {
     return p.plan.rooms.length ? WH.engine.analysis.run(p, { cell: 4, band: p.view.band }) : null;
   }
+  /** The band fields every snapshot carries: one band, or Auto (SPEC 13) with the router's bands. */
+  function bandInfo(p, a) {
+    const E = WH.engine;
+    const auto = E.model.isAuto(p.view.band);
+    const out = { bandGHz: auto ? null : p.view.band, bandMode: auto ? 'auto' : 'single', routerBandsGHz: E.model.routerBandList(p) };
+    if (auto && a && a.bandShare && a.bandShare.trial) {
+      const sh = a.bandShare.trial;
+      out.bandSharePercent = {};
+      for (const b of E.BANDS) { const v = sh[E.units.bandKey(b)]; if (Number.isFinite(v)) out.bandSharePercent[String(b)] = r1(v); }
+    }
+    return out;
+  }
+  /** The measurements with their bands resolved ("Nevím" -> the inferred band, like the planner). */
+  function resolved(p, a) {
+    try { return a ? WH.engine.model.resolveBands(a.ctx, p, { offsets: a.offsets, soften: a.soften }) : p.measurements; } catch (e) {
+      if (WH.app && WH.app.reportError) WH.app.reportError(e, 'agent.resolveBands');
+      return p.measurements;
+    }
+  }
 
   function coverageSnapshot() {
     const p = project();
@@ -59,13 +80,13 @@
         wirelessUplinkDbm: wireless && a && Number.isFinite(a.backhaul) ? Math.round(a.backhaul) : null,
         wirelessUplinkBandGHz: wireless ? p.node.backhaulBand : null,
       } : null,
-      bandGHz: p.view.band,
+      ...bandInfo(p, a),
       target: targetName(p),
       goodSignalThresholdDbm: thr,
       targetCoveragePercent: trial && trial.n ? Math.round(trial.coverage) : null,
       targetMeanDbm: trial && trial.n ? Math.round(trial.mean) : null,
       todayCoveragePercent: today && today.n ? Math.round(today.coverage) : null,
-      calibrationPoints: p.measurements.filter((m) => m.band === p.view.band && Number.isFinite(m.value)).length,
+      calibrationPoints: resolved(p, a).filter((m) => (E.model.isAuto(p.view.band) || m.band === p.view.band) && Number.isFinite(m.value)).length,
       rooms: a ? p.plan.rooms.map((r) => {
         const s = a.perRoom.trial.get(r.roomId);
         return { name: r.name, coveragePercent: s && s.n ? Math.round(s.coverage) : null, meanDbm: s && s.n ? Math.round(s.mean) : null };
@@ -80,14 +101,32 @@
     const g = p.goal;
     const a = analyse(p);
     // speed tests without a measured signal (value null) count with the calibrated model's signal at their spot, as in the planner
-    const meas = a ? E.speed.fillSignals(a.ctx, p.measurements, { baseline: p.net.baseline, offsets: a.offsets, soften: a.soften }) : p.measurements;
-    const curve = E.speed.buildCurve(meas, { band, device: g.device });
+    const meas = a ? E.speed.fillSignals(a.ctx, resolved(p, a), { baseline: p.net.baseline, offsets: a.offsets, soften: a.soften }) : p.measurements;
+    // Auto (SPEC 13): one curve per band; every cell uses the curve of the band a steering device would use there
+    let curve = null;
+    let count = 0;
+    let lo = Infinity;
+    let hi = -Infinity;
+    if (E.model.isAuto(band)) {
+      const curves = E.speed.buildCurves(meas, { device: g.device });
+      for (const b of E.BANDS) {
+        const c = curves[E.units.bandKey(b)];
+        if (!c) continue;
+        curve = curves;
+        count += c.count;
+        lo = Math.min(lo, c.min);
+        hi = Math.max(hi, c.max);
+      }
+    } else {
+      curve = E.speed.buildCurve(meas, { band, device: g.device });
+      if (curve) { count = curve.count; lo = curve.min; hi = curve.max; }
+    }
     const out = {
       type: 'empirical_scenario_not_guarantee',
       device: g.device,
-      bandGHz: band,
-      calibrationCount: curve ? curve.count : 0,
-      measuredSignalRangeDbm: curve ? [curve.min, curve.max] : null,
+      ...bandInfo(p, a),
+      calibrationCount: count,
+      measuredSignalRangeDbm: curve ? [lo, hi] : null,
       safetyReservePercent: g.reserve,
       targetsMbps: { download: g.targetDown, upload: g.targetUp },
       limitsMbps: { download: p.net.wanDown, upload: p.net.wanUp },

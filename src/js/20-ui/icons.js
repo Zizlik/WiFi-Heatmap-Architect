@@ -96,6 +96,8 @@
     keyboard: `<rect x="2.5" y="6" width="19" height="12" rx="2"/>${dot(6, 10)}${dot(10, 10)}${dot(14, 10)}${dot(18, 10)}${dot(6, 14)}${dot(18, 14)}<path d="M9 14h6"/>`,
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/>',
     moon: '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z"/>',
+    // OLED black theme (SPEC 12): the moon with a small star in its hollow (the star stays >= 1 unit clear of the moon)
+    'moon-star': '<path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z"/><path d="M16.4 5l.8 1.8 1.8.8-1.8.8-.8 1.8-.8-1.8-1.8-.8 1.8-.8z"/>',
     contrast: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" fill="currentColor"/>',
     info: `<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/>${dot(12, 7.8)}`,
     warning: `<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5"/>${dot(12, 17.3)}`,
@@ -123,7 +125,7 @@
   /** Optical recentring (stage 5 pixel audit): these shapes are drawn off the 12/12 centre by up to 0.75 units (a
    *  router's antennas, a door's floor line...), which shows as a glyph sitting low / to one side in a round button.
    *  Shifting the whole drawing puts the centre of its ink box on the centre of the 24 box (measured at 4 px/unit). */
-  const NUDGE = { wifi: [0, -0.625], door: [0, -0.5], layers: [0, -0.5], router: [0, -0.75], home: [0, 0.5], sparkles: [-0.5, 0], signal: [-0.5, 0], bed: [0, -0.5], lock: [0, -0.5], flag: [0, -0.5], moon: [0.375, -0.375],
+  const NUDGE = { wifi: [0, -0.625], door: [0, -0.5], layers: [0, -0.5], router: [0, -0.75], home: [0, 0.5], sparkles: [-0.5, 0], signal: [-0.5, 0], bed: [0, -0.5], lock: [0, -0.5], flag: [0, -0.5], moon: [0.375, -0.375], 'moon-star': [0.375, -0.375],
     // magnifiers: lens at 11/11 + handle to 20.5 -> ink box 3.1..21.4, centre 12.25
     'zoom-in': [-0.25, -0.25], 'zoom-out': [-0.25, -0.25], search: [-0.25, -0.25] };
 

@@ -220,6 +220,30 @@
     setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 4000);
   }
 
+  /** Copy text to the clipboard -> Promise<boolean>. Clipboard API first (needs a user gesture / focused page), then
+   *  the old execCommand('copy') on a hidden textarea (file:// pages in some browsers, older WebViews). Never throws. */
+  async function copyText(text) {
+    const s = String(text == null ? '' : text);
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(s);
+        return true;
+      }
+    } catch (e) { /* denied or not focused: try the fallback */ }
+    if (!hasDom || typeof document.execCommand !== 'function') return false;
+    const prev = document.activeElement;
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+    document.body.appendChild(ta);
+    let ok = false;
+    try { ta.select(); ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    if (prev && typeof prev.focus === 'function') { try { prev.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+    return !!ok;
+  }
+
   /** Read a File/Blob as text (UTF-8). */
   function readFileText(file) {
     if (file && typeof file.text === 'function') return file.text();
@@ -273,7 +297,7 @@
 
   g.WH.util = {
     NBSP, MINUS, SVG_NS, isMac,
-    $, $$, el, svgEl, clamp, lerp, debounce, throttleRaf, uid, clone, fmt, fmtPct, dbm, isTyping, download, readFileText, on,
+    $, $$, el, svgEl, clamp, lerp, debounce, throttleRaf, uid, clone, fmt, fmtPct, dbm, isTyping, download, copyText, readFileText, on,
     escapeHtml, slug, once, deepEqual, prefersReducedMotion,
   };
 })();

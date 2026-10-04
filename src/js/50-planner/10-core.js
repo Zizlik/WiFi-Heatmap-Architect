@@ -12,12 +12,26 @@
     visible: false, tool: 'router', ctx: null, geomDirty: true, offs: null, cal: null, offsKey: '', measVer: 0, planVer: 0,
     a: null, q: null, sp: null, mode: 'signal', dim: false, heat: null, heatCell: 4, hatch: null, cont: null, contKey: '',
     cacheF: {}, cacheC: {}, bufC: null, rgba: {}, frame: null, stale: true,
+    peek: null,   // id of a measurement dot shown for a moment while the layer "Body měření" is off (20-stage showMeas)
   });
   const t = (k, p) => WH.i18n.t(k, p);
   PL.t = t;
   const subs = new Set();
   PL.on = (fn) => { subs.add(fn); return () => subs.delete(fn); };
-  const notify = (q) => subs.forEach((fn) => { try { fn(q); } catch (e) { console.error('[planner]', e); } });
+  /**
+   * A handled error of the planner (SPEC 10): kept in the error diary (Help -> "Nahlásit problém", "Podrobnosti") without
+   * the generic "Něco se nepovedlo" toast. o.toast = a specific message (text | {i18n, params}) shown with "Podrobnosti";
+   * o.bug = an unexpected failure of our own code (logged as console.error, which QA counts); else console.debug.
+   */
+  PL.report = (e, context, o) => {
+    o = o || {};
+    try {
+      if (WH.app && typeof WH.app.reportError === 'function') return WH.app.reportError(e, context, { toast: o.toast, kind: o.kind, ms: o.ms, log: o.bug ? 'error' : 'debug' });
+    } catch (x) { /* the report never becomes the problem */ }
+    if (o.bug) console.error(`[planner] ${context}`, e);
+    return null;
+  };
+  const notify = (q) => subs.forEach((fn) => { try { fn(q); } catch (e) { PL.report(e, 'planner.notify', { bug: true }); } });
 
   // ---------------------------------------------------------------------------------------------------------------
   // small helpers shared by all planner files
@@ -85,29 +99,55 @@
   /**
    * The measurements with a signal for every point: speed-test points without a measured signal (value null) get the
    * calibrated model's prediction at their spot (router at the baseline), flagged predictedSignal. Cached on the same
-   * key as the calibration (geometry, baseline, measurements, device, calibration switch).
+   * key as the calibration (geometry, baseline, measurements, device, calibration switch). "Nevím" points (band null,
+   * SPEC 13) first get the band the engine infers (model.resolveBands, bandInferred).
    */
   PL.filledMeasurements = () => {
     const p = PL.P();
     const ctx = ensureCtx(p);
     if (S.fillKey !== S.offsKey || !S.filled) {
-      S.filled = WH.engine.speed.fillSignals(ctx, p.measurements, { baseline: p.net.baseline, offsets: S.offs });
+      const M = WH.engine.model;
+      S.filled = WH.engine.speed.fillSignals(ctx, M.resolveBands(ctx, p, {}), { baseline: p.net.baseline, offsets: S.offs });
       S.fillKey = S.offsKey;
     }
     return S.filled;
   };
+  /**
+   * The speed curve(s) for a band of the map: one band -> that band's curve; Auto (SPEC 13) -> the per-band map
+   * (engine.speed.buildCurves; every cell uses its steered band's curve, the nearest band's when it has none).
+   * -> {curve: Curve|curves map|null, diag: speed.diagnose of the band (Auto: the best band)}
+   */
+  PL.speedCurve = (band, meas) => {
+    const p = PL.P();
+    const E = WH.engine;
+    const m = meas || PL.filledMeasurements();
+    const device = p.goal.device;
+    if (!E.model.isAuto(band)) {
+      const o = { band, device };
+      return { curve: E.speed.buildCurve(m, o), diag: E.speed.diagnose(m, o) };
+    }
+    const curves = E.speed.buildCurves(m, { device });
+    let diag = null;
+    for (const b of E.model.routerBandList(p)) {
+      const d = E.speed.diagnose(m, { band: b, device });
+      if (!diag || (d.ok && !diag.ok) || (d.ok === diag.ok && d.count > diag.count)) diag = d;
+    }
+    const any = E.BANDS.some((b) => curves[E.units.bandKey(b)]);
+    return { curve: any ? curves : null, diag: diag || { count: 0, distinct: 0, spread: 0, ok: false, needs: 'tests' } };
+  };
 
   /**
-   * Drag-frame analysis (cell 8, aa 1).  Same result shape as engine.analysis.run, but "today" together with its
-   * statistics is cached across frames (analysis.run re-sorts today's cells for stats/perRoom on every call, which
-   * is ~35 % of a frame on a real plan).
+   * Drag-frame analysis (cell 8, aa 1; band mode Auto with >= 2 router bands: cell 10, because every band's field is
+   * computed - keeps a drag frame of a real plan within ~16 ms).  Same result shape as engine.analysis.run, but "today"
+   * together with its statistics is cached across frames (analysis.run re-sorts today's cells for stats/perRoom on
+   * every call, which is ~35 % of a frame on a real plan).
    */
   function runCoarse(p, ctx) {
     const E = WH.engine;
     const M = E.model;
     const R = E.raster;
-    const grid = R.grid(ctx, { cell: 8 });
     const band = p.view.band;
+    const grid = R.grid(ctx, { cell: M.isAuto(band) && M.routerBandList(p).length > 1 ? 10 : 8 });
     const params = {
       today: { ...M.fieldParams(p, 'today', { band, offsets: S.offs }), aa: 1 },
       trial: { ...M.fieldParams(p, 'trial', { band, offsets: S.offs }), aa: 1 },
@@ -115,7 +155,9 @@
     const thr = p.model.threshold;
     const target = p.goal.room === 'all' ? null : [p.goal.room];
     const ex = p.goal.excluded;
-    const key = [ctx.version, band, params.today.router.x, params.today.router.y, M.offsetFor(S.offs, band), thr, p.goal.room, ex.join(',')].join('|');
+    // (Auto: the router's bands, the steering thresholds and every band's offset change "today" too)
+    const auto = M.isAuto(band) ? [M.routerBandList(p).join(','), JSON.stringify(M.steerOf(p)), JSON.stringify(S.offs)].join('/') : '';
+    const key = [ctx.version, band, grid.cell, auto, params.today.router.x, params.today.router.y, M.offsetFor(S.offs, band), thr, p.goal.room, ex.join(',')].join('|');
     let c = S.cacheC;
     if (c.key !== key) {
       const f = R.field(ctx, grid, params.today);
@@ -192,7 +234,7 @@
       PL.draw();
       S.frame = { q, compute: t2 - t0, analysis: t1 - t0, draw: performance.now() - t2, total: performance.now() - t0 };
     } catch (e) {
-      console.error('[planner] computation failed', e);
+      PL.report(e, 'planner.compute', { bug: true });
       return;
     }
     notify(q);
@@ -207,16 +249,38 @@
     const v = p.view;
     const g = a.grid;
     let sp = null;
+    S.capHatch = null;
     if (v.layer === 'speed') {
-      const o = { band: a.band, device: p.goal.device };
       const meas = PL.filledMeasurements();
-      const curve = E.speed.buildCurve(meas, o);
-      const sf = E.speed.fieldSpeed(a.ctx, g, a.params.trial, curve, PL.speedLimits(p), a.trial);
-      sp = { curve, reason: sf.reason, diag: E.speed.diagnose(meas, o) };
+      const cs = PL.speedCurve(a.band, meas);
+      const curve = cs.curve;
+      // SPEC 10: node-served cells go through the node's link (the backhaul band's own curve when there is one)
+      const bh = a.params.trial.node ? E.speed.buildCurve(meas, { band: p.node.backhaulBand, device: p.goal.device }) : null;
+      const sf = E.speed.fieldSpeed(a.ctx, g, a.params.trial, curve, PL.speedLimits(p), a.trial, { nodeWins: a.nodeWins || undefined, backhaulCurve: bh || undefined });
+      sp = { curve, bhCurve: bh, link: sf.link || null, reason: sf.reason, diag: cs.diag, approx: !!sf.approxAny, bands: sf.bands || null };
       if (sf.supported) {
         const gl = p.goal;
         sp.ratio = E.speed.ratioField(g, sf, gl.targetDown, gl.targetUp);
         sp.stats = E.speed.stats(g, sf, { roomIds: a.targetRooms, excluded: gl.excluded, targetDown: gl.targetDown, targetUp: gl.targetUp });
+        // where the node's link (3) or its own ceiling (4) is the binding limit: a subtle hatch + a legend line
+        if (sf.limitedBy && sf.source) {
+          const path = new Path2D();
+          const c = g.cell;
+          let n3 = 0;
+          let n4 = 0;
+          for (let r = 0; r < g.rows; r++) {
+            let s0 = -1;
+            for (let k = 0; k <= g.cols; k++) {
+              const i = r * g.cols + k;
+              const code = k < g.cols && sf.source[i] === 1 ? sf.limitedBy[i] : 0;
+              const on = code === 3 || code === 4;
+              if (code === 3) n3++; else if (code === 4) n4++;
+              if (on && s0 < 0) s0 = k;
+              else if (!on && s0 >= 0) { path.rect(s0 * c, r * c, (k - s0) * c, c); s0 = -1; }
+            }
+          }
+          if (n3 + n4) { S.capHatch = path; sp.capKind = n4 > n3 ? 'device' : 'backhaul'; }
+        }
       }
     }
     S.sp = sp;
@@ -251,15 +315,18 @@
       }
       if (any) S.hatch = path;
     }
-    // range lines: one dashed iso-line per band at model.rangeThreshold (lower resolution while dragging)
+    // range lines: one dashed iso-line per band the router sends (SPEC 13: net.routerBands) at model.rangeThreshold
+    // (lower resolution while dragging)
     S.cont = null;
-    if (v.ranges) {
+    // (signal and change views only - the speed legend has no range-line key, like before)
+    if (v.ranges && mode !== 'speed') {
       const st = a.params.trial;
-      const key = [a.ctx.version, st.router.x, st.router.y, JSON.stringify(st.node), JSON.stringify(S.offs), p.model.rangeThreshold, S.q].join('|');
+      const rb = E.model.routerBandList(p);
+      const key = [a.ctx.version, st.router.x, st.router.y, JSON.stringify(st.node), JSON.stringify(S.offs), p.model.rangeThreshold, S.q, rb.join(',')].join('|');
       if (key !== S.contKey) {
         const res = S.q === 'coarse' ? [60, 52] : [120, 104];
         S.contAll = {};
-        for (const b of E.BANDS) S.contAll[b] = E.raster.contours(a.ctx, { band: b, router: st.router, node: st.node, offsets: S.offs, threshold: p.model.rangeThreshold, res });
+        for (const b of rb) S.contAll[b] = E.raster.contours(a.ctx, { band: b, router: st.router, node: st.node, offsets: S.offs, threshold: p.model.rangeThreshold, res });
         S.contKey = key;
       }
       S.cont = S.contAll;
@@ -440,9 +507,6 @@
   // faint shadow.  Rendered into one cached layer that only changes with the view (pan / zoom / resize), the plan
   // outline or the theme - while the router is dragged it is a single drawImage.
   // ---------------------------------------------------------------------------------------------------------------
-  const dark = () => !!(WH.ui.theme && WH.ui.theme.effective && WH.ui.theme.effective() === 'dark');
-  /** Shell token, else the SPEC 7.5 value (the tokens may not exist in every build). */
-  const tok = (name, light, darkV) => col(name) || (dark() ? darkV : light);
   /** Dot spacing levels in metres (1-2-5 steps); every 5th dot in both directions is a "major" dot. */
   const DOT_LEVELS = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50];
   PL.dotLevel = (pxPerMetre) => DOT_LEVELS.find((l) => l * pxPerMetre >= 14) || DOT_LEVELS[DOT_LEVELS.length - 1];
@@ -451,9 +515,10 @@
   function backdrop(o, G, p) {
     const bw = Math.round(o.w * o.dpr);
     const bh = Math.round(o.h * o.dpr);
-    const dot = tok('--stage-dot', 'rgba(19,35,58,.13)', 'rgba(231,238,250,.10)');
-    const major = tok('--stage-dot-major', 'rgba(19,35,58,.21)', 'rgba(231,238,250,.16)');
-    const shadow = tok('--stage-sheet-shadow', 'rgba(19,35,58,.16)', 'rgba(0,0,0,.5)');
+    // shell tokens (00-tokens.css defines them for light, Deep dark and OLED - SPEC 7.5 / 12)
+    const dot = col('--stage-dot');
+    const major = col('--stage-dot-major');
+    const shadow = col('--stage-sheet-shadow');
     const room = col('--map-room');
     const key = [bw, bh, o.dpr, o.s, o.tx, o.ty, p.scale.mpp, S.planVer, dot, major, shadow, room].join('|');
     if (back && key === backKey) return back;
@@ -541,12 +606,23 @@
         c.fillRect(0, 0, o.w * o.dpr, o.h * o.dpr);
         c.restore();
       }
+      // Speed view: the second node's link / ceiling is what limits the speed here (SPEC 10) - a light, finer hatch
+      if (S.capHatch && S.mode === 'speed') {
+        c.save();
+        c.clip(S.capHatch);
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.fillStyle = pattern(c, col('--map-wall'), 5, 1.1, o.dpr);
+        c.globalAlpha = 0.3;
+        c.fillRect(0, 0, o.w * o.dpr, o.h * o.dpr);
+        c.restore();
+      }
       if (S.cont) {
         c.lineJoin = 'round';
         c.lineCap = 'round';
         for (const b of WH.engine.BANDS) {
+          if (!S.cont[b]) continue;
           const path = new Path2D();
-          for (const ch of S.cont[b] || []) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
+          for (const ch of S.cont[b]) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
           c.setLineDash([]);
           c.strokeStyle = col('--map-halo');
           c.lineWidth = 4 * px;
@@ -622,15 +698,17 @@
         const fs = Math.min(base, (base * (L.cw * s - 10)) / tw, (L.ch * s - 6) / (lines.length * 1.25));
         if (!(fs >= 9)) continue;
         const lh = fs * 1.25;
-        const cy = clearOf(obst, L, x, y, (tw * fs) / base + 6, lines.length * lh, s, o);
+        const [cx, cy] = clearOf(obst, L, x, y, (tw * fs) / base + 6, lines.length * lh, s, o);
+        // where the name ended up: the dots' value labels try not to cover it (20-stage layoutLabels)
+        if (o.roomLabs) { const hw = (tw * fs) / base / 2 + 2; const hh = (lines.length * lh) / 2; o.roomLabs.push({ l: cx - hw, t: cy - hh, r: cx + hw, b: cy + hh }); }
         lines.forEach(([txt, wt], i) => {
           const yy = cy + (i - (lines.length - 1) / 2) * lh;
           c.font = `${wt} ${i ? fs * 0.92 : fs}px ${fam}`;
           c.lineWidth = 3.5;
           c.strokeStyle = col('--map-halo');
-          c.strokeText(txt, x, yy);
+          c.strokeText(txt, cx, yy);
           c.fillStyle = col('--map-label');
-          c.fillText(txt, x, yy);
+          c.fillText(txt, cx, yy);
         });
       }
     }
@@ -649,37 +727,46 @@
     disc(p.net.optic, 16);
     if (p.node.mode !== 'none') disc(p.node.pos, 17);
     const st = PL.stage;
+    // layer "Body měření" off: no dots on the map (a dot peeked from the list still counts)
     for (const m of p.measurements) {
+      if (p.view.points === false && S.peek !== m.id) continue;
       const c = sc(m);
       out.push({ l: c.x - 10, t: c.y - 10, r: c.x + 10, b: c.y + 10 });
+      // the dot's value label where layoutLabels (20-stage) put it
       const b = st && st.meas && st.meas.get(m.id);
-      if (b && b._lw && !b.hidden && m.band === p.view.band) {
-        const flip = b.classList.contains('is-flip');
-        out.push({ l: flip ? c.x - 10 - b._lw : c.x + 10, t: c.y - 10, r: flip ? c.x - 10 : c.x + 10 + b._lw, b: c.y + 10 });
-      }
+      if (b && b._lr && !b.hidden) out.push({ l: c.x + b._lr.l, t: c.y + b._lr.t, r: c.x + b._lr.r, b: c.y + b._lr.b });
     }
     return out;
   }
 
-  /** Vertical position (CSS px) for a room label of size w x h centred at (x, y): y itself when no marker covers it,
-   *  else the nearest spot just above / below the covering markers that is still inside the room and clear of every
-   *  marker; y when there is none (the marker then simply sits on the name, as before). */
+  /** Position [x, y] (CSS px) for a room label of size w x h centred at (x, y): itself when no marker covers it, else the
+   *  nearest spot just above / below / beside the covering markers that is still inside the room and clear of every
+   *  marker (a router dragged onto the name pushes the name aside - SPEC 10); itself when there is none. */
   function clearOf(obst, L, x, y, w, h, s, o) {
-    if (!obst.length) return y;
-    const hits = (cy) => obst.filter((r) => r.l < x + w / 2 && r.r > x - w / 2 && r.t < cy + h / 2 && r.b > cy - h / 2);
-    const first = hits(y);
-    if (!first.length) return y;
+    if (!obst.length) return [x, y];
+    const hits = (cx, cy) => obst.some((r) => r.l < cx + w / 2 && r.r > cx - w / 2 && r.t < cy + h / 2 && r.b > cy - h / 2);
+    if (!hits(x, y)) return [x, y];
     const G = WH.engine.geom;
-    const inside = (cy) => [[x - w / 2, cy - h / 2], [x + w / 2, cy - h / 2], [x - w / 2, cy + h / 2], [x + w / 2, cy + h / 2]]
+    // inside the room: the middle and most of the width (a long name may already overhang a narrow room a little)
+    const inside = (cx, cy) => [[cx, cy], [cx - w * 0.4, cy], [cx + w * 0.4, cy], [cx, cy - h * 0.4], [cx, cy + h * 0.4]]
       .every(([sx, sy]) => G.pointInPolygon({ x: (sx - o.tx) / s / W, y: (sy - o.ty) / s / H }, L.pts));
+    const ys = [y];
+    const xs = [x];
+    for (const r of obst) { ys.push(r.b + h / 2 + 3, r.t - h / 2 - 3); xs.push(r.r + w / 2 + 3, r.l - w / 2 - 3); }
+    const limY = Math.max(60, h * 3);
+    const limX = Math.max(60, w * 0.75);
     const cand = [];
-    for (const r of obst) { cand.push(r.b + h / 2 + 3, r.t - h / 2 - 3); }
-    cand.sort((m, n) => Math.abs(m - y) - Math.abs(n - y));
-    for (const cy of cand) {
-      if (Math.abs(cy - y) > Math.max(60, h * 3)) break;
-      if (!hits(cy).length && inside(cy)) return cy;
+    for (const cy of ys) {
+      if (Math.abs(cy - y) > limY) continue;
+      for (const cx of xs) {
+        if (Math.abs(cx - x) > limX) continue;
+        // a vertical step reads more naturally than a sideways one
+        cand.push([Math.abs(cy - y) + Math.abs(cx - x) * 1.6, cx, cy]);
+      }
     }
-    return y;
+    cand.sort((m, n) => m[0] - n[0]);
+    for (const [, cx, cy] of cand) if (!hits(cx, cy) && inside(cx, cy)) return [cx, cy];
+    return [x, y];
   }
 
   let drawRaf = 0;
@@ -697,9 +784,11 @@
     const bh = Math.round(h * dpr);
     if (cv.width !== bw || cv.height !== bh) { cv.width = bw; cv.height = bh; }
     const vw = st.vp.view;
+    const roomLabs = [];
     try {
-      drawScene(cv.getContext('2d'), { s: vw.scale, tx: vw.tx, ty: vw.ty, dpr, w, h, z: vw.scale / (st.vp.fitScale || 1) });
-    } catch (e) { console.error('[planner] drawing failed', e); }
+      drawScene(cv.getContext('2d'), { s: vw.scale, tx: vw.tx, ty: vw.ty, dpr, w, h, z: vw.scale / (st.vp.fitScale || 1), roomLabs });
+    } catch (e) { PL.report(e, 'planner.draw', { bug: true }); }
+    S.roomLabs = roomLabs;
     st.place();
   };
 })();

@@ -653,19 +653,254 @@
    *        edge cells are those on wedge / shadow / wall edges (~1.3-2x the cost); with softening only the cells along
    *        a wall inside their own room (everything else is blurred anyway; ~no extra cost).
    * @param {Float32Array} [reuse] optional buffer of cols*rows to fill instead of allocating (drag loop)
-   * @returns {{field:Float32Array, nodeWins:Uint8Array|null}} nodeWins[i]=1 where the node beats the router
+   * @returns {{field:Float32Array, nodeWins:Uint8Array|null, bands:Uint8Array|null}} nodeWins[i]=1 where the node beats
+   *   the router. Band mode Auto (SPEC 13: params.band 'auto' with bands / steer as model.fieldParams puts them): every
+   *   router band is computed and each cell takes the band of the steering rule (model.steerBand); bands[i] = 0 / 1 / 2
+   *   for 2.4 / 5 / 6 GHz (255 off the floor), null for a single band.
    */
   function fieldEx(ctx, g, params, reuse) {
+    if (model.isAuto(params)) {
+      const res = fieldAuto(ctx, g, params, reuse);
+      remember(res, params);
+      return res;
+    }
     // the obstacle losses of the field's band (SPEC 7.1); everything below works on that band's view of the context
     ctx = model.forBand(ctx, params.band !== undefined ? params.band : params.targetBand);
     const aa = Math.floor(params.aa || 1);
     const sigma = softSigmaCells(ctx, g, params);
+    let res = null;
     if (sigma > 0) {
       const radii = boxRadii(sigma);
-      if (radii.some((r) => r > 0)) return fieldSoft(ctx, g, params, reuse, aa, radii);
+      if (radii.some((r) => r > 0)) res = fieldSoft(ctx, g, params, reuse, aa, radii);
     }
-    if (aa > 1 && aa <= 4 && g.cell % aa === 0) return fieldAA(ctx, g, params, reuse, aa);
-    return fieldPlain(ctx, g, params, reuse);
+    if (!res) res = aa > 1 && aa <= 4 && g.cell % aa === 0 ? fieldAA(ctx, g, params, reuse, aa) : fieldPlain(ctx, g, params, reuse);
+    res.bands = null;
+    remember(res, params);
+    return res;
+  }
+
+  // ---- band mode Auto (SPEC 13) ----------------------------------------------------------------------------------
+  // Every band the router sends is computed as its own field (softened, calibrated, the node where it serves that
+  // band); then every cell takes the band of the steering rule (model.steerBand). Per-band scratch fields are kept per
+  // grid size, so a drag loop that alternates cell 8 / cell 4 does not reallocate.
+  const autoScratch = new Map();
+  const NO_BAND = 255;
+
+  /** The steering rule on the three per-band values of one place (NaN = the band is not sent): 0/1/2, -1 = none. */
+  function pickBandIdx(v0, v1, v2, st) {
+    if (v2 === v2 && v2 >= st.six) return 2;
+    if (v1 === v1 && v1 >= st.five) return 1;
+    if (v0 === v0) return 0;
+    if (v1 === v1 && (v2 !== v2 || v1 >= v2)) return 1;
+    return v2 === v2 ? 2 : -1;
+  }
+
+  function fieldAuto(ctx, g, params, reuse) {
+    const bands = model.routerBandList(params.bands);
+    const st = model.steerOf(params.steer);
+    const n = g.cols * g.rows;
+    let bufs = autoScratch.get(n);
+    if (!bufs) {
+      if (autoScratch.size > 4) autoScratch.clear();
+      bufs = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+      autoScratch.set(n, bufs);
+    }
+    const per = [null, null, null];
+    for (const b of bands) {
+      const bi = model.bandIndex(b);
+      const one = { ...params, band: b };
+      delete one.targetBand;
+      delete one.bands;
+      delete one.steer;
+      const r = fieldEx(ctx, g, one, bufs[bi]);
+      per[bi] = { f: r.field, wins: r.nodeWins };
+    }
+    const out = reuse && reuse.length === n ? reuse : new Float32Array(n);
+    out.fill(NaN);
+    const bandIdx = new Uint8Array(n).fill(NO_BAND);
+    const nodeWins = per.some((x) => x && x.wins) ? new Uint8Array(n) : null;
+    const f0 = per[0] && per[0].f;
+    const f1 = per[1] && per[1].f;
+    const f2 = per[2] && per[2].f;
+    const idx = g.idx;
+    for (let m = 0; m < idx.length; m++) {
+      const i = idx[m];
+      const k = pickBandIdx(f0 ? f0[i] : NaN, f1 ? f1[i] : NaN, f2 ? f2[i] : NaN, st);
+      if (k < 0) continue;
+      out[i] = per[k].f[i];
+      bandIdx[i] = k;
+      if (nodeWins && per[k].wins && per[k].wins[i]) nodeWins[i] = 1;
+    }
+    return { field: out, nodeWins, bands: bandIdx };
+  }
+
+  // Which cells of a field array the second node serves (SPEC 10): speed.fieldSpeed / homeSummary need the source of
+  // every cell. fieldEx remembers it per output array (a WeakMap, nothing is kept alive), together with the source
+  // positions, so a caller that hands in `a.trial` (or a reused drag buffer) needs nothing extra - and a stale entry
+  // (the same buffer refilled by other code) is never used: the positions must match. In the band mode Auto (SPEC 13)
+  // the band of every cell is remembered the same way (the key then also holds the bands, thresholds and offsets).
+  const winsOf = new WeakMap();
+  const srcKey = (params) => {
+    const n = params.node;
+    if (model.isAuto(params)) {
+      const bands = model.routerBandList(params.bands);
+      const st = model.steerOf(params.steer);
+      const on = !!(n && n.mode !== 'none' && n.pos);
+      const nodeBands = on ? bands.map((b) => (model.nodeActive(n, b) ? 1 : 0)).join('') : '';
+      const offs = bands.map((b) => model.offsetFor(params.offsets, b)).join(',');
+      return ['auto', bands.join(','), st.six, st.five, offs, params.router.x, params.router.y, on ? n.pos.x : '', on ? n.pos.y : '', on ? n.power || 0 : '', nodeBands].join('|');
+    }
+    const b = units.normBand(params.band !== undefined ? params.band : params.targetBand);
+    const on = model.nodeActive(n, b);
+    return [b, params.router.x, params.router.y, on ? n.pos.x : '', on ? n.pos.y : '', on ? n.power || 0 : ''].join('|');
+  };
+  function remember(res, params) {
+    try {
+      winsOf.set(res.field, { key: srcKey(params), nodeWins: res.nodeWins, bands: res.bands || null });
+    } catch (e) {
+      /* not an object key: nothing to remember */
+    }
+  }
+
+  /**
+   * Tell the raster that `f` holds the field of `params` with these nodeWins / bands (e.g. an independent copy of a
+   * field computed by fieldEx), so nodeWinsOf / bandsOf - and speed.fieldSpeed / homeSummary - find them.
+   * @param {Float32Array} f
+   * @param {object} params the params the field was computed with
+   * @param {{nodeWins?:Uint8Array|null, bands?:Uint8Array|null}} [extra]
+   */
+  function adoptField(f, params, extra) {
+    if (!f || typeof f !== 'object' || !params || !params.router) return;
+    const x = extra || {};
+    remember({ field: f, nodeWins: x.nodeWins || null, bands: x.bands || null }, params);
+  }
+
+  /**
+   * The per-cell band (SPEC 13, band mode Auto) of a field array computed by field()/fieldEx() with these params:
+   * Uint8Array (0 = 2.4, 1 = 5, 2 = 6 GHz, 255 off the floor), null for a single-band field, undefined when the array
+   * was not (or no longer) computed for them.
+   */
+  function bandsOf(f, params) {
+    if (!f || typeof f !== 'object' || !params || !params.router) return undefined;
+    const hit = winsOf.get(f);
+    if (!hit) return undefined;
+    return hit.key === srcKey(params) ? hit.bands : undefined;
+  }
+
+  /**
+   * Share of the floor on each band (SPEC 13, the band-zone legend "kde budeš na 6 / 5 / 2,4 GHz").
+   * @param {object} g grid()
+   * @param {Uint8Array|null} bands fieldEx().bands / bandsOf()
+   * @param {number[]|number|null} [roomIds] null = whole flat minus `excluded`
+   * @param {number[]} [excluded]
+   * @returns {{'2.4':number,'5':number,'6':number}} percent of the selected floor cells (0 each without bands)
+   */
+  function bandShare(g, bands, roomIds, excluded) {
+    const out = { '2.4': 0, '5': 0, '6': 0 };
+    if (!g || !g.roomCells || !bands || bands.length !== g.cols * g.rows) return out;
+    const cnt = [0, 0, 0];
+    let total = 0;
+    for (const id of selectRooms(g, roomIds, excluded)) {
+      const cells = g.roomCells.get(id);
+      if (!cells) continue;
+      for (let k = 0; k < cells.length; k++) {
+        const b = bands[cells[k]];
+        if (b > 2) continue;
+        cnt[b]++;
+        total++;
+      }
+    }
+    if (total) {
+      out['2.4'] = (100 * cnt[0]) / total;
+      out['5'] = (100 * cnt[1]) / total;
+      out['6'] = (100 * cnt[2]) / total;
+    }
+    return out;
+  }
+
+  /** '#rrggbb' / '#rgb' / [r,g,b] -> [r,g,b] or null. */
+  function rgbOf(c) {
+    if (Array.isArray(c) && c.length >= 3 && c.slice(0, 3).every((v) => isNum(v))) return c.slice(0, 3).map((v) => clamp(Math.round(v), 0, 255));
+    if (typeof c !== 'string') return null;
+    let m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(c.trim());
+    if (m) return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+    m = /^#([0-9a-f])([0-9a-f])([0-9a-f])$/i.exec(c.trim());
+    if (m) return [parseInt(m[1] + m[1], 16), parseInt(m[2] + m[2], 16), parseInt(m[3] + m[3], 16)];
+    return null;
+  }
+
+  /**
+   * The optional band-zone overlay (SPEC 13): one pixel per grid cell in the colour of the band a steering client uses
+   * there - colours come from the caller (the UI reads them from its CSS tokens). Same conventions as colorize().
+   * @param {object} g grid()
+   * @param {Uint8Array} bands fieldEx().bands
+   * @param {{'2.4'?:string|number[], '5'?:string|number[], '6'?:string|number[]}} colors '#rrggbb' or [r,g,b]; a band
+   *        without a colour stays transparent
+   * @param {{alpha?:number, bleed?:boolean, target?:Uint8ClampedArray}} [opts] alpha default 0.22
+   * @returns {{width:number,height:number,data:Uint8ClampedArray}}
+   */
+  function bandZones(g, bands, colors, opts) {
+    const o = opts || {};
+    const n = g.cols * g.rows;
+    const data = o.target && o.target.length === n * 4 ? o.target : new Uint8ClampedArray(n * 4);
+    if (data === o.target) data.fill(0);
+    if (!bands || bands.length !== n) return { width: g.cols, height: g.rows, data };
+    const a255 = Math.round(clamp(o.alpha === undefined ? 0.22 : Number(o.alpha) || 0, 0, 1) * 255);
+    const c = colors || {};
+    const rgb = [rgbOf(c['2.4']), rgbOf(c['5']), rgbOf(c['6'])];
+    const idx = g.idx;
+    for (let m = 0; m < idx.length; m++) {
+      const i = idx[m];
+      const b = bands[i];
+      const col = b <= 2 ? rgb[b] : null;
+      if (!col) continue;
+      const j = i * 4;
+      data[j] = col[0];
+      data[j + 1] = col[1];
+      data[j + 2] = col[2];
+      data[j + 3] = a255;
+    }
+    if (o.bleed !== false) bleedRim(g, data);
+    return { width: g.cols, height: g.rows, data };
+  }
+
+  /**
+   * Borders between the band zones (SPEC 13) as smoothed chains of normalized points (like contours): one set per
+   * pair of neighbouring bands that occur. Traced on the band rank of every cell, so a border runs midway between
+   * cells of different bands.
+   * @param {object} g grid()
+   * @param {Uint8Array} bands fieldEx().bands
+   * @param {{smooth?:number}} [opts] Chaikin iterations (default 2, 0..4)
+   * @returns {Array<Array<{x:number,y:number}>>}
+   */
+  function bandEdges(g, bands, opts) {
+    if (!g || !bands || bands.length !== g.cols * g.rows) return [];
+    const iters = opts && opts.smooth !== undefined ? clamp(Math.floor(Number(opts.smooth)) || 0, 0, 4) : 2;
+    const present = [0, 1, 2].filter((b) => g.idx.some((i) => bands[i] === b));
+    if (present.length < 2) return [];
+    const rank = new Float32Array(bands.length).fill(NaN);
+    for (let m = 0; m < g.idx.length; m++) {
+      const i = g.idx[m];
+      const r = present.indexOf(bands[i]);
+      if (r >= 0) rank[i] = r;
+    }
+    const out = [];
+    for (let level = 0; level < present.length - 1; level++) {
+      const lat = latticeFromField(g, rank, level + 0.5);
+      for (const ch of march(lat)) out.push(iters ? chaikin(thinChain(ch, 0.5 * lat.spacing), iters) : ch);
+    }
+    return out;
+  }
+
+  /**
+   * nodeWins of a field array computed by field()/fieldEx() with these params (null = the node serves nowhere), or
+   * undefined when this array was not (or no longer) computed for them.
+   */
+  function nodeWinsOf(f, params) {
+    if (!f || typeof f !== 'object' || !params || !params.router) return undefined;
+    const hit = winsOf.get(f);
+    if (!hit) return undefined;
+    return hit.key === srcKey(params) ? hit.nodeWins : undefined;
   }
 
   /**
@@ -1017,46 +1252,49 @@
         data[j + 3] = a255;
       }
     }
-    if (o.bleed !== false) {
-      const rim = g.rim;
-      const cols = g.cols;
-      const rows = g.rows;
-      for (let m = 0; m < rim.length; m++) {
-        const i = rim[m];
-        const r = (i / cols) | 0;
-        const c = i - r * cols;
-        let sr = 0;
-        let sg = 0;
-        let sb = 0;
-        let sa = 0;
-        let cnt = 0;
-        for (let dr = -1; dr <= 1; dr++) {
-          const rr = r + dr;
-          if (rr < 0 || rr >= rows) continue;
-          for (let dc = -1; dc <= 1; dc++) {
-            const cc = c + dc;
-            if (cc < 0 || cc >= cols) continue;
-            const k = rr * cols + cc;
-            if (!g.room[k]) continue;
-            const q = k * 4;
-            if (data[q + 3] === 0) continue;
-            sr += data[q];
-            sg += data[q + 1];
-            sb += data[q + 2];
-            sa += data[q + 3];
-            cnt++;
-          }
-        }
-        if (cnt) {
-          const j = i * 4;
-          data[j] = sr / cnt;
-          data[j + 1] = sg / cnt;
-          data[j + 2] = sb / cnt;
-          data[j + 3] = sa / cnt;
+    if (o.bleed !== false) bleedRim(g, data);
+    return { width: g.cols, height: g.rows, data };
+  }
+
+  /** Repeat the edge colour into the 1-cell rim around the floor (mean of the opaque floor neighbours). In place. */
+  function bleedRim(g, data) {
+    const rim = g.rim;
+    const cols = g.cols;
+    const rows = g.rows;
+    for (let m = 0; m < rim.length; m++) {
+      const i = rim[m];
+      const r = (i / cols) | 0;
+      const c = i - r * cols;
+      let sr = 0;
+      let sg = 0;
+      let sb = 0;
+      let sa = 0;
+      let cnt = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        const rr = r + dr;
+        if (rr < 0 || rr >= rows) continue;
+        for (let dc = -1; dc <= 1; dc++) {
+          const cc = c + dc;
+          if (cc < 0 || cc >= cols) continue;
+          const k = rr * cols + cc;
+          if (!g.room[k]) continue;
+          const q = k * 4;
+          if (data[q + 3] === 0) continue;
+          sr += data[q];
+          sg += data[q + 1];
+          sb += data[q + 2];
+          sa += data[q + 3];
+          cnt++;
         }
       }
+      if (cnt) {
+        const j = i * 4;
+        data[j] = sr / cnt;
+        data[j + 1] = sg / cnt;
+        data[j + 2] = sb / cnt;
+        data[j + 3] = sa / cnt;
+      }
     }
-    return { width: g.cols, height: g.rows, data };
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -1139,6 +1377,20 @@
     for (let i = 0; i <= nx; i++) X[i] = i / nx;
     for (let j = 0; j <= ny; j++) Y[j] = j / ny;
     return { nx, ny, v, X, Y, spacing: Math.min(W / nx, H / ny) };
+  }
+
+  /** latticeExact() in the band mode Auto (SPEC 13): every router band traced, the steering rule per node. */
+  function latticeExactAuto(ctx, opts, nx, ny) {
+    const st = model.steerOf(opts.steer);
+    const lats = [null, null, null];
+    for (const b of model.routerBandList(opts.bands)) lats[model.bandIndex(b)] = latticeExact(ctx, b, { ...opts, offset: undefined, threshold: 0 }, nx, ny);
+    const first = lats.find(Boolean);
+    const v = new Float32Array(first.v.length);
+    for (let i = 0; i < v.length; i++) {
+      const k = pickBandIdx(lats[0] ? lats[0].v[i] : NaN, lats[1] ? lats[1].v[i] : NaN, lats[2] ? lats[2].v[i] : NaN, st);
+      v[i] = k < 0 ? NaN : lats[k].v[i] - opts.threshold;
+    }
+    return { ...first, v };
   }
 
   /**
@@ -1299,8 +1551,10 @@
    * analysis' trial field: exactly the colours, nothing recomputed). soften: 0 (or a plan without rooms) traces the
    * exact, unsoftened model over the whole canvas on a (res[0]+1) x (res[1]+1) lattice, as before.
    * @param {object} ctx
-   * @param {{band:number, router:{x,y}, node?:object|null, offset?:number, offsets?:object, threshold:number,
-   *          res?:[number,number], soften?:number, smooth?:number, grid?:object, field?:Float32Array}} opts
+   * @param {{band:number|'auto', bands?:number[], steer?:object, router:{x,y}, node?:object|null, offset?:number,
+   *          offsets?:object, threshold:number, res?:[number,number], soften?:number, smooth?:number, grid?:object,
+   *          field?:Float32Array}} opts band 'auto' (SPEC 13): the range lines of the steered field (bands / steer as
+   *          model.fieldParams puts them; every band with its own offset from offsets)
    *        offset (dB, this band) or offsets map; the node's power is added for the node source. smooth = Chaikin
    *        iterations (default 2, 0 = raw marching-squares polylines, max 4); before smoothing, points closer than
    *        half a lattice cell to their predecessor are dropped (marching-squares stubs). Smoothed lines stay within
@@ -1308,7 +1562,8 @@
    * @returns {Array<Array<{x:number,y:number}>>} chains of normalized points; a closed loop repeats its first point at the end
    */
   function contours(ctx, opts) {
-    const band = units.normBand(opts.band);
+    const auto = model.isAuto(opts);
+    const band = auto ? 'auto' : units.normBand(opts.band);
     if (band === null || !opts.router) throw new RangeError('raster.contours: band and router are required');
     const iters = opts.smooth === undefined ? 2 : clamp(Math.floor(Number(opts.smooth)) || 0, 0, 4);
     let lat;
@@ -1320,12 +1575,18 @@
       const soften = model.softenOf(opts.soften);
       if (soften > 0 && ctx.rooms.length) {
         const g = grid(ctx, { cell: clamp(Math.round(W / nx), 2, 64) });
-        const off = isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band);
-        const offsets = { '2.4': 0, '5': 0, '6': 0 };
-        offsets[units.bandKey(band)] = off;
-        const f = field(ctx, g, { band, router: opts.router, node: opts.node || null, offsets, soften, aa: 1 });
-        lat = latticeFromField(g, f, opts.threshold);
-      } else lat = latticeExact(ctx, band, opts, nx, ny);
+        let params;
+        if (auto) {
+          // band mode Auto (SPEC 13): the steered field, every band with its own offset
+          params = { band: 'auto', bands: opts.bands, steer: opts.steer, router: opts.router, node: opts.node || null, offsets: opts.offsets, soften, aa: 1 };
+        } else {
+          const off = isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band);
+          const offsets = { '2.4': 0, '5': 0, '6': 0 };
+          offsets[units.bandKey(band)] = off;
+          params = { band, router: opts.router, node: opts.node || null, offsets, soften, aa: 1 };
+        }
+        lat = latticeFromField(g, field(ctx, g, params), opts.threshold);
+      } else lat = auto ? latticeExactAuto(ctx, opts, nx, ny) : latticeExact(ctx, band, opts, nx, ny);
     }
     const chains = march(lat);
     if (!iters) return chains;
@@ -1338,6 +1599,12 @@
     cellAreaM2,
     field,
     fieldEx,
+    nodeWinsOf,
+    bandsOf,
+    adoptField,
+    bandShare,
+    bandZones,
+    bandEdges,
     diff,
     smooth,
     stats,

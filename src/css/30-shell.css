@@ -18,6 +18,9 @@
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; margin-right: 6px; color: var(--ink); text-decoration: none; border-radius: var(--r-sm); }
 .brand:hover { color: var(--ink); }
 .brand__logo { flex: none; width: 32px; height: 32px; }
+.brand__tile { fill: var(--brand-bg); }
+.brand__wave { stroke: var(--brand-ink); }
+.brand__dot { fill: var(--brand-ink); }
 .brand__text { display: flex; flex-direction: column; min-width: 0; line-height: 1.15; }
 .brand__name { font-size: 1rem; font-weight: 750; letter-spacing: -.01em; white-space: nowrap; }
 .brand__sub { font-size: .7333rem; color: var(--muted); white-space: nowrap; }
@@ -192,7 +195,7 @@
   position: absolute; width: min(360px, calc(100vw - 24px));
   padding: 16px 18px 14px;
   border: 1px solid var(--line-strong); border-radius: var(--r-lg);
-  background: var(--surface); color: var(--ink);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
 }
 .tour__step { font-size: var(--fs-xs); font-weight: 700; color: var(--accent); letter-spacing: .04em; text-transform: uppercase; }
@@ -215,11 +218,62 @@
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: 40px 48px; max-width: 520px; text-align: center;
   border: 3px dashed var(--accent); border-radius: 24px;
-  background: var(--surface); color: var(--ink);
+  background: var(--surface-float); color: var(--ink);
   box-shadow: var(--shadow-pop);
 }
 .drop-overlay__box .icon-badge { margin-bottom: 4px; }
 .drop-overlay__title { font-size: var(--fs-xl); font-weight: 800; }
+
+/* ---- Theme picker (Help -> Vzhled; SPEC 12) ------------------------------------------ */
+/* four preview tiles in a radio group; the swatch shows each palette's page, a card with a line of text and the
+   accent dot (colours set inline from WH.ui.theme's preview table - they preview the OTHER themes too) */
+.theme-picker { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.theme-opt {
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  min-width: 0; padding: 8px 8px 10px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface); color: var(--ink); text-align: left; cursor: pointer;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), background-color var(--t-fast);
+}
+.theme-opt:hover { border-color: var(--accent-line); }
+.theme-opt[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-wash); }
+.theme-opt:focus-visible { outline-offset: 2px; }
+.theme-opt__swatch { display: flex; height: 52px; border-radius: var(--r-sm); overflow: hidden; border: 1px solid var(--line); }
+.theme-opt__half { flex: 1 1 0; display: grid; place-items: center; padding: 8px; min-width: 0; }
+.theme-opt__card { position: relative; width: 100%; height: 100%; max-width: 92px; border: 1px solid; border-radius: 6px; }
+.theme-opt__line { position: absolute; left: 7px; top: 8px; width: 46%; height: 3px; border-radius: 2px; opacity: .85; }
+.theme-opt__dot { position: absolute; right: 7px; bottom: 6px; width: 9px; height: 9px; border-radius: 50%; }
+.theme-opt__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 0 2px; }
+.theme-opt__name { font-weight: 700; font-size: .9333rem; }
+.theme-opt__desc { color: var(--muted); font-size: var(--fs-xs); line-height: 1.35; }
+@media (max-width: 360px) { .theme-picker { grid-template-columns: 1fr; } }
+
+/* ---- Diagnostics: "Podrobnosti" dialog + Help -> "Nahlásit problém" (SPEC 10) --------- */
+.diag-kv { gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.diag-kv > div { display: grid; grid-template-columns: minmax(96px, 32%) minmax(0, 1fr); align-items: baseline; gap: 12px; }
+.diag-kv dd { text-align: left; font-weight: 600; overflow-wrap: anywhere; }
+.diag-mono { font-family: var(--font-mono); font-size: .8667rem; font-weight: 500 !important; }
+.diag-msg { color: var(--ink); }
+.diag-pre {
+  margin: 0; padding: 10px 12px; max-height: 220px; overflow: auto;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--ink-2);
+  font: 500 .8rem/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: text; -webkit-user-select: text;
+}
+.diag-pre--full { max-height: 260px; }
+.diag-status { min-height: 1.4em; margin: 0; color: var(--ok); font-size: var(--fs-sm); font-weight: 600; }
+.diag-status:empty { min-height: 0; }
+.diag-status.is-bad { color: var(--danger); }
+.diag-stack > summary { min-height: 36px; font-size: var(--fs-sm); color: var(--ink-2); }
+.diag-dialog .modal__foot { justify-content: space-between; }
+/* phones (bottom sheet): two full-width buttons, the main action ("Zkopírovat podrobnosti") on top, next to the thumb */
+@media (max-width: 600px) { .diag-dialog .modal__foot { flex-direction: column-reverse; align-items: stretch; } }
+.diag-report .help-list { font-size: var(--fs-sm); }
+
+/* ---- OLED black: hairlines carry the structure (no shadows on black) -------------------- */
+:root[data-theme="oled"] #app-header { backdrop-filter: none; -webkit-backdrop-filter: none; }
+:root[data-theme="oled"] .welcome-card:hover { border-color: var(--accent); }
 
 /* ---- Misc shell bits ----------------------------------------------------------- */
 .noscript-msg { margin: 24px auto; max-width: 560px; padding: 16px 20px; border-radius: var(--r-md); background: var(--warn-soft); color: var(--warn-ink); }

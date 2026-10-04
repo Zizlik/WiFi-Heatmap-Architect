@@ -104,17 +104,19 @@ test('find: deterministic, grid size independent in character, goal room and exc
   const coarse = raster.grid(ctx, { cell: 8 });
   const c = await optimize.find(ctx, coarse, optsFor(p, { offsets }));
   assert.ok(Math.hypot((c.pos.x - a.pos.x) * W, (c.pos.y - a.pos.y) * H) < 120, 'similar answer on the coarse grid');
-  // optimizing for the kitchen only puts the router close to it
+  // optimizing for the bedroom (room 2 of the showcase flat) only puts the router close to it
   const k = await optimize.find(ctx, grid, optsFor(p, { offsets, goalRoom: 2 }));
   const wholeStats = await optimize.find(ctx, grid, optsFor(p, { offsets, goalRoom: null }));
-  assert.ok(k.after.coverage >= 99, `kitchen coverage ${k.after.coverage}`);
+  assert.ok(k.after.coverage >= 99, `bedroom coverage ${k.after.coverage}`);
   assert.ok(k.after.mean > wholeStats.after.mean || k.after.coverage >= 99);
-  // excluding every room but the kitchen is the same as targeting the kitchen
-  const ex = await optimize.find(ctx, grid, optsFor(p, { offsets, goalRoom: null, excluded: [1, 3, 4, 5, 6] }));
+  // excluding every room but the bedroom is the same as targeting the bedroom
+  const ex = await optimize.find(ctx, grid, optsFor(p, { offsets, goalRoom: null, excluded: [1, 3, 4, 5, 6, 7] }));
   assert.deepEqual(ex.pos, k.pos);
-  // excluding everything falls back to the whole flat instead of failing
-  const all = await optimize.find(ctx, grid, optsFor(p, { offsets, excluded: [1, 2, 3, 4, 5, 6] }));
-  assert.deepEqual(all.pos, a.pos);
+  // excluding everything falls back to every room instead of failing (the demo's own goal leaves out the balcony,
+  // so compare with "nothing excluded")
+  const all = await optimize.find(ctx, grid, optsFor(p, { offsets, excluded: [1, 2, 3, 4, 5, 6, 7] }));
+  const none = await optimize.find(ctx, grid, optsFor(p, { offsets, excluded: [] }));
+  assert.deepEqual(all.pos, none.pos);
   // an unknown goal/allowed room id is ignored
   const odd = await optimize.find(ctx, grid, optsFor(p, { offsets, goalRoom: 99, allowedRoom: 77 }));
   assert.deepEqual(odd.pos, a.pos);
@@ -122,6 +124,7 @@ test('find: deterministic, grid size independent in character, goal room and exc
 
 test('find: honours a second node and calibration offsets', async () => {
   const p = P.create({ template: 'demo', lang: 'cs' });
+  p.view.band = 5; // one band: a node that does not serve it must be ignored
   p.node = { mode: 'ap_cable', pos: P.nearestFloor(p.plan, { x: 0.8, y: 0.3 }), bands: { '2.4': true, '5': true, '6': false }, power: 0, backhaulBand: 5, backhaulThreshold: -67 };
   const { ctx, grid, offsets } = setup(p);
   const node = model.nodeParams(p);
@@ -133,9 +136,11 @@ test('find: honours a second node and calibration offsets', async () => {
   // a node that does not serve the band is ignored
   const ignored = await optimize.find(ctx, grid, optsFor(p, { offsets, node: { ...node, bands: { '2.4': true, '5': false, '6': false } } }));
   assert.deepEqual(ignored.pos, solo.pos);
-  // offsets shift everything: the same ranking but better absolute numbers
+  // offsets shift everything: better absolute numbers (+8 dB at the same spot; the coverage-first objective may then
+  // prefer a nearby spot with a slightly lower mean, so the mean rises by about, not exactly, the offset)
   const boosted = await optimize.find(ctx, grid, optsFor(p, { offsets: { '2.4': 0, '5': 8, '6': 0 } }));
-  assert.ok(boosted.after.mean > solo.after.mean + 7);
+  assert.ok(boosted.after.mean > solo.after.mean + 6, `${boosted.after.mean} vs ${solo.after.mean}`);
+  assert.ok(boosted.after.coverage > solo.after.coverage);
 });
 
 test('find: progress, abort and cooperative scheduling', async () => {
@@ -192,7 +197,8 @@ test('find: errors', async () => {
   await assert.rejects(optimize.find(ctx, grid, {}), RangeError);
   await assert.rejects(optimize.find(ctx, grid, { band: 7 }), RangeError);
   const node = { mode: 'ap_cable', pos: p.node.pos, bands: { '2.4': true, '5': true, '6': true }, power: 0 };
-  await assert.rejects(optimize.find(ctx, grid, { band: 5, node, speed: { curve: {}, targetDown: 50, targetUp: 20 } }), (err) => err.message === 'err.opt.speedNode');
+  // a second node no longer refuses the speed search (SPEC 10); an unusable curve is still "no curve"
+  await assert.rejects(optimize.find(ctx, grid, { band: 5, node, speed: { curve: {}, targetDown: 50, targetUp: 20 } }), (err) => err.message === 'err.opt.noCurve');
   await assert.rejects(optimize.find(ctx, grid, { band: 5, speed: { curve: null, targetDown: 50, targetUp: 20 } }), (err) => err.message === 'err.opt.noCurve');
 });
 

@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="{{DESCRIPTION}}">
 <meta name="color-scheme" content="light dark">
-<!-- Browser/status-bar colour = header surface; WH.pwa keeps it in sync with a manually chosen theme. -->
+<!-- Browser/status-bar colour = header surface (light / Deep dark; OLED = #000); WH.pwa keeps it in sync with a chosen theme. -->
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" data-scheme="light">
-<meta name="theme-color" content="#142038" media="(prefers-color-scheme: dark)" data-scheme="dark">
+<meta name="theme-color" content="#111113" media="(prefers-color-scheme: dark)" data-scheme="dark">
 <!-- Home-screen app (PWA). The manifest + apple-touch-icon links are added by JS on http(s) only, never on file://. -->
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -20,8 +20,16 @@
 {{CSS}}
 </style>
 <script>
-/* Apply a manually chosen theme before first paint (no flash). Full logic lives in WH.ui.theme. */
-try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if (p && (p.theme === 'light' || p.theme === 'dark')) document.documentElement.setAttribute('data-theme', p.theme); } catch (e) {}
+/* Apply a manually chosen theme before first paint (no flash): data-theme = light | dark (Deep dark) | oled, data-scheme =
+   the colour scheme in effect. Full logic lives in WH.ui.theme (src/js/20-ui/shell.js). */
+(function () {
+  var d = document.documentElement, t = '';
+  try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); t = p && p.theme; } catch (e) { /* no storage */ }
+  if (t === 'light' || t === 'dark' || t === 'oled') d.setAttribute('data-theme', t);
+  var os = false;
+  try { os = window.matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) { /* old browser */ }
+  d.setAttribute('data-scheme', t === 'light' ? 'light' : t === 'dark' || t === 'oled' || os ? 'dark' : 'light');
+})();
 </script>
 </head>
 <body>
@@ -29,7 +37,7 @@ try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if
 
 <header id="app-header">
   <a class="brand" href="#" id="brand" data-i18n-aria="shell.brand.aria">
-    <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#0f766e"/><path d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="22" r="2.2" fill="#fff"/></svg>
+    <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="brand__tile" width="32" height="32" rx="9" fill="#0f766e"/><path class="brand__wave" d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle class="brand__dot" cx="16" cy="22" r="2.2" fill="#fff"/></svg>
     <span class="brand__text"><span class="brand__name">WiFi Heatmap Architect</span><span class="brand__sub" data-i18n="shell.subtitle"></span></span>
   </a>
 
@@ -46,7 +54,7 @@ try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if
   <div class="app-header__group">
     <button type="button" id="btn-file" class="btn btn--ghost" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="shell.file" data-tip="shell.file.tip" data-kbd="Ctrl+O"><span data-icon="folder-open" data-size="18"></span><span class="btn__label" data-i18n="shell.file"></span><span class="icon-chevron" data-icon="chevron-down" data-size="16"></span></button>
     <button type="button" id="btn-keys" class="btn btn--icon btn--ghost" data-tip="shell.keys.tip" data-kbd="?"><span data-icon="keyboard"></span></button>
-    <button type="button" id="btn-theme" class="btn btn--icon btn--ghost" data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
+    <button type="button" id="btn-theme" class="btn btn--icon btn--ghost" aria-haspopup="menu" aria-expanded="false" data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
     <div class="seg seg--sm" id="lang-switch" role="radiogroup" data-lang-switch data-i18n-aria="shell.lang.aria">
       <button type="button" role="radio" aria-checked="false" data-lang="cs" lang="cs" title="Čeština"><span>CS</span></button>
       <button type="button" role="radio" aria-checked="false" data-lang="en" lang="en" title="English"><span>EN</span></button>
@@ -68,11 +76,11 @@ try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if
       <button type="button" role="radio" aria-checked="false" data-lang="cs" lang="cs" title="Čeština"><span>CS</span></button>
       <button type="button" role="radio" aria-checked="false" data-lang="en" lang="en" title="English"><span>EN</span></button>
     </div>
-    <button type="button" id="welcome-theme" class="btn btn--icon btn--ghost" data-theme-cycle data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
+    <button type="button" id="welcome-theme" class="btn btn--icon btn--ghost" data-theme-menu aria-haspopup="menu" aria-expanded="false" data-tip="shell.theme.auto"><span data-icon="contrast"></span></button>
   </div>
   <div class="welcome__inner">
     <div class="welcome__brand">
-      <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect width="32" height="32" rx="9" fill="#0f766e"/><path d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="22" r="2.2" fill="#fff"/></svg>
+      <svg class="brand__logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><rect class="brand__tile" width="32" height="32" rx="9" fill="#0f766e"/><path class="brand__wave" d="M7.5 13.2a12.5 12.5 0 0 1 17 0M11 17.1a7.6 7.6 0 0 1 10 0" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle class="brand__dot" cx="16" cy="22" r="2.2" fill="#fff"/></svg>
       <span>WiFi Heatmap Architect</span>
     </div>
     <h1 id="welcome-title" class="welcome__title" data-i18n="welcome.title"></h1>
@@ -121,6 +129,8 @@ try { var p = JSON.parse(localStorage.getItem('wifi-heatmap-prefs') || '{}'); if
 <noscript><div class="noscript-msg">WiFi Heatmap Architect needs JavaScript. / Aplikace WiFi Heatmap Architect potřebuje zapnutý JavaScript.</div></noscript>
 
 <script>window.WH_DEFAULT_LANG = "{{LANG}}";</script>
+<!-- build id + the line where each source file starts in this page (for "Podrobnosti" / "Nahlásit problém"); one line -->
+<script>window.WH_BUILD = {{BUILD}};</script>
 <script>
 {{JS}}
 </script>

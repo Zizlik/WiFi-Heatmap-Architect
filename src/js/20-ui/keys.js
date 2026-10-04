@@ -146,7 +146,7 @@
       if (modal && !reg.allowInModal) continue;
       if (reg.when) { let ok = true; try { ok = reg.when(e); } catch (err) { ok = false; } if (!ok) continue; }
       let result;
-      try { result = reg.run(e); } catch (err) { console.error(`[WH.ui.keys] handler for ${reg.specs[0]} failed:`, err); }
+      try { result = reg.run(e); } catch (err) { console.error(`[WH.ui.keys] handler for ${reg.specs[0]} failed:`, err); if (globalThis.WH.diag) globalThis.WH.diag.caught(err, `keys:${reg.specs[0]}`); }
       if (result !== false) e.preventDefault();
       return;
     }

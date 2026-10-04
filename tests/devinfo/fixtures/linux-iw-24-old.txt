@@ -1,0 +1,5 @@
+Connected to f0:9f:c2:44:55:66 (on wlan0)
+	SSID: Kocourkov
+	freq: 2437
+	signal: -66 dBm
+	tx bitrate: 72.2 MBit/s MCS 7 short GI

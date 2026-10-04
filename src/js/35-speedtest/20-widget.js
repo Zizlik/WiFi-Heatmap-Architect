@@ -18,6 +18,8 @@
   const getPref = (k, d) => (g.WH.store && g.WH.store.getPref ? g.WH.store.getPref(k, d) : d);
   const setPref = (k, v) => { if (g.WH.store && g.WH.store.setPref) g.WH.store.setPref(k, v); };
   const fmtMbps = (n) => (g.WH.engine && g.WH.engine.units ? g.WH.engine.units.formatMbps(n, g.WH.i18n.lang) : String(Math.round(n)));
+  /** A bug in a host callback: logged (QA counts it) and kept in the error diary, never the end of the widget. */
+  const bug = (e, where) => { console.error(`[speedtest] ${where}`, e); try { if (g.WH.diag) g.WH.diag.caught(e, where); } catch (x) { /* never */ } };
   const fmtMs = (n) => (Number.isFinite(n) ? g.WH.util.fmt(n, n < 10 ? 1 : 0) : '—');
   const SVGNS = 'http://www.w3.org/2000/svg';
   /** Static text that re-translates itself when the language changes (WH.i18n.applyDom). */
@@ -147,7 +149,7 @@
       res.hidden = s !== 'done';
       err.hidden = s !== 'error';
       paintAvail();
-      if (typeof o.onState === 'function') { try { o.onState(s); } catch (e) { console.error(e); } }
+      if (typeof o.onState === 'function') { try { o.onState(s); } catch (e) { bug(e, 'speedtest.onState'); } }
     }
 
     function paintResult() {
@@ -212,12 +214,14 @@
         setState('done');
         focusIn(again);
         say(t('speedtest.sr.result', { d: fmtMbps(r.down), u: fmtMbps(r.up), p: fmtMs(r.ping) }));
-        if (typeof o.onResult === 'function') { try { o.onResult(r); } catch (e) { console.error(e); } }
+        if (typeof o.onResult === 'function') { try { o.onResult(r); } catch (e) { bug(e, 'speedtest.onResult'); } }
       } catch (e) {
         if (ac !== mine) return;
         ac = null;
         const key = ST.errorKey(e);
         if (!key) { setState(result ? 'done' : 'idle'); focusIn(result ? again : go); say(t('speedtest.cancelled')); return; }
+        // the widget shows its own message ("Test se nepovedl…"); the diary keeps the error for "Nahlásit problém"
+        if (g.WH.app && g.WH.app.reportError) g.WH.app.reportError(e, 'speedtest.run');
         showError(key);
       } finally {
         if (paintRaf) { cancelAnimationFrame(paintRaf); paintRaf = 0; }

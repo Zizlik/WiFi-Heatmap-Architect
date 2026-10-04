@@ -31,7 +31,7 @@
     // --- bands ---------------------------------------------------------------------------------------------------
     'help.band.t': 'Pásmo (2,4 / 5 / 6 GHz)',
     'help.band.b': 'Wi-Fi vysílá na různých frekvencích. 2,4 GHz doletí nejdál a zdmi prochází nejlépe, ale je nejpomalejší. 5 GHz je rychlejší, ale zdi ho tlumí víc. 6 GHz je nejrychlejší a má nejkratší dosah.',
-    'help.band.more': 'Stejná zeď ubere na 2,4 GHz zhruba o třetinu méně než na 5 GHz a na 6 GHz asi o šestinu víc: cihlová zeď třeba 7 / 11 / 13 dB, betonová 12 / 18 / 21 dB. Přepni pásmo a uvidíš, jak se pokrytí změní.',
+    'help.band.more': 'Stejná zeď ubere na 2,4 GHz zhruba o třetinu méně než na 5 GHz a na 6 GHz asi o šestinu víc: cihlová zeď třeba 7 / 11 / 13 dB, betonová 12 / 18 / 21 dB. Přepni pásmo a uvidíš, jak se pokrytí změní. Volba Auto ukáže v každém místě to pásmo, které by si tam telefon nebo notebook nejspíš vybral sám.',
 
     'help.band24.t': '2,4 GHz',
     'help.band24.b': 'Největší dosah, protože zdmi prochází nejlépe (cihla ubere asi 7 dB, na 5 GHz 11 dB). Rychlost je ale nejnižší (v praxi zhruba 50 až 150 Mb/s) a hodně ho ruší sousedé, mikrovlnka nebo Bluetooth. Hodí se pro chytré zásuvky, kamery a vzdálené místnosti.',
@@ -41,6 +41,10 @@
 
     'help.band6.t': '6 GHz (Wi-Fi 6E / 7)',
     'help.band6.b': 'Nejrychlejší a nejméně rušené pásmo, ale s nejkratším dosahem: zdi tlumí nejvíc (cihla asi 13 dB, beton 21 dB), takže už jedna zeď signál citelně zeslabí. Funguje jen s routerem i zařízením, které 6 GHz umí (Wi-Fi 6E nebo 7).',
+
+    'help.bandSteering.t': 'Wi-Fi 7 a automatické přepínání pásem',
+    'help.bandSteering.b': 'Moderní routery (Wi-Fi 6, 6E a hlavně Wi-Fi 7) mají jednu síť pro všechna pásma a zařízení si samo vybírá, na kterém pojede: u routeru 6 nebo 5 GHz, dál za zdmi 2,4 GHz. Wi-Fi 7 (MLO) dokonce jede na dvou pásmech naráz. Nic nepřepínej ani nevypínej, měř normálně tak, jak síť používáš.',
+    'help.bandSteering.more': 'Aplikace si u každého měření zapíše pásmo, na kterém jsi v tu chvíli byl (na počítači ho zjistí pomocník, na telefonu ho vybereš, nebo zvolíš „Nevím“ a aplikace ho odhadne). Model se pak ladí pro každé pásmo zvlášť. Pásmo Auto na mapě ukazuje, kde budeš nejspíš na 6, 5 a kde na 2,4 GHz.',
 
     // --- results -------------------------------------------------------------------------------------------------
     'help.threshold.t': 'Hranice dobrého signálu',
@@ -73,7 +77,7 @@
     'help.diffView.b': 'Barevně ukáže rozdíl mezi zkušební a dnešní polohou routeru: zeleně tam, kde se signál zlepší, červeně kde zhorší, šedě kde zůstane stejný. Rychlý způsob, jak poznat, jestli se přesun vyplatí.',
 
     'help.layers.t': 'Vrstvy mapy',
-    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdi, nábytek, názvy místností a čísla v dBm. Nic z toho nemění výpočet, jen vzhled.',
+    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdi, nábytek, názvy místností, čísla v dBm, body měření a předpověď u nich. Nic z toho nemění výpočet, jen vzhled.',
 
     'help.ranges.t': 'Čáry dosahu',
     'help.ranges.b': 'Tenké čáry na mapě spojují místa se stejnou sílou signálu, podobně jako vrstevnice na turistické mapě. Ukazují, kam až signál dosáhne při zvolené hranici. Přepni pásmo: na 2,4 GHz sahají čáry přes zdi dál než na 5 nebo 6 GHz.',
@@ -119,8 +123,8 @@
 
     // --- measurements --------------------------------------------------------------------------------------------
     'help.calibration.t': 'Kalibrace podle měření',
-    'help.calibration.b': 'Když zadáš naměřené hodnoty, aplikace zjistí, jestli model dává stabilně moc vysoká nebo nízká čísla, a celou mapu o rozdíl posune. „Model upraven o −6 dB“ znamená, že skutečný signál je o 6 dB slabší, než model čekal.',
-    'help.calibration.more': 'Stačí 3 až 5 měření v různých místnostech, ideálně i v těch nejvzdálenějších od routeru.',
+    'help.calibration.b': 'Z naměřených hodnot aplikace zjistí, o kolik je tvůj router silnější nebo slabší, než model čekal („o 4 dB silnější“), a celou mapu podle toho upraví. Se 4 a více měřeními v různých místnostech doladí i útlum zdí a úbytek signálu se vzdáleností.',
+    'help.calibration.more': '„Sedí na ±3 dB“ je poctivý odhad přesnosti: každé měření se zkusí předpovědět bez něj samotného. Vypnutím přepínače uvidíš výchozí model.',
 
     'help.measurement.t': 'Měření',
     'help.measurement.b': 'Skutečně změřený signál na konkrétním místě bytu (telefonem nebo notebookem, viz Nápověda → Jak změřit signál). Při měření musí router stát na dnešním místě. Čím víc míst a místností, tím věrnější mapa.',
@@ -206,6 +210,12 @@
 
     'help.autoWalls.t': 'Obtáhnout zdi kolem místností',
     'help.autoWalls.b': 'Doplní zeď kolem každé hrany místnosti, kde ještě žádná není. Existující zdi nemění ani nemaže a společné hrany sousedních místností vloží jen jednou. Potom stačí upravit materiál tlustých zdí.',
+
+    // --- Help panel -> "Jak změřit signál": Wi-Fi details from a computer (SPEC 8 / 8.2) ----------------------------
+    'helpPanel.cmd.t': 'Wi-Fi údaje z počítače jedním příkazem',
+    'helpPanel.cmd.lead': 'Prohlížeč název sítě ani sílu signálu nevidí. Na počítači je zjistíš jedním příkazem – výsledek se rovnou zkopíruje do schránky. V aplikaci ho pak vložíš: okno měření → Info o zařízení → Vložit výsledek. Nejjednodušší je pak tlačítko Změřit vše.',
+    'helpPanel.helper.t': 'Pomocník pro Wi-Fi (bez kopírování)',
+    'helpPanel.helper.b': 'Ještě pohodlnější: stáhni pomocníka pro svůj systém a spusť ho dvojklikem (Windows: „Spustit pomocníka.cmd“, při modrém varování „Další informace“ → „Přesto spustit“; macOS: pravým tlačítkem → Otevřít). Dokud jeho okno běží, Změřit vše si Wi-Fi údaje vezme samo (u aplikace z internetu ho jednou připoj: Info o zařízení → Připojit pomocníka → v prohlížeči Povolit). Webová stránka program sama spustit nesmí, proto ten jeden dvojklik.',
   });
 
   I.add('en', {
@@ -233,7 +243,7 @@
     // --- bands ---------------------------------------------------------------------------------------------------
     'help.band.t': 'Band (2.4 / 5 / 6 GHz)',
     'help.band.b': 'Wi-Fi uses different frequencies. 2.4 GHz reaches farthest and gets through walls best, but is the slowest. 5 GHz is faster, but walls weaken it more. 6 GHz is the fastest and has the shortest range.',
-    'help.band.more': 'The same wall takes off roughly a third less at 2.4 GHz than at 5 GHz, and about a sixth more at 6 GHz: a brick wall for example 7 / 11 / 13 dB, a concrete one 12 / 18 / 21 dB. Switch the band to see how coverage changes.',
+    'help.band.more': 'The same wall takes off roughly a third less at 2.4 GHz than at 5 GHz, and about a sixth more at 6 GHz: a brick wall for example 7 / 11 / 13 dB, a concrete one 12 / 18 / 21 dB. Switch the band to see how coverage changes. Auto shows, at every spot, the band a phone or laptop would most likely pick there by itself.',
 
     'help.band24.t': '2.4 GHz',
     'help.band24.b': 'The longest range, because it gets through walls best (brick takes off about 7 dB, 11 dB at 5 GHz). But the speed is the lowest (about 50 to 150 Mbps in practice) and there is lots of interference from neighbours, microwave ovens or Bluetooth. Good for smart plugs, cameras and distant rooms.',
@@ -243,6 +253,10 @@
 
     'help.band6.t': '6 GHz (Wi-Fi 6E / 7)',
     'help.band6.b': 'The fastest and least crowded band, but with the shortest range: walls weaken it most (brick about 13 dB, concrete 21 dB), so even one wall is clearly felt. It only works if both the router and the device support 6 GHz (Wi-Fi 6E or 7).',
+
+    'help.bandSteering.t': 'Wi-Fi 7 and automatic band switching',
+    'help.bandSteering.b': 'Modern routers (Wi-Fi 6, 6E and above all Wi-Fi 7) have one network for all bands and each device picks the band by itself: 6 or 5 GHz near the router, 2.4 GHz further away behind walls. Wi-Fi 7 (MLO) even uses two bands at once. Do not switch or turn anything off, just measure the way you normally use the network.',
+    'help.bandSteering.more': 'With every measurement the app notes the band you were on at that moment (on a computer the helper finds it out, on a phone you pick it, or choose “I don’t know” and the app estimates it). The model is then tuned for each band separately. The Auto band on the map shows where you will most likely be on 6, 5 or 2.4 GHz.',
 
     // --- results -------------------------------------------------------------------------------------------------
     'help.threshold.t': 'Good-signal threshold',
@@ -275,7 +289,7 @@
     'help.diffView.b': 'Shows in colour the difference between the trial and today\'s router position: green where the signal improves, red where it gets worse, grey where it stays the same. A quick way to see whether a move is worth it.',
 
     'help.layers.t': 'Map layers',
-    'help.layers.b': 'Turn on or off what you see on the map: range lines, walls, furniture, room names and dBm numbers. None of it changes the calculation, only the look.',
+    'help.layers.b': 'Turn on or off what you see on the map: range lines, walls, furniture, room names, dBm numbers, measurement points and the prediction at them. None of it changes the calculation, only the look.',
 
     'help.ranges.t': 'Range lines',
     'help.ranges.b': 'Thin lines on the map join places with the same signal strength, like contour lines on a hiking map. They show how far the signal reaches at the chosen threshold. Switch the band: at 2.4 GHz the lines reach further through walls than at 5 or 6 GHz.',
@@ -321,8 +335,8 @@
 
     // --- measurements --------------------------------------------------------------------------------------------
     'help.calibration.t': 'Calibration from measurements',
-    'help.calibration.b': 'When you enter measured values, the app checks whether the model is consistently too high or too low and shifts the whole map by the difference. "Model adjusted by −6 dB" means the real signal is 6 dB weaker than the model expected.',
-    'help.calibration.more': 'Three to five measurements in different rooms are enough, ideally including the ones farthest from the router.',
+    'help.calibration.b': 'From your measured values the app works out how much stronger or weaker your router is than the model expected (“4 dB stronger”) and adjusts the whole map. With 4 or more measurements in different rooms it also tunes the wall losses and how fast the signal fades with distance.',
+    'help.calibration.more': '“Fits within ±3 dB” is an honest accuracy estimate: each measurement is predicted without itself. Switch it off to see the default model.',
 
     'help.measurement.t': 'Measurement',
     'help.measurement.b': 'A really measured signal at a specific place in your home (with a phone or laptop, see Help → How to measure signal). The router must stand at today\'s position while you measure. The more places and rooms, the more faithful the map.',
@@ -408,5 +422,11 @@
 
     'help.autoWalls.t': 'Outline the rooms with walls',
     'help.autoWalls.b': 'Adds a wall along every room edge that has none yet. It never changes or deletes existing walls, and an edge shared by two neighbouring rooms gets just one wall. Then you only need to set the material of the thick walls.',
+
+    // --- Help panel -> "How to measure signal": Wi-Fi details from a computer (SPEC 8 / 8.2) -----------------------
+    'helpPanel.cmd.t': 'Wi-Fi details from a computer with one command',
+    'helpPanel.cmd.lead': 'The browser cannot see the network name or the signal strength. On a computer one command tells you – and copies the result to the clipboard. Paste it into the app: measurement window → Device info → Paste the result. After that, Measure everything is the easiest way.',
+    'helpPanel.helper.t': 'Wi-Fi helper (no copying)',
+    'helpPanel.helper.b': 'Even easier: download the helper for your system and start it with a double-click (Windows: “Spustit pomocníka.cmd”, on the blue warning “More info” → “Run anyway”; macOS: right-click → Open). While its window is open, Measure everything takes the Wi-Fi details by itself (on the web version connect it once: Device info → Connect the helper → Allow in the browser). A web page may not start a program on its own – hence that one double-click.',
   });
 })();

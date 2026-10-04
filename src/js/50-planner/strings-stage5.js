@@ -5,15 +5,13 @@
 
   I.add('cs', {
     'planner.sb.title': 'Měření s rychlostí',
-    'planner.sb.why': 'Stačí 2 místa s různě silným signálem – třeba u routeru a ve vzdáleném pokoji ({device}, {band} GHz).',
-    'planner.sb.otherDev': 'Počítám jen s měřeními ze zařízení „{device}“ na {band} GHz. Jiné zařízení vybereš v kartě Zpřesnit měřením.',
+    'planner.sb.why': 'Stačí 2 místa s různě silným signálem – třeba u routeru a ve vzdáleném pokoji ({device}, {band}).',
+    'planner.sb.otherDev': 'Počítám jen s měřeními ze zařízení „{device}“ na {band}. Jiné zařízení vybereš v kartě Zpřesnit měřením.',
     'planner.sb.whyShort': 'Stačí 2 místa s různě silným signálem.',
     'planner.sb.otherDevShort': 'Počítám jen s měřeními ze zařízení „{device}“.',
     'planner.sb.spreadShort': 'Přidej místo, kde je signál aspoň o 5 dB jiný.',
     'planner.sb.spread': 'Měření jsou si moc podobná. Přidej místo, kde je signál aspoň o 5 dB jiný – třeba vzdálený pokoj.',
     'planner.sb.clickMap': 'Teď klikni na mapě na místo, kde měříš.',
-    'planner.sb.nodeT': 'S druhým bodem rychlost neodhadnu',
-    'planner.sb.nodeB': 'Rychlost přes druhý bod není změřená. Vypni ho v kartě Druhý přístupový bod.',
     'planner.sb.back': 'Zpět na Signál',
     'planner.sb.hide': 'Skrýt lištu',
 
@@ -53,15 +51,13 @@
 
   I.add('en', {
     'planner.sb.title': 'Speed measurements',
-    'planner.sb.why': 'Two places with different signal strength are enough – for example next to the router and in a far room ({device}, {band} GHz).',
-    'planner.sb.otherDev': 'Only measurements from “{device}” on {band} GHz count. Pick another device in the Improve with measurements card.',
+    'planner.sb.why': 'Two places with different signal strength are enough – for example next to the router and in a far room ({device}, {band}).',
+    'planner.sb.otherDev': 'Only measurements from “{device}” on {band} count. Pick another device in the Improve with measurements card.',
     'planner.sb.whyShort': 'Two places with different signal strength are enough.',
     'planner.sb.otherDevShort': 'Only measurements from “{device}” count.',
     'planner.sb.spreadShort': 'Add a place where the signal differs by at least 5 dB.',
     'planner.sb.spread': 'Your measurements are too similar. Add a place where the signal differs by at least 5 dB – such as a far room.',
     'planner.sb.clickMap': 'Now click the map where you are measuring.',
-    'planner.sb.nodeT': 'No speed estimate with a second point',
-    'planner.sb.nodeB': 'Speed through the second point has not been measured. Switch it off in the Second access point card.',
     'planner.sb.back': 'Back to Signal',
     'planner.sb.hide': 'Hide this bar',
 

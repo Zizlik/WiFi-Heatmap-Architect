@@ -18,6 +18,7 @@
     'app.tool.speed.noCurve': 'Zadej alespoň dva testy downloadu i uploadu pro stejné zařízení a pásmo, se signálem lišícím se alespoň o 5 dB.',
     'app.tool.speed.node': 'Rychlost přes druhý uzel není změřená; odhad rychlosti platí jen pro samotný router.',
     'app.err.unexpected': 'Něco se nepovedlo. Tvoje data jsou v bezpečí; když něco nereaguje, obnov stránku (F5).',
+    'app.err.details': 'Podrobnosti',
   });
   WH.i18n.add('en', {
     'app.tool.coverage': 'Read the coverage estimate',
@@ -35,5 +36,6 @@
     'app.tool.speed.noCurve': 'Enter at least two download and upload tests for the same device and band whose signal differs by at least 5 dB.',
     'app.tool.speed.node': 'Speed through the second node is not measured; the speed estimate covers the router alone.',
     'app.err.unexpected': 'Something went wrong. Your data is safe; if something stops responding, reload the page (F5).',
+    'app.err.details': 'Details',
   });
 })();

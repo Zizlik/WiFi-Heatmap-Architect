@@ -38,7 +38,10 @@
     for (const fn of Array.from(set)) {
       if (!set.has(fn)) continue; // removed by an earlier listener
       n += 1;
-      try { fn(payload, topic); } catch (e) { console.error(`[WH.bus] listener for "${topic}" failed:`, e); }
+      try { fn(payload, topic); } catch (e) {
+        console.error(`[WH.bus] listener for "${topic}" failed:`, e);
+        if (g.WH.diag) g.WH.diag.caught(e, `bus:${topic}`);   // the error diary (Help -> Report a problem)
+      }
     }
     return n;
   }

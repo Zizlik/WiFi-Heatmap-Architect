@@ -1,0 +1,13 @@
+
+V systému je 1 rozhraní:
+
+    Název                  : Wi-Fi
+    Popis                  : Intel(R) Wireless-AC 9560 160MHz
+    GUID                   : 1b2c3d4e-5f60-4718-9a0b-1c2d3e4f5a6b
+    Fyzická adresa         : 7c:2a:31:44:55:66
+    Typ rozhraní           : Primární
+    Stav                   : odpojeno
+    Stav rádia             : Hardware Zapnuto
+                             Software Zapnuto
+
+    Stav hostované sítě    : Není k dispozici

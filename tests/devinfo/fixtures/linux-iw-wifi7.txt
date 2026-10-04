@@ -1,0 +1,9 @@
+Connected to 0c:ea:14:01:02:03 (on wlan0)
+	SSID: UniFi-BE
+	freq: 6135.0
+	signal: -47 dBm
+	rx bitrate: 2882.3 MBit/s 320MHz EHT-MCS 11 EHT-NSS 2 EHT-GI 0
+	tx bitrate: 2161.8 MBit/s 320MHz EHT-MCS 9 EHT-NSS 2 EHT-GI 0
+	bss flags:
+	dtim period:	1
+	beacon int:	100

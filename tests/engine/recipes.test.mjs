@@ -19,7 +19,7 @@ test('recipe 2.1: today vs trial in a few lines', () => {
   assert.equal(img.height, 236);
   const diffImg = E.raster.colorize(a.grid, a.diff, { mode: 'diff' });
   assert.equal(diffImg.data.length, img.data.length);
-  assert.ok(a.perRoom.trial instanceof Map && a.perRoom.trial.size === 6);
+  assert.ok(a.perRoom.trial instanceof Map && a.perRoom.trial.size === 7);
 
   // ... and by hand
   const ctx = E.model.createContext(project);
@@ -67,7 +67,7 @@ test('recipe 2.3: hover tooltip', () => {
   const a = E.analysis.run(project, { cell: 4, ctx, offsets: offs });
   const p = { x: 0.3, y: 0.3 };
   const room = P.roomAt(project.plan, p);
-  assert.equal(room.name, 'Obývací pokoj');
+  assert.equal(room.name, 'Ložnice');
   const st = E.model.fieldParams(project, 'trial', { offsets: offs });
   const d = E.model.pointSignalDetail(ctx, p, st);
   assert.ok(['excellent', 'veryGood', 'good', 'weak', 'veryWeak', 'unusable'].includes(E.units.qualityOf(d.combined).key));
@@ -119,6 +119,8 @@ test('recipe 2.5: files', () => {
 
 test('recipe 2.6: measurements, calibration, speed', () => {
   const project = P.create({ template: 'demo', lang: 'cs' });
+  // the 5 GHz map (in the default band mode Auto the far rooms would show their 2.4 GHz signal, SPEC 13)
+  project.view.band = 5;
   const ctx = E.model.createContext(project);
   const grid = E.raster.grid(ctx, { cell: 4 });
   const base = project.net.baseline;
@@ -151,4 +153,54 @@ test('recipe 2.6: measurements, calibration, speed', () => {
   // the project with measurements survives a file round trip
   assert.deepEqual(P.parseSvgText(P.buildSvg(project)).project, P.sanitize(project));
   void WH;
+});
+
+test('recipe 2.9: what-if at the measured points (router moved, then a repeater in the bedroom)', () => {
+  const project = P.create({ template: 'demo', lang: 'cs' });
+  const ctx0 = E.model.createContext(project);
+  const bl = project.net.baseline;
+  // three measured points (signal + speed test) where the (uncalibrated) map says, 3 dB weaker
+  const spots = [
+    ['Ložnice', { x: 0.2, y: 0.4 }, 60, 20],
+    ['Obývák', { x: 0.75, y: 0.45 }, 110, 40],
+    ['Předsíň', P.nearestFloor(project.plan, { x: bl.x + 0.03, y: bl.y }), 450, 160],
+  ];
+  project.measurements = spots.map(([name, q, down, up], i) => ({
+    id: `w${i}`, x: q.x, y: q.y, band: 5, value: Math.round((E.model.softSignal(ctx0, bl, q, 5, 0) - 3) * 10) / 10, name, download: down, upload: up, device: 'Telefon', t: 1,
+  }));
+  const label = (e) => `${Math.round(e.measured ?? e.modelToday)} → ${Math.round(e.predicted)} (${e.delta >= 0 ? '+' : ''}${Math.round(e.delta)})`;
+  assert.equal(E.analysis.whatIfActive(project), false);
+  // 1) the router moved into the hall's corridor (3.0 m / 4.8 m on the showcase flat)
+  project.net.router = P.nearestFloor(project.plan, { x: (120 + 3.0 * 80) / 1080, y: (231 + 4.8 * 80) / 942 });
+  assert.equal(P.roomAt(project.plan, project.net.router).name, 'Předsíň');
+  let ctx = E.model.createContext(project);
+  let offs = E.model.offsets(ctx, project);
+  assert.ok(Math.abs(offs['5'] - -3) < 0.2, `calibrated ${offs['5']}`);
+  assert.equal(E.analysis.whatIfActive(project), true);
+  let list = E.analysis.predictAtMeasurements(ctx, project, { offsets: offs });
+  assert.equal(list.length, 3);
+  for (const e of list) {
+    assert.equal(e.reason, null);
+    assert.match(label(e), /^-\d+ → -\d+ \([+-]\d+\)$/);
+    assert.ok(e.speed && e.speed.anchored);
+  }
+  const bed = list[0];
+  assert.ok(bed.delta > 0, `the bedroom gains ${bed.delta}`);
+  // 2) a repeater in the bedroom on top: strong there, but its link to the router caps the speed
+  project.node = { ...project.node, mode: 'repeater', maxMbps: 300 };
+  ctx = E.model.createContext(project);
+  offs = E.model.offsets(ctx, project);
+  list = E.analysis.predictAtMeasurements(ctx, project, { offsets: offs });
+  const bed2 = list[0];
+  assert.equal(bed2.source, 'node');
+  assert.ok(bed2.delta > bed.delta);
+  assert.ok(['backhaul', 'device', 'plan', null].includes(bed2.speed.limitedBy));
+  const s = E.analysis.summarizePredictions(list);
+  assert.equal(s.best.id, 'w0');
+  assert.equal(s.rooms[0].roomId, P.roomAt(project.plan, list[0]).roomId);
+  const curve = E.speed.buildCurve(E.speed.fillSignals(ctx, project.measurements, { baseline: bl, offsets: offs }), { band: 5, device: 'Telefon' });
+  const link = E.speed.nodeLink(ctx, E.model.fieldParams(project, 'trial', { offsets: offs }), curve);
+  assert.equal(link.wireless, true);
+  assert.ok(Number.isFinite(link.signal));
+  if (bed2.speed.limitedBy === 'backhaul') assert.ok(Math.abs(bed2.speed.capDown - link.down) < 1e-9);
 });

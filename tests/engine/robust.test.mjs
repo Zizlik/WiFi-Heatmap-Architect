@@ -96,7 +96,7 @@ test('parseSvgText: hostile 8 MB inputs are handled in linear time (no regex bac
   const t0 = performance.now();
   const r = P.parseSvgText(decoyed);
   assert.ok(performance.now() - t0 < 2000);
-  assert.equal(r.project.plan.rooms.length, 6);
+  assert.equal(r.project.plan.rooms.length, 7);
   // an id that only ends with our name is not ours (word boundary of the old regex: data-id="wifi-plan-data")
   assert.equal(P.parseSvgText(`<svg><metadata data-id="wifi-plan-data">${'{}'}</metadata></svg>`).hasData, false);
 });

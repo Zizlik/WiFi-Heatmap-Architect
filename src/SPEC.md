@@ -39,9 +39,10 @@ Audience: a non-technical home user (Czech first, English second). Tone: friendl
 8. Performance: dragging the router must feel instant (≥ 30 fps) on a 12 m flat with ~20 walls and ~20 furniture
    polygons; a full-quality recompute ≤ 150 ms on a laptop. Use a coarse raster while dragging, refine after ~120 ms idle.
 9. Robustness: never throw to the console during normal use; corrupt files/localStorage → friendly toast, app stays usable.
-10. Size: each built file ≤ 1.5 MB without a user background image (`node build.mjs --check` enforces it; raised from 1 MB in
-    stage 5, the stage-4 bundle was ~977 KB). The bundle is deliberately NOT minified: readable code is worth more than bytes for
-    a local app opened from disk (GitHub Pages serves it gzipped, ~300 KB on the wire).
+10. Size: each built file ≤ 2 MB without a user background image (`node build.mjs --check` enforces it; raised from 1 MB in
+    stage 5 (the stage-4 bundle was ~977 KB) and from 1.5 MB in stage 7 (the stage-6 bundle was ~1408 KB, stage 7 starts at
+    ~1.55 MB)). The bundle is deliberately NOT minified: readable code is worth more than bytes for a local app opened from disk
+    (GitHub Pages serves it gzipped, ~440 KB on the wire).
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -86,7 +87,7 @@ Desktop: `[ map stage (flex 1) | sidebar 360 px ]`. < 900 px: sidebar goes below
 `+ − 0` keys; zoom buttons bottom-right; double-click empty space = fit):
 - top-left: **view switch** `Signál | Rychlost | Změna proti dnešku` (Signal | Speed | Change vs today) with "?" hint;
 - top-right: **band switch** `2,4 | 5 | 6 GHz` with "?" hint (explains range vs. speed trade-off);
-- bottom-left: **tool palette**: `Router (R)` default pointer tool; `Měřit signál (M)`; `Vrstvy` popover (Dosah čar `L`, Zdi, Nábytek, Popisky, Hodnoty);
+- bottom-left: **tool palette**: `Router (R)` default pointer tool; `Měřit signál (M)`; `Vrstvy` popover (Dosah čar `L`, Zdi, Nábytek, Popisky, Hodnoty, Body měření, Předpověď u bodů `P` - SPEC 10.2);
 - bottom: **legend** — gradient with word labels (Špatný … Výborný) + dBm ticks and a marker at the "good signal" threshold;
 - markers (always directly draggable, keyboard-movable, no tool switch needed): **Router** (red R, "Zkušební poloha"), **Dnes** ghost (dashed ring,
   shown only when different from trial), **Internet** (inlet/modem), **Uzel 2** (only when a second node is enabled), **measurement dots**.
@@ -264,7 +265,7 @@ Project = {
   model:{ nearSignal:-55..-25 (dBm at 1 m, 5 GHz; default -40), n:1.6..4 (default 2.2), wallLoss:0..20 (default 8), threshold:-75..-55 (default -67), rangeThreshold:-80..-45 (default -60) },
   goal:{ room:'all'|roomId, allowedRoom:'any'|roomId, excluded:roomId[], mode:'signal'|'speed' (kept for compat), targetDown:1..10000 (50), targetUp:1..10000 (50), reserve:0..80 (30), device:string≤50 ('Telefon'/'Phone') },
   measurements: Array≤500 of {id, x,y, band:2.4|5|6, value:-100..-20 (dBm), name≤50, download:null|0..10000, upload:null|0..10000, device≤50, t:epoch ms}   // all taken with the router at net.baseline
-  view:{ band:2.4|5|6 (default 5), layer:'signal'|'speed'|'diff', ranges:false, walls:true, furniture:true, labels:true, values:false, calibrate:true, palette:'default|cb' }
+  view:{ band:2.4|5|6 (default 5), layer:'signal'|'speed'|'diff', ranges:false, walls:true, furniture:true, labels:true, values:false, points:true, whatif:true, calibrate:true, palette:'default|cb' }
 }
 ```
 Invariants: router/baseline/node.pos are snapped to the nearest floor point when outside rooms (engine helper `nearestFloor`); changing `net.baseline` clears `measurements` (after UI confirmation); `scale.mpp` is stored, never silently re-derived from the room bbox after load.
@@ -466,6 +467,14 @@ Hard limit: browsers expose NO API for SSID, BSSID, RSSI/dBm, channel, band or l
   without it. Helper files are linked from the app (served next to index.html on GitHub Pages) and from the README; MIT, commented, < 200 lines each.
   Unit-test the parsers in Node; test the PowerShell helper for real on this Windows machine (start it, fetch /wifi from the built app over
   file:// and http, verify CORS/PNA headers, stop it). No security shortcuts: bind 127.0.0.1 only, reject other Host headers, GET only.
+- Decisions (stage 6 finalizer): a probe that times out (a busy computer) is retried once with 1.5 s; a refused connection is
+  not. Chrome / Edge 142+ "Local Network Access": a page served from the internet (GitHub Pages) needs the user's one-time
+  permission to reach 127.0.0.1, and asking shows a browser prompt - so while that permission is undecided "Změřit vše" does
+  not probe at all (nobody meets a prompt for a helper they never started); "Info o zařízení" offers **Připojit pomocníka**,
+  which asks on purpose (30 s for the answer). Once granted (or after one success), every "Změřit vše" probes as usual; a
+  denied permission is explained (site settings). file:// and localhost pages are never asked. The helpers also accept
+  `Origin: file://` (sent by some test setups for pages from disk), equivalent to `null`. Chrome logs a refused loopback
+  request ("net::ERR_CONNECTION_REFUSED") when no helper runs; page code cannot suppress that line.
 
 ## 9. Stage 6 (user request): guided "Prvotní měření" calibration wizard → router strength + whole-home throughput
 User: "a first-measurement option: the router is at its original place, I take measurements, and based on them my router's signal and the
@@ -503,3 +512,130 @@ overall throughput in my home are adjusted". Today calibration = per-band median
   Gatekeeper (right-click → Otevřít). Phones: explain it is not possible on Android/iOS browsers.
 - Security: loopback only, Host header check, GET only, fixed command list (no user-supplied arguments executed), CORS allow-list, no
   persistence, no elevation needed. Each file < 200 lines, MIT header "© 2026 Zizlik".
+
+## 10. Stage 7 (user request): predicted change at the measured points ("what-if" for router move / second AP / repeater)
+User: "when I add a repeater or a new router connected by cable, or move the router, I can't see the prediction of how much the value at the
+measurement points would increase or decrease".
+- Engine `WH.engine.analysis.predictAtMeasurements(ctx, project, {offsets/fit as used by the planner}) → [{id, band, measured (dBm|null),
+  modelToday, modelNew, delta, predicted (= measured + delta, or modelNew when measured is null), source:'router'|'node', speed:{measuredDown,
+  measuredUp, predDown, predUp, limitedBy:'plan'|'backhaul'|'link'|null}|null}]`. Today = router at net.baseline, NO node (measurements are
+  taken with the node off); new = current trial router + current node scenario, same band, same calibration. Deterministic; tests.
+- Speed with a second node (lift the old "speed unsupported with node" rule for this what-if): wired AP / wired mesh → the node's signal maps
+  through the same device speed curve; wireless mesh → min(curve(node signal), backhaul throughput ≈ curve(backhaul signal) × 0.6);
+  repeater → × 0.5 (half-duplex, same radio); router-served cells unchanged; cap by internet plan/link limits; label "orientační".
+  Measured speed points scale relative to their own measurement: predDown = measuredDown × curve(sig_new)/curve(sig_today) (clamped by limits),
+  so the user's real numbers anchor the prediction. Without a curve: dBm only.
+- Planner UI: (1) measurement dots: when the scenario differs from today (router moved or node on), each dot shows "−72 → −58 (+14)" (green/red
+  arrow) and, if speed exists, "↓120 → ≈310"; in the Change view this is the default label; (2) dot tooltip with measured/today-model/new-model/
+  predicted + what limits the speed; (3) Measurements card section "Co by se změnilo v tvých bodech": list sorted by benefit, average Δ,
+  best/worst point, count improved/worsened, and a one-line verdict ("Opakovač pomůže hlavně v Ložnici (+14 dB), v Kuchyni se nic nezmění.");
+  (4) the Result card mentions it when measurements exist. cs+en, hints, centring rules, phone layout (labels must not collide; collapse to
+  "+14" on small zoom).
+- Defects seen in the user's screenshot (real plan, node "2" placed in the bedroom, range lines on, several measurements): (a) some measurement
+  dots have NO label at all (label collision-avoidance or speed-only/dBm-only cases hide them) — every dot must show at least a compact label
+  ("−63", "↓324", "+14") and the full text in its tooltip; when labels would collide, shorten rather than hide, and never hide a dot's label
+  entirely without an alternative (e.g. a numbered badge + list); (b) a dot sitting on the exterior wall line / outside any room: snap new
+  measurement points into the room under the cursor (nearestFloor) and flag existing out-of-floor points in the list with a "Posunout dovnitř"
+  action; (c) with range lines on, labels and dashed lines overlap — draw labels above lines with a halo.
+- User follow-up: "a repeater behind a wall will not exceed ~300 Mb/s anyway". Speed through a wireless node is capped by its link to the
+  router: backhaulMbps = curve(backhaul signal through the walls, band = node.backhaulBand) × factor (repeater 0.5 — same radio half-duplex;
+  wireless mesh 0.6; wired AP/mesh: no backhaul cap, only node.maxMbps/plan/link). New optional `node.maxMbps` (null | 10–10000; sanitized,
+  serialized) = the device's real ceiling entered by the user ("Kolik zvládne (Mb/s)" with hint, e.g. "levný opakovač Wi-Fi 5 ≈ 300 Mb/s,
+  mesh Wi-Fi 6 s vyhrazeným propojením ≈ 600–900 Mb/s"). Effective node-served speed = min(curve(client signal from node), backhaulMbps,
+  node.maxMbps, plan/link limits). When no speed curve exists, show the backhaul quality in dBm + the maxMbps cap only. The Speed view, dot
+  labels, tooltips and the "Co by se změnilo" list say "omezeno propojením ≈ 300 Mb/s" (or "stropem zařízení") wherever the cap is the
+  binding limit, so the user understands why a strong signal near the repeater does not mean more speed.
+- Diagnostics (user saw the generic "Něco se nepovedlo…" toast while measuring; not reproducible on the current build): the global error
+  toast must offer **"Podrobnosti"** (shows the error message + where it happened, copyable) and the app keeps the last 20 errors in memory;
+  Help gets "Nahlásit problém" → copies a diagnostic summary (app version, build hash, browser/OS, view, last errors with stacks — no plan data,
+  no measurements, no SSIDs/BSSIDs/MACs) to the clipboard. Every async path in measuring (speed test, helper probe, parse, save, wizard) must
+  catch its own errors and show a specific message instead of the generic one. Also: the helper probe to 127.0.0.1:47823 when the helper is
+  not running currently logs "net::ERR_CONNECTION_REFUSED" in the console — keep the probe only on explicit user actions and say in the UI that
+  the helper is off (that console line cannot be suppressed by page code, so probe at most once per measurement).
+
+### 10.1 Helper connection from https (verified 2026-10-03 with Chrome 154)
+- From file:// the page reaches http://127.0.0.1:47823 fine. From https://zizlik.github.io Chrome's **Local Network Access** applies:
+  `navigator.permissions.query({name:'local-network-access'})` → 'prompt'; the fetch waits for a browser permission prompt ("access devices on
+  your local network"); headless/denied → "Permission was denied for this request to access the `loopback` address space". The app's 300 ms
+  probe aborted before the user could answer and the rejection surfaced as the generic error toast.
+- Fix: probe only on explicit user action; query the permission first; if 'prompt', show an inline explainer ("Chrome se teď zeptá na přístup
+  k zařízením v místní síti — klikni na Povolit. Je to jen pro pomocníka na tomto počítači.") and wait up to 30 s; use
+  `fetch(url, {targetAddressSpace:'loopback'})` where supported; if 'denied', show how to re-allow (lock icon → Nastavení webu → Místní síť →
+  Povolit) and the paste/cmd fallback; never route these failures to the generic toast. Keep PNA preflight headers in the helper (older
+  Chromes) — harmless. Test both origins (file:// and an https origin — use a local https server or the live Pages URL) in headful Chrome
+  where possible, and document the prompt in pomocnik/CTI-ME.txt.
+
+### 10.2 The prediction at the points as a map layer (user, 2026-10-04: "to navýšení rychlosti jak tam teď je, pujde to nastavit jako další vrstvu aby si to uživytel mohl zapnout nebo vypnout?")
+- Two view layers in the planner's Vrstvy popover, saved in the project (`view.points`, `view.whatif`, default on; older files on):
+  **Body měření** (the dots and their labels on the map; the sidebar lists stay, a "Co by se změnilo" row clicked there still
+  shows its dot for a moment) and **Předpověď u bodů** (off: the dots, their tooltips and the PNG export show only the measured values -
+  no "→ predicted (+Δ)", arrows or speed predictions; the sidebar's "Co by se změnilo v tvých bodech" and the Result line stay).
+- Předpověď u bodů is greyed when it has nothing to show - Body měření off, no measurements, or nothing differs from today -
+  and its "?" says why (`data-hint-note`). Shortcut `P` (planner) toggles it with a short toast ("Předpověď u bodů: vypnuto").
+- Starting to measure (tool M, the phone's measuring mode, the Prvotní měření guide) with Body měření off switches the dots
+  back on (toast), so a new point never lands out of sight. While a layer that is on by default is hidden (Zdi, Nábytek, Popisky,
+  Body měření, Předpověď u bodů) the Vrstvy button carries a small accent dot, so hidden dots are not forgotten after a reload.
+
+## 11. Showcase demo flat + README screenshots (user: "on GitHub I want a better picture of the space — not just squares/rectangles, furniture
+   that really matches reality, and all layers switched on")
+- Replace the demo flat (engine 31-demo.js, cs+en names) with a realistic ~65–75 m² flat: non-rectangular outline (L-shaped hall, a bay or
+  chamfered corner, a niche), 6–7 rooms (obývák s kuchyňským koutem, ložnice, dětský pokoj/pracovna, koupelna, WC, předsíň/chodba, balkon),
+  realistic wall materials (exterior brick/solid, interior partitions drywall/brick, bathroom tiles), doors in realistic places, and furniture
+  as realistic SHAPES at real sizes: corner sofa (L), coffee table, TV unit, dining table with chairs block, L-shaped kitchen counter with
+  fridge/oven blocks, double bed with two nightstands, wardrobe, desk + chair, bookshelf, bathtub/shower, washbasin, toilet, washing machine,
+  shoe cabinet — with sensible attenuation kinds. Router/baseline at a realistic spot (hall cabinet near the entrance where the fibre comes in).
+  Must remain valid for all tests (update demo-dependent tests deliberately), look good at every size, labels must fit.
+- README screenshots (docs/make-screenshots.mjs, demo only): desktop planner with ALL layers on (heat + range lines for 2.4/5/6 + room values
+  + walls + furniture + labels), a few measurement dots with labels and a what-if (second AP) so the "→ +X dB" labels show; the editor
+  showing the realistic plan with materials; a phone screenshot of measuring mode / Změřit vše; optionally the calibration result card.
+  Look at every screenshot and iterate until it looks great (no overlaps, legible labels, attractive composition, light theme; one dark shot ok).
+
+## 12. Dark themes (user: "I want the dark theme OLED black and maybe some deep dark — now it's kind of meh")
+- The current dark theme is navy-tinted (#0c1424 / #142038) and feels dull. Replace it with TWO dark themes + light:
+  **Deep dark** (default dark): neutral near-black, no blue cast — bg ≈ #0a0a0b, surface ≈ #121214, raised ≈ #1a1a1d, line ≈ #26262b,
+  ink ≈ #f2f2f3, muted ≈ #a1a1aa, accent teal tuned for black (≈ #2dd4bf), crisp high contrast, subtle elevation via borders not glow.
+  **OLED black**: pure #000 page and stage, surfaces #000 with 1 px hairline borders (≈ #1f1f22) and only slightly lifted popovers (≈ #0b0b0c),
+  no large grey areas, no shadows (black can't show them) — accents carry the hierarchy; legible text (≥ 4.5:1), dot grid ≈ rgba(255,255,255,.07).
+  Theme picker becomes a small menu in the header (and in Help/settings): Automaticky · Světlý · Deep dark · OLED černá (en: Auto · Light ·
+  Deep dark · OLED black), remembered in prefs; "Automaticky" follows the OS (light ↔ deep dark). `html[data-theme="light"|"dark"|"oled"]`.
+  theme-color meta follows the theme (#000 for OLED). Heat palettes, legend, markers, stage dot grid, canvas drawing (walls/furniture/labels
+  halos), editor SVG, popovers, toasts, sheets, welcome screen and PNG export must all look intentional in both dark themes (export may stay
+  in the current theme). Re-run contrast audit + centring guard + screenshots for both dark themes.
+
+## 13. Stage 7b (user, high priority): on a PC every measurement MUST know its band, and all calculations follow it
+User: "I made a measurement but the script did not find out whether I'm on 2.4, 5 or 6 GHz — so the whole measurement is useless?" and
+"the PC must ALWAYS detect the GHz when measuring, and the calculations must follow it". Facts: the helper + parser read this PC correctly
+(netsh: Wi-Fi 7 MLO line "LinkID 0 … RSSI −70, Channel 100, Band 5 GHz" → band 5, ch 100, −70 dBm), so the failure is in the app flow
+(helper not reached — e.g. the old GitHub Pages build without helper support, Chrome Local Network Access not granted, or the Wi-Fi step
+silently skipped and the measurement saved with the map's band).
+- On desktop OSes (Windows/macOS/Linux), "Změřit vše" must NOT save a measurement without a confirmed band: steps = device → Wi-Fi details
+  (helper; if not reachable: a blocking-but-friendly step "Připoj pomocníka" with one-click connect (LNA permission on https), retry, or
+  "Vložit výpis" (netsh … | clip) inline; only an explicit user choice "Zadat pásmo ručně" (2,4 / 5 / 6 big buttons) may continue without the
+  helper) → speed test → save. Never fall back silently to the map's current band. Phones (no helper possible): the band must be chosen
+  explicitly in the sheet (big 2,4 / 5 / 6 segmented, remembered for the session, with "Kde to zjistím?" → WiFiman) before saving.
+- The detected band is shown prominently in the checklist and the saved toast ("5 GHz · kanál 100 · −70 dBm"), stored in measurement.band +
+  measurement.wifi.band/channel; the map view automatically switches to the measured band after saving (toast "Mapa přepnuta na 5 GHz, na kterém
+  měříš") so calibration, speed curve, what-if and throughput are computed for that band. The band switch shows a small dot/count for bands
+  that have measurements. If consecutive measurements come from different bands (band steering), warn once and explain per-band calibration.
+- Existing measurements: the list shows each band clearly; a measurement saved without detection gets a badge "pásmo neověřeno" with a quick
+  fix (choose band or re-detect via helper now). Editing the band re-runs calibration.
+- The Wi-Fi step must report WHY it failed (helper not running / permission denied / helper error / no Wi-Fi adapter / Windows Location
+  permission needed for netsh on Windows 11 24H2) with the exact fix.
+- QA: real helper on this PC (start pomocnik/Windows/Spustit pomocníka.cmd) from file:// AND from an https origin (LNA granted via CDP and a
+  headful check of the prompt), plus helper-off cases; assert every saved desktop measurement has a band from detection or explicit user choice,
+  and that the view switches to it.
+- **Band steering / Wi-Fi 7 MLO (user: "with the current guide I can't pin my phone or laptop to one network — my Wi-Fi 7 switches bands by
+  itself")**. Do NOT ask users to connect to a single band anywhere (remove/rewrite such guidance in help, wizard, measure sheet, CTI-ME, README).
+  - Desktop: the helper records the band(s) in use AT THAT MOMENT; with MLO record every link (`wifi.links=[{band,channel,rssiDbm,widthMHz}]`)
+    and use the strongest/primary link as measurement.band; the list shows "5 GHz (+6 GHz MLO)".
+  - New band mode **Auto** in the band switch (2,4 · 5 · 6 · Auto; default Auto when the router's bands include more than one): each cell shows
+    the signal of the band a steering client would most likely use there — rule (tunable in Advanced, documented in a hint): use 6 GHz if
+    enabled and its signal ≥ −70 dBm, else 5 GHz if ≥ −72 dBm, else 2.4 GHz; optional subtle overlay of band zones ("kde budeš na 6 / 5 /
+    2,4 GHz") with a legend. New `project.net.routerBands = {'2.4':true,'5':true,'6':false}` ("Která pásma tvůj router vysílá", Advanced +
+    getting-started hint; Wi-Fi 7 users tick 6 GHz) and `model.steer = {six:-70, five:-72}`; sanitized/serialized. Stats, optimizer,
+    what-if, range lines, speed curve lookups and throughput work in Auto mode (per-cell band; speed curves per band where available, else
+    nearest band's curve with a note).
+  - Phones: the sheet offers 2,4 / 5 / 6 / **Nevím (automaticky)**; "Nevím" stores band 'auto' (null in data) and the engine infers the
+    likely band at that point with the steering rule (flag `bandInferred:true`) for calibration and speed curves; the list shows
+    "≈ 5 GHz (odhad)". Desktop "Zadat pásmo ručně" also offers "Nevím".
+  - Calibration per band stays; inferred-band points count with lower weight. Engine tests for the steering rule and inference.

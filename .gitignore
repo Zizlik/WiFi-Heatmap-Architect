@@ -10,6 +10,8 @@ puvodni-verze/
 node_modules/
 .claude/
 *.log
+__pycache__/
+*.pyc
 npm-debug.log*
 
 # --- scratch / local outputs --------------------------------------------------------------------------------------

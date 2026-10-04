@@ -10,6 +10,8 @@
   const t = (k, p) => g.WH.i18n.t(k, p);
   const KEY_RE = /^[a-z][\w-]*(\.[\w-]+)+$/;
   const el = (...a) => g.WH.util.el(...a);
+  /** A bug caught in a widget callback also goes to the error diary (WH.diag). */
+  const caught = (e, where) => { try { if (g.WH.diag) g.WH.diag.caught(e, where); } catch (x) { /* ignore */ } };
 
   /** {key, text} for a definition that has `i18n` or a `label`-like property. */
   function textOf(def, prop) {
@@ -118,8 +120,9 @@
       if (below) below.backdrop.removeAttribute('inert');
       else { setBackgroundInert(false); document.body.classList.remove('has-modal'); }
       if (prevFocus && prevFocus.isConnected && typeof prevFocus.focus === 'function') { try { prevFocus.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
-      try { if (typeof opts.onClose === 'function') opts.onClose(result); } catch (e) { console.error(e); }
+      try { if (typeof opts.onClose === 'function') opts.onClose(result); } catch (e) { console.error(e); caught(e, 'dialog.onClose'); }
       resolveClosed(result);
+      if (live.length) placeToasts();   // a drawer that lay over the side panel is gone
     }
     entry.backdrop = backdrop;
 
@@ -161,6 +164,7 @@
     if (!target) target = box.querySelector('[data-autofocus]');
     if (!target) target = focusables(body)[0] || box;
     requestAnimationFrame(() => { try { target.focus({ preventScroll: true }); } catch (e) { /* ignore */ } });
+    if (live.length) placeToasts();   // toasts already shown step aside from a side drawer
 
     return { el: box, body, close, closed, setTitle(text) { titleEl.removeAttribute('data-i18n'); titleEl.textContent = text; } };
   }
@@ -248,9 +252,16 @@
     const avoid = Array.from(document.querySelectorAll(AVOID)).filter((n) => n.offsetWidth && n.offsetHeight && !n.closest('[hidden]')).map(rectOf);
     if (avoid.length) {
       const atBottom = { l, r: l + w, t: bottomEdge - H, b: bottomEdge };
-      const atTop = { l, r: l + w, t: topEdge, b: topEdge + H };
       const cover = (r) => avoid.reduce((sum, c) => sum + overlapArea(r, c), 0);
-      if (cover(atBottom) > 0 && cover(atTop) < cover(atBottom)) { set(l, w, topEdge, null); atTopNow = true; }
+      const below = cover(atBottom);
+      if (below > 0) {
+        // the top of the panel, or right below an avoided element up there (e.g. the head of a panel docked at the top
+        // whose sticky action row sits at the bottom): the spot covering the least wins, the top edge on a tie
+        const tops = [topEdge, ...avoid.filter((c) => c.r > l && c.l < l + w && c.b > topEdge && c.b + 8 + H <= bottomEdge).map((c) => c.b + 8)];
+        let best = null;
+        for (const tp of tops) { const cv = cover({ l, r: l + w, t: tp, b: tp + H }); if (!best || cv < best.cv) best = { tp, cv }; }
+        if (best && best.cv < below) { set(l, w, best.tp, null); atTopNow = true; }
+      }
     }
     // docked at the bottom: the panel gets that much extra scroll room, so whatever the stack covers (a list row, a
     // "Show" / "Join" button of the plan check...) can be scrolled up into view instead of staying unreachable
@@ -307,7 +318,9 @@
       return H;
     };
     if (vw >= 900) {
-      if (placeInSidePanel(rootEl, view, stage, set)) return;
+      // a side drawer (Help, Info o zařízení) lies over the side panel: the stack goes over the stage instead
+      const drawer = Array.from(document.querySelectorAll('.modal--drawer')).some((n) => n.offsetWidth && n.offsetHeight);
+      if (!drawer && placeInSidePanel(rootEl, view, stage, set)) return;
       rootEl.classList.add('toast-root--over-stage');
       const s = rectOf(stage);
       const pad = 12;
@@ -433,7 +446,7 @@
     if (def.action && typeof def.action.fn === 'function') {
       const a = ui.button({ label: def.action.label, i18n: def.action.i18n, variant: 'soft', size: 'sm' });
       a.classList.add('toast__action');
-      a.addEventListener('click', () => { try { def.action.fn(); } catch (e) { console.error(e); } close(); });
+      a.addEventListener('click', () => { try { def.action.fn(); } catch (e) { console.error(e); caught(e, 'toast.action'); } close(); });
       node.append(a);
     }
     const x = ui.iconButton({ icon: 'x', tip: 'ui.close', size: 'sm', variant: 'ghost' });
@@ -518,7 +531,7 @@
         const back = anchor && anchor.isConnected ? anchor : prevFocus;
         if (back && back.isConnected && typeof back.focus === 'function') { try { back.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
       }
-      try { if (typeof o.onClose === 'function') o.onClose(result); } catch (e) { console.error(e); }
+      try { if (typeof o.onClose === 'function') o.onClose(result); } catch (e) { console.error(e); caught(e, 'popover.onClose'); }
     }
     // A resize keeps the panel and moves it with its anchor: on phones the on-screen keyboard resizes the window the
     // moment a field inside the panel gets focus (closing then made e.g. "how many metres?" impossible to fill in).
@@ -591,7 +604,8 @@
   }
 
   /**
-   * Dropdown menu.  items: [{label|i18n, icon, kbd, onClick, danger, disabled, checked, sep:true, note, heading, hidden}]
+   * Dropdown menu.  items: [{label|i18n, icon, kbd, onClick, danger, disabled, checked, radio, sep:true, note, heading, hidden}]
+   * (checked !== undefined = a check column; radio:true makes it a menuitemradio and the menu opens on the checked one)
    * (or a function returning that array).  Keyboard: arrows/Home/End/Enter/Esc.  Returns {el, close}.
    */
   function menu(anchor, items, o) {
@@ -604,10 +618,12 @@
       if (it.heading) { node.append(labelSpan({ label: it.heading, i18n: it.i18n }, 'menu__heading')); continue; }
       if (it.note) { const n = labelSpan({ label: it.note, i18n: it.i18n }, 'menu__note'); n.style.display = 'block'; node.append(n); continue; }
       const checkable = it.checked !== undefined;
-      const b = el('button.menu__item', { type: 'button', role: checkable ? 'menuitemcheckbox' : 'menuitem', tabindex: '-1' });
+      const b = el('button.menu__item', { type: 'button', role: checkable ? (it.radio ? 'menuitemradio' : 'menuitemcheckbox') : 'menuitem', tabindex: '-1' });
       if (checkable) {
+        // a check column, then (optionally) the item's own icon: "✓ [sun] Light"
         b.setAttribute('aria-checked', it.checked ? 'true' : 'false');
         b.append(el('span.menu__check', it.checked ? ui.icon('check', 16) : null));
+        if (it.icon) b.append(el('span.menu__icon', ui.icon(it.icon, 18)));
       } else if (it.icon) {
         b.append(el('span.menu__icon', ui.icon(it.icon, 18)));
       }
@@ -617,7 +633,7 @@
       if (it.disabled) { b.disabled = true; b.setAttribute('aria-disabled', 'true'); }
       b.addEventListener('click', () => {
         handle.close();
-        if (typeof it.onClick === 'function') setTimeout(() => { try { it.onClick(); } catch (e) { console.error(e); } }, 0);
+        if (typeof it.onClick === 'function') setTimeout(() => { try { it.onClick(); } catch (e) { console.error(e); caught(e, 'menu.item'); } }, 0);
       });
       node.append(b);
       if (!it.disabled) buttons.push(b);
@@ -639,7 +655,9 @@
       },
     }));
     node.addEventListener('pointermove', (e) => { const b = e.target.closest && e.target.closest('.menu__item'); if (b) idx = buttons.indexOf(b); });
-    requestAnimationFrame(() => focusAt(0));
+    // a radio menu (theme) opens on its checked item, any other menu on the first one
+    const startAt = buttons.findIndex((x) => x.getAttribute('role') === 'menuitemradio' && x.getAttribute('aria-checked') === 'true');
+    requestAnimationFrame(() => focusAt(Math.max(0, startAt)));
     return handle;
   }
 

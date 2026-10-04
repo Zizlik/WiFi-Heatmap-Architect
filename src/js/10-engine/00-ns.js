@@ -17,6 +17,8 @@
   E.CANVAS = Object.freeze({ W: 1080, H: 942 });
   /** Supported Wi-Fi bands in GHz. */
   E.BANDS = Object.freeze([2.4, 5, 6]);
+  /** The band mode "Auto" (SPEC 13): every place on the band a band-steering client would use there. */
+  E.BAND_AUTO = 'auto';
 
   // ---------------------------------------------------------------------------------------------------------------
   // util

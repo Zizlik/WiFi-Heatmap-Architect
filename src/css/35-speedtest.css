@@ -29,7 +29,7 @@
 .st__gauge { position: relative; width: 150px; aspect-ratio: 120 / 96; flex: none; }
 .st--compact .st__gauge { width: 132px; }
 .st__gauge > svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.st__track { stroke: var(--line); }
+.st__track { stroke: var(--line-strong); }   /* line-strong: still visible on OLED black */
 .st__arc { stroke: var(--accent); transition: stroke-dasharray var(--t-med) linear; }
 .st[data-phase="up"] .st__arc { stroke: var(--info); }
 /* the readout is centred on the ring centre (60, 60) of the 120 x 96 viewBox */

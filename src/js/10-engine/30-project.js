@@ -62,6 +62,19 @@
   const WAN_RATES = Object.freeze([100, 1000, 2500, 5000, 10000]);
   const CABLE_CATEGORIES = Object.freeze(['unknown', 'cat5', 'cat5e', 'cat6', 'cat6a', 'cat7', 'cat8']);
   const NODE_MODES = Object.freeze(['none', 'ap_cable', 'mesh_cable', 'mesh_wifi', 'repeater']);
+  /** node.maxMbps range (SPEC 10): the second node's real ceiling in Mb/s, null = not known. */
+  const NODE_MBPS_MIN = 10;
+  const NODE_MBPS_MAX = 10000;
+  /** Band steering (SPEC 13): model.steer thresholds in dBm and their defaults (6 GHz from -70, 5 GHz from -72). */
+  const STEER_MIN = -90;
+  const STEER_MAX = -50;
+  const STEER_DEFAULT = Object.freeze({ six: -70, five: -72 });
+  /** net.routerBands default: the bands a typical router sends (Wi-Fi 6E / 7 users tick 6 GHz). */
+  const ROUTER_BANDS_DEFAULT = Object.freeze({ '2.4': true, '5': true, '6': false });
+  /** Wi-Fi channel widths (MHz) a link may report. */
+  const WIDTHS = Object.freeze([20, 40, 80, 160, 320]);
+  /** At most this many Wi-Fi 7 multi-link (MLO) links are kept per measurement. */
+  const MAX_LINKS = 4;
   const LAYERS = Object.freeze(['signal', 'speed', 'diff']);
   const PALETTES = Object.freeze(['default', 'cb']);
   const ROOM_COLORS = Object.freeze(['#8eadd2', '#deb879', '#9e9ccb', '#97bbad', '#d79a9a', '#a8c686', '#c8a2c8', '#e6c27a']);
@@ -88,6 +101,125 @@
   function softPoint(p) {
     if (!isObj(p) || !isNum(p.x) || !isNum(p.y)) return null;
     return { x: round(clamp(p.x, 0, 1)), y: round(clamp(p.y, 0, 1)) };
+  }
+
+  // ---- optional measurement extras (SPEC 8) and the calibration fit (SPEC 9) ----------------------------------------
+  const CONN_TYPES = Object.freeze(['wifi', 'ethernet', 'cellular', 'bluetooth', 'wimax', 'other', 'none', 'unknown', 'mixed']);
+  const FIT_METHODS = Object.freeze(['offset', 'offset+n+walls']);
+  const MAC_RE = /^[0-9a-f]{2}(?:[:-]?[0-9a-f]{2}){5}$/i;
+  const SIG_RE = /^[0-9a-z]{1,32}$/;
+  const textOrNull = (v, max) => cleanText(v, max) || null;
+
+  /** 'aa:bb:cc:dd:ee:ff' (lower case) from "AA-BB-CC-DD-EE-FF", "aabbccddeeff", ...; null otherwise. */
+  function macOf(v) {
+    if (typeof v !== 'string') return null;
+    const s = v.trim();
+    if (!MAC_RE.test(s)) return null;
+    const hex = s.replace(/[:-]/g, '').toLowerCase();
+    return hex.match(/../g).join(':');
+  }
+
+  /**
+   * Wi-Fi 7 multi-link (MLO) links of a measurement (SPEC 13): [{band, channel, rssiDbm, widthMHz}] (each field null
+   * when unknown; links without any known field are dropped), strongest first (unknown signal last, input order kept
+   * on ties), at most MAX_LINKS; null when nothing is left.
+   */
+  function cleanLinks(list) {
+    if (!Array.isArray(list)) return null;
+    const out = [];
+    for (const l of list.slice(0, 16)) {
+      if (!isObj(l)) continue;
+      const e = {
+        band: units.normBand(l.band),
+        channel: Number.isInteger(l.channel) && l.channel >= 1 && l.channel <= 233 ? l.channel : null,
+        rssiDbm: isNum(l.rssiDbm) ? round(clamp(l.rssiDbm, -110, -20), 2) : null,
+        widthMHz: WIDTHS.includes(l.widthMHz) ? l.widthMHz : null,
+      };
+      if (e.band !== null || e.channel !== null || e.rssiDbm !== null) out.push(e);
+    }
+    const rank = (e) => (e.rssiDbm === null ? -Infinity : e.rssiDbm);
+    const sorted = out.map((e, i) => ({ e, i })).sort((a, b) => rank(b.e) - rank(a.e) || a.i - b.i).map((x) => x.e);
+    return sorted.length ? sorted.slice(0, MAX_LINKS) : null;
+  }
+
+  /**
+   * Measurement.wifi = {ssid<=64, bssid, channel, band, rxRate, txRate, radio, security} (every field null when
+   * unknown) + optional links (Wi-Fi 7 MLO, SPEC 13; only when known), or null when nothing usable is left. Rates in
+   * Mb/s (0..100000).
+   */
+  function cleanWifi(w) {
+    if (!isObj(w)) return null;
+    const out = {
+      ssid: textOrNull(w.ssid, 64),
+      bssid: macOf(w.bssid),
+      channel: Number.isInteger(w.channel) && w.channel >= 1 && w.channel <= 233 ? w.channel : null,
+      band: units.normBand(w.band),
+      rxRate: numOrNull(w.rxRate, 0, 100000),
+      txRate: numOrNull(w.txRate, 0, 100000),
+      radio: textOrNull(w.radio, 24),
+      security: textOrNull(w.security, 40),
+    };
+    const links = cleanLinks(w.links);
+    if (links) out.links = links;
+    return Object.values(out).some((v) => v !== null) ? out : null;
+  }
+
+  /** Measurement.deviceInfo = {os<=40, model<=50, browser<=40, connType: CONN_TYPES|null}, or null when empty. */
+  function cleanDeviceInfo(d) {
+    if (!isObj(d)) return null;
+    const out = {
+      os: textOrNull(d.os, 40),
+      model: textOrNull(d.model, 50),
+      browser: textOrNull(d.browser, 40),
+      connType: typeof d.connType === 'string' && CONN_TYPES.includes(d.connType) ? d.connType : null,
+    };
+    return Object.values(out).some((v) => v !== null) ? out : null;
+  }
+
+  /** {rms, looRms|null} (+ offset) of a fit's "before" / per-band numbers. */
+  const rmsOrNull = (v) => numOrNull(v, 0, 100);
+
+  /**
+   * project.model.fit (SPEC 9), see model.fitProject: {n 1.6..4, wallFactor 0.5..2, method, count, at, fitted:{n,wallFactor},
+   * sig?, byBand:{'2.4'|'5'|'6': {offset -40..40, rms, looRms|null, count, outliers:id[], n?, before?:{offset,rms,looRms}}}}.
+   * null when n / wallFactor are missing (the fit is then dropped as a whole).
+   */
+  function cleanFit(f) {
+    if (!isObj(f) || !isNum(f.n) || !isNum(f.wallFactor)) return null;
+    const byBand = {};
+    const sb = isObj(f.byBand) ? f.byBand : {};
+    for (const k of ['2.4', '5', '6']) {
+      const b = sb[k];
+      if (!isObj(b) || !isNum(b.offset)) continue;
+      const e = {
+        offset: num(b.offset, -40, 40, 0),
+        rms: num(b.rms, 0, 100, 0),
+        looRms: rmsOrNull(b.looRms),
+        count: Number.isInteger(b.count) ? clamp(b.count, 0, MAX_MEASUREMENTS) : 0,
+        outliers: Array.isArray(b.outliers)
+          ? b.outliers
+              .slice(0, MAX_MEASUREMENTS)
+              .filter((id) => typeof id === 'string' || typeof id === 'number')
+              .map((id) => cleanText(String(id), 80))
+              .filter(Boolean)
+          : [],
+      };
+      if (isNum(b.n)) e.n = num(b.n, 1.6, 4, 2.2);
+      if (isObj(b.before) && isNum(b.before.offset)) e.before = { offset: num(b.before.offset, -40, 40, 0), rms: num(b.before.rms, 0, 100, 0), looRms: rmsOrNull(b.before.looRms) };
+      byBand[k] = e;
+    }
+    const fitted = isObj(f.fitted) ? f.fitted : {};
+    const out = {
+      n: num(f.n, 1.6, 4, 2.2),
+      wallFactor: num(f.wallFactor, 0.5, 2, 1),
+      method: FIT_METHODS.includes(f.method) ? f.method : 'offset',
+      count: Number.isInteger(f.count) ? clamp(f.count, 0, MAX_MEASUREMENTS) : 0,
+      at: isNum(f.at) && f.at >= 0 ? Math.floor(f.at) : 0,
+      fitted: { n: fitted.n === true, wallFactor: fitted.wallFactor === true },
+      byBand,
+    };
+    if (typeof f.sig === 'string' && SIG_RE.test(f.sig)) out.sig = f.sig;
+    return out;
   }
 
   /** All ids used in a plan (rooms, walls, doors, furniture). */
@@ -257,6 +389,7 @@
         wanLink: null,
         cableCategory: 'unknown',
         cableLength: null,
+        routerBands: { ...ROUTER_BANDS_DEFAULT },
       },
       node: {
         mode: 'none',
@@ -265,8 +398,9 @@
         power: 0,
         backhaulBand: 5,
         backhaulThreshold: -67,
+        maxMbps: null,
       },
-      model: { nearSignal: -40, n: 2.2, wallLoss: 8, threshold: -67, rangeThreshold: -60, bandPower: { '2.4': 0, '5': 0, '6': 0 } },
+      model: { nearSignal: -40, n: 2.2, wallLoss: 8, threshold: -67, rangeThreshold: -60, bandPower: { '2.4': 0, '5': 0, '6': 0 }, steer: { ...STEER_DEFAULT } },
       goal: {
         room: 'all',
         allowedRoom: 'any',
@@ -278,7 +412,8 @@
         device: defaultDevice(lang),
       },
       measurements: [],
-      view: { band: 5, layer: 'signal', ranges: false, walls: true, furniture: true, labels: true, values: false, calibrate: true, palette: 'default' },
+      // band mode Auto (SPEC 13) by default: the default router sends two bands and clients steer between them
+      view: { band: 'auto', layer: 'signal', ranges: false, walls: true, furniture: true, labels: true, values: false, points: true, whatif: true, calibrate: true, palette: 'default' },
     };
   }
 
@@ -530,6 +665,8 @@
       wanLink: WAN_RATES.includes(sn.wanLink) ? sn.wanLink : null,
       cableCategory: CABLE_CATEGORIES.includes(sn.cableCategory) ? sn.cableCategory : 'unknown',
       cableLength: isNum(sn.cableLength) && sn.cableLength >= 0.1 && sn.cableLength <= 500 ? round(sn.cableLength) : null,
+      // the bands the router sends (SPEC 13); every flag on its own, all off = not a router -> the default
+      routerBands: cleanRouterBands(sn.routerBands),
     };
 
     // node
@@ -555,6 +692,9 @@
       power: num(sd.power, -10, 6, 0),
       backhaulBand,
       backhaulThreshold: num(sd.backhaulThreshold, -80, -55, -67),
+      // the node's real throughput ceiling in Mb/s entered by the user (SPEC 10: "Kolik zvládne"), null = unknown
+      // (0 / negative = "no ceiling" as well); whole Mb/s, 10..10000
+      maxMbps: isNum(sd.maxMbps) && sd.maxMbps > 0 ? Math.round(clamp(sd.maxMbps, NODE_MBPS_MIN, NODE_MBPS_MAX)) : null,
     };
 
     // model
@@ -572,7 +712,15 @@
         '5': num(sbp['5'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
         '6': num(sbp['6'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
       },
+      // band-steering thresholds (SPEC 13): a client uses 6 GHz from `six` dBm, else 5 GHz from `five`, else 2.4 GHz
+      steer: {
+        six: num(isObj(sm.steer) ? sm.steer.six : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.six),
+        five: num(isObj(sm.steer) ? sm.steer.five : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.five),
+      },
     };
+    // calibration fit of the "first measurement" wizard (SPEC 9; only when present, older files keep their shape)
+    const fit = cleanFit(sm.fit);
+    if (fit) model.fit = fit;
 
     // goal
     const sg = isObj(slices.goal) ? slices.goal : {};
@@ -600,8 +748,11 @@
       if (!isObj(m)) continue;
       // a measurement far off the map is dropped (clamping it to the edge would invent a position)
       const p = isNum(m.x) && isNum(m.y) && m.x >= -POINT_TOLERANCE && m.x <= 1 + POINT_TOLERANCE && m.y >= -POINT_TOLERANCE && m.y <= 1 + POINT_TOLERANCE ? softPoint(m) : null;
-      const band = units.normBand(m.band);
-      if (!p || band === null) continue;
+      // band null = "Nevím (automaticky)" (SPEC 13: the engine infers it; 'auto' is stored as null); a missing or
+      // invalid band still makes the measurement unusable (the old rule)
+      const unknownBand = m.band === null || units.normBandMode(m.band) === 'auto';
+      const band = unknownBand ? null : units.normBand(m.band);
+      if (!p || (band === null && !unknownBand)) continue;
       const download = numOrNull(m.download, 0, 10000);
       const upload = numOrNull(m.upload, 0, 10000);
       // The signal is optional for a speed-test point (SPEC 6.2: a phone browser cannot read dBm): value null is kept
@@ -629,20 +780,30 @@
       if (ping !== null) rec.ping = round(ping, 2);
       if (jitter !== null) rec.jitter = round(jitter, 2);
       if (m.source === 'cloudflare') rec.source = 'cloudflare';
+      // optional Wi-Fi details and measuring-device info (SPEC 8; only when known, so older records keep their shape)
+      const wifi = cleanWifi(m.wifi);
+      if (wifi) rec.wifi = wifi;
+      const info = cleanDeviceInfo(m.deviceInfo);
+      if (info) rec.deviceInfo = info;
       measurements.push(rec);
     }
 
     // view
     const sv = isObj(slices.view) ? slices.view : {};
     const bool = (v, def) => (typeof v === 'boolean' ? v : def);
+    const bandsOn = E.BANDS.filter((b) => net.routerBands[units.bandKey(b)]);
     const view = {
-      band: units.normBand(sv.band) || 5,
+      // the file's own band (or Auto) is kept; without one: Auto when the router sends two or more bands (SPEC 13)
+      band: units.normBandMode(sv.band) || (bandsOn.length > 1 ? 'auto' : bandsOn[0]),
       layer: LAYERS.includes(sv.layer) ? sv.layer : 'signal',
       ranges: bool(sv.ranges, false),
       walls: bool(sv.walls, true),
       furniture: bool(sv.furniture, true),
       labels: bool(sv.labels, true),
       values: bool(sv.values, false),
+      // planner layers "Body měření" / "Předpověď u bodů" (the dots + their labels / the "→ predicted (+Δ)" part); older files: on
+      points: bool(sv.points, true),
+      whatif: bool(sv.whatif, true),
       calibrate: bool(sv.calibrate, true),
       palette: PALETTES.includes(sv.palette) ? sv.palette : 'default',
     };
@@ -664,6 +825,14 @@
 
   function roundPt(p) {
     return { x: round(p.x), y: round(p.y) };
+  }
+
+  /** net.routerBands (SPEC 13): booleans per band (a missing flag = its default); no band on -> the default. */
+  function cleanRouterBands(v) {
+    const src = isObj(v) ? v : {};
+    const out = {};
+    for (const k of ['2.4', '5', '6']) out[k] = typeof src[k] === 'boolean' ? src[k] : ROUTER_BANDS_DEFAULT[k];
+    return out['2.4'] || out['5'] || out['6'] ? out : { ...ROUTER_BANDS_DEFAULT };
   }
 
   /** Visual centre of the room whose centre is farthest from `from` - a sensible default for a second access point. */
@@ -1082,8 +1251,23 @@
     WAN_RATES,
     CABLE_CATEGORIES,
     NODE_MODES,
+    NODE_MBPS_MIN,
+    NODE_MBPS_MAX,
+    STEER_MIN,
+    STEER_MAX,
+    STEER_DEFAULT,
+    ROUTER_BANDS_DEFAULT,
+    MAX_LINKS,
     ROOM_COLORS,
     MAX_ITEMS,
+    CONN_TYPES,
+    FIT_METHODS,
+    cleanWifi,
+    cleanLinks,
+    cleanRouterBands,
+    cleanDeviceInfo,
+    cleanFit,
+    macOf,
     create,
     defaults,
     sanitize,

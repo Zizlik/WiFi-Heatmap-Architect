@@ -2,6 +2,7 @@
  *
  *   WH.ui.hint('band')                 -> <button class="hint">?</button>  (rich popover: help.band.t / .b / .more)
  *   <span data-hint="band"></span>     -> replaced by the button above (WH.ui.enhance, also automatic for any DOM added later)
+ *   hint.dataset.hintNote = 'i18n.key' -> an extra line about the control's current state under the title (why it is greyed)
  *   WH.ui.tip(el, 'planner.tool.router', 'R')   or   <button data-tip="i18n.key" data-kbd="R">   -> small tooltip with <kbd>
  *   WH.ui.enhance(root)                -> i18n.applyDom + icons ([data-icon]) + hints + tooltip labels + range fills
  *
@@ -56,7 +57,16 @@
       const body = document.createElement('div');
       body.className = 'popover__body';
       body.textContent = t(`help.${hintKey}.b`);
-      frag.append(title, body);
+      frag.append(title);
+      // data-hint-note="i18n.key": a line about the CURRENT state, right under the title (e.g. why a switch is greyed)
+      const noteKey = trigger.getAttribute('data-hint-note');
+      if (noteKey && has(noteKey)) {
+        const note = document.createElement('div');
+        note.className = 'popover__note';
+        note.textContent = t(noteKey);
+        frag.append(note);
+      }
+      frag.append(body);
       if (has(`help.${hintKey}.more`)) {
         const more = document.createElement('div');
         more.className = 'popover__more';
@@ -363,7 +373,7 @@
       for (const n of nodes) {
         if (!n.isConnected) continue;
         if ((n.matches && n.matches(SELECTOR_AUTO)) || n.querySelector(SELECTOR_AUTO)) {
-          try { enhance(n); } catch (err) { console.error('[WH.ui] auto-enhance failed:', err); }
+          try { enhance(n); } catch (err) { console.error('[WH.ui] auto-enhance failed:', err); if (globalThis.WH.diag) globalThis.WH.diag.caught(err, 'ui.enhance'); }
         }
       }
     };

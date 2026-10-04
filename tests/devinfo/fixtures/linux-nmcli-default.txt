@@ -1,0 +1,4 @@
+IN-USE  BSSID              SSID            MODE   CHAN  RATE        SIGNAL  BARS  SECURITY
+*       74:83:C2:1A:2B:3C  Domov 5G        Infra  36    540 Mbit/s  74      ▆▆▆_  WPA2
+        F0:9F:C2:44:55:66  Soused          Infra  6     130 Mbit/s  45      ▃▃__  WPA1 WPA2
+        0C:EA:14:01:02:03  Kavárna U Lípy  Infra  149   270 Mbit/s  38      ▂▄__  WPA2 WPA3

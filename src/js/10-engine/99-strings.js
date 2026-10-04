@@ -26,7 +26,6 @@
     'err.svg.invalid': 'Soubor není platné SVG.',
     'err.project.invalid': 'Projekt se nepodařilo vytvořit nebo načíst.',
     'err.opt.noFloor': 'Pro zvolenou oblast není kam router umístit, chybí tam podlaha.',
-    'err.opt.speedNode': 'Hledání polohy podle rychlosti nejde se druhým uzlem. Rychlost přes druhý uzel nemáme změřenou.',
     'err.opt.noCurve': 'Pro odhad rychlosti chybí měření. Přidej alespoň dva rychlostní testy se signálem lišícím se o 5 dB.',
 
     'engine.project.name': 'Můj byt',
@@ -56,7 +55,6 @@
     'err.svg.invalid': 'The file is not a valid SVG.',
     'err.project.invalid': 'The project could not be created or loaded.',
     'err.opt.noFloor': 'There is no floor in the chosen area to place the router on.',
-    'err.opt.speedNode': 'Searching by speed does not work with a second node, because speed through the second node has not been measured.',
     'err.opt.noCurve': 'Speed estimates need measurements. Add at least two speed tests whose signal differs by 5 dB.',
 
     'engine.project.name': 'My flat',

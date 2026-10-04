@@ -3,49 +3,58 @@ Aplikace:     https://zizlik.github.io/WiFi-Heatmap-Architect/
 Zdrojový kód: https://github.com/Zizlik/WiFi-Heatmap-Architect
 
 CO TO JE
-Aplikace ukáže, kde je v bytě dobrý signál Wi-Fi a kam nejlépe dát router.
-Je to orientační odhad podle půdorysu (zdi, dveře, nábytek); změřením signálu
-nebo rychlosti telefonem ho zpřesníš.
+Ukáže, kde je v bytě dobrý signál Wi-Fi a kam nejlépe dát router. Je to
+orientační odhad podle půdorysu (zdi, dveře, nábytek); měřením ho zpřesníš.
 
 JAK JI OTEVŘÍT
-Na počítači dvakrát klikni na index.cs.html (česky; index.html je anglicky),
-nic se neinstaluje a internet není potřeba. Nebo otevři odkaz nahoře.
+Dvakrát klikni na index.cs.html (index.html je anglicky) - nic se neinstaluje
+a internet není potřeba. Nebo otevři odkaz nahoře. Svůj půdorys (SVG z této
+aplikace) nebo obrázek k obkreslení otevřeš tlačítkem „Nahrát můj půdorys“,
+nebo ho přetáhni myší do okna (později Soubor → Otevřít, Ctrl+O).
 
 NA TELEFONU
-1. Otevři v telefonu odkaz nahoře a přidej si aplikaci na plochu (Android: menu
-   prohlížeče → Přidat na plochu; iPhone: Safari → Sdílet → Přidat na plochu).
-   Pak funguje i bez internetu a novou verzi ti nabídne sama.
-2. Měřicí režim: projdi byt, klepni do mapy tam, kde stojíš, a spusť test
-   rychlosti (běží přes servery Cloudflare, stáhne pár desítek MB dat).
-3. Projekt z počítače přeneseš jako soubor: Soubor → Uložit projekt jako SVG.
-
-JAK NAČÍST MŮJ PŮDORYS
-Na úvodní obrazovce klikni na „Nahrát můj půdorys“ a vyber svůj uložený
-půdorys (SVG uložené z této aplikace), nebo soubor jen přetáhni myší kamkoli
-do okna aplikace. Později to jde přes
-Soubor → Otevřít soubor… (Ctrl+O). Obrázek PNG/JPG/WebP se otevře jako
-podklad, který si v režimu Půdorys obkreslíš.
+Otevři odkaz nahoře a dej Přidat na plochu - pak aplikace funguje i bez
+internetu. V měřicím režimu klepni do mapy tam, kde stojíš, vyber pásmo
+2,4 / 5 / 6 GHz (ukáže ho WiFiman) nebo „Nevím“ (odhadnu ho) a zmáčkni
+„Změřit vše“: změří rychlost (servery Cloudflare, pár desítek MB) a uloží.
+Projekt z počítače přeneseš jako soubor: Soubor → Uložit projekt jako SVG.
 
 BĚŽNÉ POUŽITÍ (režim Wi-Fi, klávesa 2)
-1. Přetáhni červené R (router) jinam - mapa signálu se hned přepočítá.
-2. Nebo klikni na „Najít nejlepší místo“ (F). „Vrátit na dnešní místo“ (D)
-   vrátí router tam, kde doma opravdu stojí.
-3. Pro přesnější odhad změř signál nebo rychlost: „Měřit“ (M), klikni na
-   místo, kde jsi měřil, a zadej hodnotu nebo spusť test rychlosti. Model se
-   podle měření doladí.
+1. Přetáhni červené R (router) jinam, nebo klikni na „Najít nejlepší místo“
+   (F). „Vrátit na dnešní místo“ (D) ho vrátí tam, kde doma opravdu stojí.
+2. Na počítači zjistí pásmo a signál pomocník ze složky pomocnik (návod
+   v pomocnik/CTI-ME.txt); bez něj zvol „Vložit výpis“ nebo „Zadat pásmo
+   ručně“. U aplikace z internetu se Chrome/Edge zeptá na přístup k zařízením
+   v místní síti - klikni na Povolit. Zablokováno omylem? Ikona zámku vedle
+   adresy → Nastavení webu → Přístup k místní síti → Povolit.
+3. „Prvotní měření“ (karta Začínáme): průvodce ukáže 4-6 míst k měření, pak
+   doladí sílu routeru i útlum zdí a ukáže „Propustnost bytu“.
+4. Co by se změnilo: přesuň router nebo zapni druhý přístupový bod / mesh /
+   opakovač - u měřených bodů uvidíš třeba „−72 → −58 (+14)“ a „↓120 → ≈310“
+   a v seznamu „Co by se změnilo v tvých bodech“ i to, co rychlost omezuje.
 
-NEJUŽITEČNĚJŠÍ KLÁVESY
-1 Půdorys · 2 Wi-Fi · F nejlepší místo · D zpět na dnešní místo · M měření
-B pásmo 2,4/5/6 GHz · V signál/rychlost/změna · + − 0 přiblížení · Ctrl+Z zpět
-Ctrl+S uložit · ? přehled všech zkratek · kroužek „?“ u volby = krátká nápověda
+WI-FI 7 A PŘEPÍNÁNÍ PÁSEM
+Novější routery mají jednu síť a zařízení si pásmo vybírá samo. Nic
+nepřepínej a měř normálně: každé měření si zapíše své pásmo a model se ladí
+pro každé pásmo zvlášť. Pásmo „Auto“ ukáže, kde budeš nejspíš na 6, 5 a kde
+na 2,4 GHz; která pásma router vysílá, nastavíš v kartě Pokročilé.
+
+KLÁVESY
+1 Půdorys · 2 Wi-Fi · F nejlepší místo · D dnešní místo · M měření
+B pásmo 2,4/5/6/Auto · V signál/rychlost/změna · P předpověď u bodů
++ − 0 zoom · Ctrl+Z zpět · Ctrl+S uložit · ? zkratky · „?“ u volby = nápověda
+
+VZHLED A PROBLÉMY
+Vzhled (ikona v záhlaví): Automaticky, Světlý, Deep dark, OLED černá.
+U chybové hlášky ukáže „Podrobnosti“, co a kde selhalo; Nápověda → Nahlásit
+problém zkopíruje diagnostiku bez půdorysu, měření, názvů sítí a MAC adres.
 
 UKLÁDÁNÍ A SOUKROMÍ
-Práce se ukládá průběžně sama do tohoto prohlížeče; zálohou je Soubor →
-Uložit projekt jako SVG (Ctrl+S). Výpočty běží jen v prohlížeči, půdorys ani
-měření se nikam neodesílají; síť se použije jen při testu rychlosti, který
-spustíš sám. Tvůj vlastní půdorys v aplikaci vložený není a na GitHub nepatří.
+Práce se ukládá průběžně do prohlížeče; zálohou je Soubor → Uložit projekt
+jako SVG (Ctrl+S). Půdorys ani měření se nikam neodesílají; síť se použije jen
+při testu rychlosti, který spustíš sám. Pomocník běží jen u tebe v počítači.
 
 PŮVODNÍ VERZE A VÝVOJ
-Předchozí verze 2 je v historii repozitáře (první commit); SVG uložené novou
-verzí otevře i ta stará. Zdrojové kódy jsou v src/: „node build.mjs“ sestaví aplikaci,
-„node build.mjs --check“ ji zkontroluje, „node tests/engine/run-all.mjs“ testy.
+Verze 2 je v historii repozitáře (první commit) a SVG z verze 3 otevře také.
+Zdroje jsou v src/: „node build.mjs“ sestaví aplikaci, „node build.mjs
+--check“ ji zkontroluje, „node tests/engine/run-all.mjs“ spustí testy.

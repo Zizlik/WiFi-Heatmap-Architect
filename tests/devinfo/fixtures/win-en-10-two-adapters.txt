@@ -1,0 +1,31 @@
+
+There are 2 interfaces on the system:
+
+    Name                   : Wi-Fi
+    Description            : Realtek RTL8821CE 802.11ac PCIe Adapter
+    GUID                   : 5d1c8a40-71f3-4c2e-a3b0-6a4f8e9d1b22
+    Physical address       : 98:22:ef:01:02:03
+    State                  : connected
+    SSID                   : Kocourkov
+    BSSID                  : f0:9f:c2:44:55:66
+    Network type           : Infrastructure
+    Radio type             : 802.11n
+    Authentication         : WPA2-Personal
+    Cipher                 : CCMP
+    Connection mode        : Profile
+    Channel                : 6
+    Receive rate (Mbps)    : 144.4
+    Transmit rate (Mbps)   : 144.4
+    Signal                 : 70%
+    Profile                : Kocourkov
+
+    Name                   : Wi-Fi 2
+    Description            : TP-Link Wireless USB Adapter
+    GUID                   : 8e2f1c55-0a9b-4d7e-8c11-2b3c4d5e6f70
+    Physical address       : 50:3e:aa:11:22:33
+    State                  : disconnected
+    Radio status           : Hardware On
+                             Software On
+
+    Hosted network status  : Not available
+

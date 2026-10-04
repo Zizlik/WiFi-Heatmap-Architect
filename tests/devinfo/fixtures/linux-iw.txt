@@ -1,0 +1,11 @@
+Connected to 74:83:c2:1a:2b:3c (on wlp2s0)
+	SSID: Domov 5G
+	freq: 5180.0
+	RX: 81234567 bytes (65432 packets)
+	TX: 1234567 bytes (9876 packets)
+	signal: -54 dBm
+	rx bitrate: 1200.9 MBit/s 80MHz HE-MCS 11 HE-NSS 2 HE-GI 0 HE-DCM 0
+	tx bitrate: 960.7 MBit/s 80MHz HE-MCS 9 HE-NSS 2 HE-GI 0 HE-DCM 0
+	bss flags:	short-slot-time
+	dtim period:	3
+	beacon int:	100
