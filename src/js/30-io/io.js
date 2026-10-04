@@ -329,12 +329,39 @@
       });
       toast(undoable ? { text: msg, action: undoAction() } : msg, { kind: 'ok' });
       WH.bus.emit('project:imported', { kind: 'project', name: project.name, undoable });
+      askScale(project);
       return { kind: 'project', name: project.name, rooms: pl.rooms.length, walls: pl.walls.length, doors: pl.doors.length, furniture: pl.furniture.length };
     }
 
     // a plain SVG (not ours): trace over it
     const png = await svgTextToPng(text);
     return finishTracing(png, file, opts, token);
+  }
+
+  /** SPEC 14.1: an older file's scale was never confirmed by anyone - ask once, right after opening it: "Měřítko z
+   *  načteného souboru: byt ≈ 58 m². Sedí?" [Sedí] [Upravit] (the same question stays in the floor-plan editor's hint
+   *  line and scale card, and the Wi-Fi view's header badge says "Měřítko neověřeno" until it is answered). */
+  function askScale(project) {
+    const sc = project && project.scale;
+    if (!sc || sc.verified !== false || sc.method !== 'import' || !project.plan.rooms.length) return;
+    let area = 0;
+    try { area = engineProject().buildingArea(project).areaM2; } catch (e) { return; }
+    if (!(area > 0)) return;
+    const still = () => { const p = WH.store.project; return !!(p && p.scale && p.scale.verified === false); };
+    const sc2 = () => (WH.editor && WH.editor.scaling) || null;
+    toast({
+      text: t('editor.scale.banner', { area: `${WH.util.fmt(area, area < 100 ? 1 : 0)}${WH.util.NBSP}m²` }),
+      actions: [
+        { i18n: 'editor.scale.bannerOk', icon: 'check', primary: true, fn: () => {
+          if (!still()) return;
+          if (sc2()) { sc2().confirmCurrent(); return; }
+          WH.store.commit('editor.undo.scaleOk', (p) => { engineProject().confirmScale(p); }, ['scale']);
+        } },
+        { i18n: 'editor.scale.bannerEdit', icon: 'ruler', fn: () => {
+          if (sc2()) sc2().editImported(); else if (WH.views) WH.views.go('editor');
+        } },
+      ],
+    }, { kind: 'info', ms: 30000 });
   }
 
   async function importRasterFile(file, opts, token) {
@@ -480,46 +507,93 @@
   // ===================================================================================================================
   // localStorage (project autosave)
   // ===================================================================================================================
-  let storedBg;              // background string currently in storage (undefined = unknown)
-  let failedBg = null;       // background that did not fit (do not retry it on every autosave)
+  // Tracing backgrounds (multi-MB data URLs) live under their own keys, one per floor (SPEC 14.3), and are only
+  // rewritten when they change. The first floor ('floor-1', every single-floor project) keeps the key of the versions
+  // before floors, so an older build still finds its background. The project JSON itself never carries a background.
+  let storedBgs = null;      // Map key -> background string in storage (undefined = something unknown); null = not read yet
+  let failedBgs = new Set(); // backgrounds that did not fit (do not retry them on every autosave)
   let warnedQuota = false;
   let warnedFatal = false;
 
-  /** Persist the project. The (large, rarely changing) background goes to its own key and is only rewritten when it changes. */
+  const bgKey = (floorId) => (!floorId || floorId === 'floor-1' ? BG_KEY : `${BG_KEY}:${String(floorId).slice(0, 60)}`);
+  const isBgKey = (k) => k === BG_KEY || (typeof k === 'string' && k.startsWith(BG_KEY + ':'));
+
+  /** What this page believes is stored (scans the storage once, so stale keys of deleted floors get removed). */
+  function knownBgs() {
+    if (storedBgs) return storedBgs;
+    storedBgs = new Map();
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); if (isBgKey(k)) storedBgs.set(k, undefined); }
+    } catch (e) { /* storage blocked */ }
+    return storedBgs;
+  }
+
+  /** The active floor's id of a stored / live project object (null: a project without floors). */
+  function activeIdOf(project) {
+    try { return engineProject().activeFloorId(project) || null; } catch (e) { return null; }
+  }
+
+  /** key -> background of every plan of the project (the active one at the top level, the others inside floors[]). */
+  function backgroundsOf(project) {
+    const want = new Map();
+    want.set(bgKey(activeIdOf(project)), project.plan.background || null);
+    if (Array.isArray(project.floors)) {
+      for (const fl of project.floors) {
+        if (fl && fl.plan && typeof fl.plan === 'object') want.set(bgKey(fl.id), fl.plan.background || null);
+      }
+    }
+    return want;
+  }
+
+  /** The project as JSON without any background (they are stored separately). */
+  function projectJson(project) {
+    const copy = Object.assign({}, project, { plan: Object.assign({}, project.plan, { background: null }) });
+    if (Array.isArray(project.floors)) {
+      copy.floors = project.floors.map((fl) => (fl && fl.plan && typeof fl.plan === 'object' && fl.plan.background
+        ? Object.assign({}, fl, { plan: Object.assign({}, fl.plan, { background: null }) }) : fl));
+    }
+    return JSON.stringify(copy);
+  }
+
+  /** Persist the project. The (large, rarely changing) backgrounds go to their own keys and are only rewritten when they change. */
   function saveLocal(project) {
     if (!project || !project.plan) return { ok: false };
-    const bg = project.plan.background || null;
+    const stored = knownBgs();
+    const want = backgroundsOf(project);
     let dropped = false;
-    /** Give up storing this background (quota): the plan itself matters more. */
-    const dropBackground = () => {
-      dropped = true;
-      failedBg = bg;
-      try { localStorage.removeItem(BG_KEY); } catch (e2) { /* ignore */ }
-      storedBg = null;
+    /** Give up storing every background (quota): the plan itself matters more. */
+    const dropAll = () => {
+      for (const v of want.values()) if (v) { failedBgs.add(v); dropped = true; }
+      for (const k of Array.from(stored.keys())) { try { localStorage.removeItem(k); } catch (e2) { /* ignore */ } }
+      stored.clear();
     };
     try {
-      if (bg !== storedBg) {
-        if (bg && bg === failedBg) {
+      // keys of floors that are gone (or lost their background)
+      for (const k of Array.from(stored.keys())) {
+        if (!want.get(k)) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } stored.delete(k); }
+      }
+      for (const [k, bg] of want) {
+        if (!bg || stored.get(k) === bg) continue;
+        if (failedBgs.has(bg)) { dropped = true; continue; }
+        try {
+          localStorage.setItem(k, bg);
+          stored.set(k, bg);
+        } catch (e) {
+          // this one does not fit: the plan matters more
           dropped = true;
-        } else {
-          try {
-            if (bg) localStorage.setItem(BG_KEY, bg); else localStorage.removeItem(BG_KEY);
-            storedBg = bg;
-            failedBg = null;
-          } catch (e) {
-            dropBackground();
-          }
+          failedBgs.add(bg);
+          try { localStorage.removeItem(k); } catch (e2) { /* ignore */ }
+          stored.delete(k);
         }
       }
-      const copy = Object.assign({}, project, { plan: Object.assign({}, project.plan, { background: null }) });
-      const json = JSON.stringify(copy);
+      const json = projectJson(project);
       try {
         localStorage.setItem(LS_KEY, json);
       } catch (e) {
-        // the project no longer fits next to its stored background (more measurements, a bigger plan): retry
-        // without the background (SPEC 2.1) instead of losing the autosave altogether
-        if (!storedBg) throw e;
-        dropBackground();
+        // the project no longer fits next to its stored backgrounds (more measurements, a bigger plan): retry
+        // without them (SPEC 2.1) instead of losing the autosave altogether
+        if (!stored.size) throw e;
+        dropAll();
         localStorage.setItem(LS_KEY, json);
       }
       if (dropped && !warnedQuota) {
@@ -548,14 +622,25 @@
     if (raw) {
       try {
         const obj = JSON.parse(raw);
-        const bg = getItem(BG_KEY);
-        if (bg) {
-          if (!obj.plan || typeof obj.plan !== 'object') obj.plan = {};
-          obj.plan.background = bg;
+        if (!obj.plan || typeof obj.plan !== 'object') obj.plan = {};
+        const stored = knownBgs();
+        const bg = getItem(bgKey(activeIdOf(obj)));
+        if (bg) obj.plan.background = bg;
+        if (Array.isArray(obj.floors)) {
+          for (const fl of obj.floors) {
+            if (!fl || !fl.plan || typeof fl.plan !== 'object') continue;
+            const fb = getItem(bgKey(fl.id));
+            if (fb) fl.plan.background = fb;
+          }
         }
         // strict:false = drop single damaged objects instead of losing the whole project
         const project = ep.sanitize(obj, { strict: false, lang: WH.i18n.lang });
-        storedBg = project.plan.background || null;
+        stored.clear();
+        for (const [k, v] of backgroundsOf(project)) if (v) stored.set(k, v);
+        // keys nobody uses any more (a deleted floor) are removed on the next autosave
+        try {
+          for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); if (isBgKey(k) && !stored.has(k)) stored.set(k, undefined); }
+        } catch (e) { /* storage blocked */ }
         return project;
       } catch (e) {
         console.warn('[WH.io] the saved project is unreadable (a copy was kept):', e);
@@ -580,11 +665,15 @@
 
   /** Remove every key this app (and its older versions) wrote, except UI preferences. */
   function clearLocal() {
-    for (const k of [LS_KEY, BG_KEY, BAD_KEY].concat(LEGACY_KEYS)) {
+    const keys = [LS_KEY, BG_KEY, BAD_KEY].concat(LEGACY_KEYS);
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) { const k = localStorage.key(i); if (isBgKey(k) && !keys.includes(k)) keys.push(k); }
+    } catch (e) { /* storage blocked */ }
+    for (const k of keys) {
       try { localStorage.removeItem(k); } catch (e) { /* ignore */ }
     }
-    storedBg = undefined;
-    failedBg = null;
+    storedBgs = null;
+    failedBgs = new Set();
   }
 
   WH.io = {

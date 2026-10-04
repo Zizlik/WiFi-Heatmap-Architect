@@ -18,26 +18,26 @@
   // ---------------------------------------------------------------------------------------------------------------
   // small bound controls
   // ---------------------------------------------------------------------------------------------------------------
-  /** Number field: {i18n, hint, unit, min, max, step, d (decimals for the error), req, ph, get, set(p, v), undo} */
+  /** Number field: {i18n|label, hint, unit, min, max, step, d (decimals for the error), req, ph, get, set(p, v), undo, topics} */
   function numField(o) {
     const inp = ui().numberInput({ min: o.min, max: o.max, step: o.step || 'any', placeholder: o.ph || '' });
-    const f = ui().field({ i18n: o.i18n, hint: o.hint, unit: o.unit, control: inp });
+    const f = ui().field({ i18n: o.i18n, label: o.label, hint: o.hint, unit: o.unit, control: inp });
     inp.addEventListener('input', () => f.setError(''));
     inp.addEventListener('change', () => {
       const v = inp.value === '' ? null : inp.valueAsNumber;
-      if (v === null && !o.req) { commit(o.undo, (p) => o.set(p, null)); return; }
+      if (v === null && !o.req) { commit(o.undo, (p) => o.set(p, null), o.topics); return; }
       if (v === null || !Number.isFinite(v) || v < o.min || v > o.max) {
         f.setError(t('planner.err.range', { min: WH.util.fmt(o.min, o.d || 0), max: WH.util.fmt(o.max, o.d || 0) }));
         inp.setValue(o.get());
         return;
       }
-      commit(o.undo, (p) => o.set(p, v));
+      commit(o.undo, (p) => o.set(p, v), o.topics);
     });
     syncs.push(() => { inp.disabled = !!(o.off && o.off()); if (!focused(inp)) inp.setValue(o.get()); });
     return f;
   }
 
-  /** Slider: one undo step per gesture.  {i18n, hint, min, max, step, fmt, get, set(p, v), undo, topics} */
+  /** Slider: one undo step per gesture.  {i18n|label, hint, min, max, step, fmt, get, set(p, v), undo, topics} */
   function slider(o) {
     let open = false;
     const apply = (v) => {
@@ -46,13 +46,13 @@
     };
     const r = ui().range({ min: o.min, max: o.max, step: o.step, value: o.get(), format: o.fmt, onInput: apply, onChange: (v) => { apply(v); open = false; WH.store.end(); } });
     syncs.push(() => { if (!open) r.setValue(o.get()); });
-    return ui().field({ i18n: o.i18n, hint: o.hint, control: r });
+    return ui().field({ i18n: o.i18n, label: o.label, hint: o.hint, control: r });
   }
 
-  /** Select: {i18n, hint, opts() -> [{value,label}], get, set(p, v), undo, inline} */
+  /** Select: {i18n|label, hint, opts() -> [{value,label}], get, set(p, v), undo, inline, topics} */
   function selField(o) {
-    const s = ui().select(o.opts(), { value: String(o.get()), onChange: (v) => commit(o.undo, (p) => o.set(p, v)) });
-    const f = ui().field({ i18n: o.i18n, hint: o.hint, control: s, inline: o.inline });
+    const s = ui().select(o.opts(), { value: String(o.get()), onChange: (v) => commit(o.undo, (p) => o.set(p, v), o.topics) });
+    const f = ui().field({ i18n: o.i18n, label: o.label, hint: o.hint, control: s, inline: o.inline });
     let key = '';
     syncs.push(() => {
       if (focused(s)) return;
@@ -69,7 +69,9 @@
     return s;
   }
 
-  const roomOpts = (first, label) => () => [{ value: first, label }, ...P().plan.rooms.map((r) => ({ value: r.roomId, label: r.name }))];
+  const roomOpts = (first, label) => () => [{ value: first, label: typeof label === 'function' ? label() : label }, ...P().plan.rooms.map((r) => ({ value: r.roomId, label: r.name }))];
+  /** "Celý byt" - or "Celé patro" in a house with several floors (the goal is the floor on screen, SPEC 14.3). */
+  const allKey = () => (PL.multi() ? 'planner.res.allFloor' : 'planner.res.all');
 
   /** "Device" = goal.device (the measurements that calibrate the map and build the speed curve): a real picker (SPEC 7.4). */
   function deviceField(i18n) {
@@ -95,6 +97,8 @@
       const cal = PL.calib && PL.calib.startItem ? PL.calib.startItem() : { done: p.measurements.length > 0, label: null };
       const it = [
         { k: 'plan', done: p.plan.rooms.length > 0, go: () => WH.views.go('editor') },
+        // SPEC 14.1: "Měřítko půdorysu" - done once the scale is verified (area, a known distance or the width)
+        { k: 'scale', done: p.plan.rooms.length > 0 && PL.scale.verified(), go: p.plan.rooms.length ? () => PL.scale.open() : null },
         { k: 'today', done: PL.baselineOk() || p.measurements.length > 0, go: () => { WH.store.setPref('planner.baselineOk', PL.posKey(P().net.baseline)); ui().toast({ i18n: 'planner.router.markedSame' }, { kind: 'ok', ms: 2500 }); } },
         { k: 'move', done: pref('movedOnce') || PL.moved() },
         // SPEC 13: which bands the router sends (Wi-Fi 6E / 7 users tick 6 GHz) - Auto and "Nevím" points follow it
@@ -133,7 +137,7 @@
   }
 
   function cardResult() {
-    const target = selField({ i18n: 'planner.res.target', hint: 'target', inline: true, undo: 'planner.undo.target', opts: roomOpts('all', 'planner.res.all'), get: () => P().goal.room, set: (p, v) => { p.goal.room = v === 'all' ? 'all' : Number(v); } });
+    const target = selField({ i18n: 'planner.res.target', hint: 'target', inline: true, undo: 'planner.undo.target', opts: roomOpts('all', allKey), get: () => P().goal.room, set: (p, v) => { p.goal.room = v === 'all' ? 'all' : Number(v); } });
     target.classList.add('pl-target');
     const hero = el('div.pl-hero');
     const avg = el('span');
@@ -152,6 +156,12 @@
       requestAnimationFrame(() => { const n = measCard._wi; if (n && n.scrollIntoView) n.scrollIntoView({ block: 'nearest', behavior: WH.util.prefersReducedMotion() ? 'auto' : 'smooth' }); });
     } }));
     const speedLine = el('p.pl-speedline', { hidden: true });
+    // SPEC 14.1: an unverified scale makes every number a guess - say it where the numbers are, with the way out
+    const scaleTxt = el('span');
+    const scaleNote = el('div.notice.notice--warn.pl-scalenote', { hidden: true }, ui().icon('ruler', 18),
+      el('div.stack.gap-2', scaleTxt, el('div', ui().button({ i18n: 'planner.scale.set', icon: 'ruler', size: 'sm', onClick: () => PL.scale.open() }))));
+    // SPEC 14.3: the whole house - every floor's coverage (area weighted), a click goes to that floor
+    const house = houseSection();
     const rooms = el('div.pl-rooms');
     const live = el('div.sr-only', { 'aria-live': 'polite' });
     // SPEC 9: the model tuned by measurements (plain words) and the whole-home throughput (28-calib-wizard.js)
@@ -160,15 +170,26 @@
     if (fitSec) syncs.push((q) => fitSec.sync(q));
     if (tpSec) syncs.push((q) => tpSec.sync(q));
     const c = ui().card({ id: 'pl-result', i18n: 'planner.res.title', icon: 'gauge', body: [
-      target, el('div.pl-cap', el('span', t('planner.res.coverage')), ui().hint('coverage')), hero, kv, sentence, srcLine, wiLine, speedLine, fitSec, tpSec,
+      target, scaleNote, el('div.pl-cap', el('span', t('planner.res.coverage')), ui().hint('coverage')), hero, kv, sentence, srcLine, wiLine, speedLine, house.el, fitSec, tpSec,
       el('div.pl-subhead', el('span', t('planner.res.rooms')), el('span', t('planner.res.roomsHint'))), rooms, live].filter(Boolean) });
     const rows = new Map();
     let order = '';
     let lastLive = '';
+    let titleKey = '';
     syncs.push((q) => {
       const p = P();
       const a = PL.S.a;
       const pct = WH.util.fmtPct;
+      // the Result is the floor on screen (SPEC 14.3): its name in the title while there are several
+      const tk = (PL.multi() ? PL.floorName(PL.floorId()) : '') + WH.i18n.lang;
+      if (tk !== titleKey) { titleKey = tk; c.setTitle(PL.multi() ? t('planner.res.titleFloor', { floor: PL.floorName(PL.floorId()) }) : t('planner.res.title')); }
+      const sn = PL.scale.needed();
+      scaleNote.hidden = !sn;
+      if (sn && q !== 'coarse') {
+        const ar = PL.scale.area();
+        scaleTxt.textContent = ar && ar.areaM2 > 0 ? t('planner.scale.note', { a: PL.scale.fmt(ar.areaM2) }) : t('planner.scale.noteNoArea');
+      }
+      house.sync(q);
       if (!a || !p.plan.rooms.length) {
         hero.replaceChildren(el('span.hero-num', '—'));
         avg.textContent = '—';
@@ -182,7 +203,7 @@
         return;
       }
       const s = a.stats;
-      const cmp = PL.moved() || p.node.mode !== 'none';
+      const cmp = PL.moved() || PL.anyNode();
       const dl = s.trial.coverage - s.today.coverage;
       hero.replaceChildren(...(cmp ? [
         el('span.pl-hero__cap.pl-a1', t('planner.res.today')), el('span.pl-hero__cap.pl-a3', t('planner.res.now')),
@@ -202,19 +223,14 @@
       if (cmp && dl >= 3) txt += ' ' + t('planner.res.s.better');
       else if (cmp && dl <= -3) txt += ' ' + t('planner.res.s.worse');
       sentence.textContent = txt;
-      // SPEC 10.3: which rooms the second point serves (a room counts as its when it is the stronger source on at least
-      // half of the floor); the drag frames (coarse) carry no shares - the line keeps its last text until the pointer rests
+      // SPEC 10.3 / 14.2: which rooms each node serves (a room counts as a node's when that node is the stronger source on
+      // at least half of its floor); the drag frames (coarse) carry no shares - the line keeps its last text until the
+      // pointer rests
       if (q !== 'coarse') {
-        const sh = p.node.mode !== 'none' && a.sourceShare ? a.sourceShare : null;
-        srcLine.hidden = !sh;
-        if (sh) {
-          const who = PL.nodeLabel();
-          const counted = p.plan.rooms.filter((r) => { const s2 = a.perRoom.trial.get(r.roomId); return s2 && s2.n; });
-          const names = counted.filter((r) => (sh.perRoom.get(r.roomId) || 0) >= 50).map((r) => r.name);
-          srcLine.textContent = !names.length ? t('planner.res.srcNone', { who })
-            : names.length >= counted.length ? t('planner.res.srcAll', { who })
-              : t(names.length === 1 ? 'planner.res.srcOne' : 'planner.res.srcMany', { who, list: PL.listOf(names) });
-        }
+        const sh = PL.anyNode() && a.sourceShare ? a.sourceShare : null;
+        const txt2 = sh ? srcSentence(p, a, sh) : '';
+        srcLine.hidden = !txt2;
+        if (txt2) srcLine.textContent = txt2;
       }
       const ws = q === 'coarse' ? null : PL.wi.summary();
       if (q !== 'coarse') { wiLine.hidden = !ws; if (ws) wiTxt.textContent = PL.wi.resultLine(ws); }
@@ -222,8 +238,10 @@
       // the throughput section says the same (and more) whenever a speed curve exists
       speedLine.hidden = !sp || !!(tpSec && !tpSec.hidden);
       if (sp) {
+        // per floor (SPEC 14.3): the speed of the floor on screen, named while there are several
+        const prm = { v: sp.stats ? pct(sp.stats.coverage) : '', d: PL.mbps(p.goal.targetDown), u: PL.mbps(p.goal.targetUp), floor: PL.floorName(PL.floorId()) };
         speedLine.textContent = sp.stats
-          ? t('planner.res.speed', { v: pct(sp.stats.coverage), d: PL.mbps(p.goal.targetDown), u: PL.mbps(p.goal.targetUp) }) + (sp.stats.known < 99.5 ? ' ' + t('planner.res.speedKnown', { v: pct(sp.stats.known) }) : '')
+          ? t(PL.multi() ? 'planner.res.speedFloor' : 'planner.res.speed', prm) + (sp.stats.known < 99.5 ? ' ' + t('planner.res.speedKnown', { v: pct(sp.stats.known) }) : '')
           : t('planner.res.speedNone');
       }
       // rooms
@@ -272,6 +290,107 @@
     return c;
   }
 
+  /**
+   * "AP 2 má navrch v místnostech Ložnice a Pracovna, jinde je silnější router." - for any number of nodes (SPEC 14.2):
+   * every room goes to the source that wins at least half of its floor; a node of another floor is named with its floor.
+   * A node of ANOTHER floor that wins nothing here is simply left out (the mesh upstairs is not meant for the ground
+   * floor); '' = nothing to say on this floor.
+   */
+  function srcSentence(p, a, sh) {
+    const list = a.params && a.params.trial && Array.isArray(a.params.trial.nodes) ? a.params.trial.nodes : PL.nodeList();
+    const counted = p.plan.rooms.filter((r) => { const s2 = a.perRoom.trial.get(r.roomId); return s2 && s2.n; });
+    const by = sh.perRoomBySource instanceof Map ? sh.perRoomBySource : null;
+    const won = list.map(() => []);
+    for (const r of counted) {
+      if (by && by.get(r.roomId)) {
+        const v = by.get(r.roomId);
+        let k = 0;
+        for (let i = 1; i < v.length; i++) if (v[i] > v[k]) k = i;
+        if (k > 0 && v[k] >= 50 && won[k - 1]) won[k - 1].push(r.name);
+      } else if ((sh.perRoom.get(r.roomId) || 0) >= 50 && won[0]) won[0].push(r.name);
+    }
+    const who = (n) => (PL.here(n.floor) ? PL.nodeName(n) : t('planner.res.srcWhoFloor', { who: PL.nodeName(n), floor: PL.floorName(n.floor) }));
+    // only the nodes of this floor are expected to win here; one of another floor counts when it does win something
+    const relevant = list.map((nd, i) => i).filter((i) => PL.here(list[i].floor) || won[i].length);
+    if (!relevant.length) return '';
+    if (relevant.length === 1) {
+      const i = relevant[0];
+      const names = won[i];
+      const w = who(list[i]);
+      return !names.length ? t('planner.res.srcNone', { who: w })
+        : names.length >= counted.length ? t(PL.multi() ? 'planner.res.srcAllFloor' : 'planner.res.srcAll', { who: w })
+          : t(names.length === 1 ? 'planner.res.srcOne' : 'planner.res.srcMany', { who: w, list: PL.listOf(names) });
+    }
+    const parts = [];
+    let n = 0;
+    list.forEach((nd, i) => {
+      const names = won[i];
+      if (!names.length) return;
+      n += names.length;
+      parts.push(t(names.length === 1 ? 'planner.res.srcPart1' : 'planner.res.srcPartN', { who: who(nd), list: PL.listOf(names) }));
+    });
+    if (!parts.length) return t('planner.res.srcNoneMany');
+    return t(n >= counted.length ? 'planner.res.srcMultiAll' : 'planner.res.srcMulti', { parts: parts.join(', ') });
+  }
+
+  /** "Celý dům" (SPEC 14.3): the area-weighted coverage of every floor + each floor's own (click = go there). Computed
+   *  with engine.analysis.building after a full-quality analysis, once the pointer rests (all floors at cell 8). */
+  function houseSection() {
+    const total = el('div.pl-house__total');
+    const floors = el('div.pl-house__floors');
+    const root = el('div.pl-house', { hidden: true }, el('div.pl-cap', el('span', t('planner.res.house')), ui().hint('house')), total, floors);
+    let pend = 0;
+    let doneFor = null;
+    let data = null;
+    const cache = {};
+    const paint = () => {
+      const p = P();
+      if (!data || !PL.multi()) { root.hidden = true; return; }
+      root.hidden = false;
+      const pct = WH.util.fmtPct;
+      const cmp = PL.moved() || PL.anyNode();
+      const tt = data.total || {};
+      const trial = tt.trial && Number.isFinite(tt.trial.coverage) ? tt.trial.coverage : null;
+      const today = tt.today && Number.isFinite(tt.today.coverage) ? tt.today.coverage : null;
+      total.replaceChildren(
+        el('span.pl-house__lbl', t('planner.res.houseCov')),
+        cmp && today !== null ? el('span.pl-house__old.num', pct(today)) : null,
+        cmp && today !== null ? el('span.pl-house__arrow', ui().icon('arrow-right', 16)) : null,
+        el('b.pl-house__v.num', trial === null ? '—' : pct(trial)),
+        cmp && today !== null && trial !== null ? deltaBadge(today, trial) : null);
+      const act = PL.floorId();
+      floors.replaceChildren(...(data.floors || []).slice().sort((x, y) => y.level - x.level).map((f) => {
+        const v = f.stats && f.stats.trial && f.stats.trial.n !== 0 && Number.isFinite(f.stats.trial.coverage) ? f.stats.trial.coverage : null;
+        const b = el('button.list-row.pl-house__floor', { type: 'button', 'aria-pressed': String(f.id === act) },
+          el('span.pl-house__name.truncate', f.name),
+          el('span.meter', { style: { '--v': v === null ? '0' : (v / 100).toFixed(3), '--c': v === null ? 'var(--line-strong)' : `var(--q-${v >= 70 ? 'good' : v >= 40 ? 'weak' : 'veryWeak'})` } }),
+          el('span.num', v === null ? '—' : pct(v)));
+        b.setAttribute('aria-label', t('planner.res.houseFloorAria', { name: f.name, v: v === null ? '—' : pct(v) }));
+        b.addEventListener('click', () => { if (f.id !== PL.floorId()) PL.fl.go(f.id); });
+        return b;
+      }));
+      if (!p.plan.rooms.length) root.hidden = true;
+    };
+    const compute = () => {
+      pend = 0;
+      const p = P();
+      const a = PL.S.a;
+      if (!a || !PL.multi() || PL.S.q !== 'full') return;
+      try { data = WH.engine.analysis.building(p, { cell: 8, band: p.view.band, cache }); } catch (e) { PL.report(e, 'planner.building', { bug: true }); data = null; }
+      doneFor = a;
+      paint();
+    };
+    return {
+      el: root,
+      sync(q) {
+        if (!PL.multi()) { root.hidden = true; data = null; doneFor = null; return; }
+        if (q === 'coarse') return;   // while dragging: the last numbers, until the pointer rests
+        if (PL.S.a && PL.S.a !== doneFor && !pend) pend = setTimeout(compute, 60);
+        else paint();
+      },
+    };
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // 0. the two key router actions: a compact bar pinned to the top of the sidebar (sticky on desktop), so
   //    "Find the best spot" and "Back to today's spot" are visible without scrolling even on a 1366x768 laptop.
@@ -303,10 +422,14 @@
   function cardRouter() {
     const status = el('p.pl-status');
     const mark = ui().button({ i18n: 'planner.router.mark', icon: 'pin', size: 'sm', onClick: () => PL.markToday() });
-    const allowed = selField({ i18n: 'planner.router.allowed', hint: 'allowedArea', undo: 'planner.undo.allowed', opts: roomOpts('any', 'planner.router.anywhere'), get: () => P().goal.allowedRoom, set: (p, v) => { p.goal.allowedRoom = v === 'any' ? 'any' : Number(v); } });
+    // (goal.allowedRoom is a room of the router's floor - SPEC 14.3)
+    const allowed = selField({ i18n: 'planner.router.allowed', hint: 'allowedArea', undo: 'planner.undo.allowed', opts: () => [{ value: 'any', label: 'planner.router.anywhere' }, ...PL.routerPlan().rooms.map((r) => ({ value: r.roomId, label: r.name }))], get: () => P().goal.allowedRoom, set: (p, v) => { p.goal.allowedRoom = v === 'any' ? 'any' : Number(v); } });
     const inlet = el('span');
+    // SPEC 14.3: the router stands on another floor - say which, and go there
+    const goFloor = ui().button({ label: '—', icon: 'arrow-right', size: 'sm', variant: 'soft', onClick: () => PL.fl.go(P().net.routerFloor) });
+    const floorRow = el('div.pl-rfloor', { hidden: true }, goFloor);
     const c = ui().card({ id: 'pl-router', i18n: 'planner.router.title', icon: 'router', hint: 'trial', body: [
-      status,
+      status, floorRow,
       el('div.cluster', el('span.row.gap-1', mark, ui().hint('baseline'))),
       allowed,
       el('div.pl-inlet', el('span.pl-inlet__ico', ui().icon('globe', 18)), el('div.grow', el('div.pl-inlet__t', el('span', t('planner.router.inletT')), ui().hint('inlet')), el('div.pl-inlet__d', inlet, ui().hint('cable')))),
@@ -315,12 +438,22 @@
       const p = P();
       const moved = PL.moved();
       const has = p.plan.rooms.length > 0;
-      const room = (PL.roomAt(p.net.router) || {}).name || t('planner.tip.outside');
+      const here = PL.routerHere();
+      const rr = WH.engine.project.roomAt(PL.routerPlan(), p.net.router);
+      const room = (rr || {}).name || t('planner.tip.outside');
       status.textContent = !has ? t('planner.res.noplan') : moved ? t('planner.router.trial', { room, d: PL.m(PL.distM(p.net.router, p.net.baseline)) }) : t('planner.router.atToday', { room });
+      floorRow.hidden = here || !PL.multi();
+      if (!floorRow.hidden) {
+        const fname = PL.floorName(p.net.routerFloor);
+        status.textContent = t('planner.router.otherFloor', { floor: fname, room }) + ' ' + status.textContent;
+        goFloor.querySelector('.btn__label').textContent = t('planner.fl.goFloor', { floor: fname });
+      }
       mark.disabled = !moved;
       const d = PL.distM(p.net.router, p.net.optic);
       const lo = Math.max(1, Math.floor(d * 1.3));
       inlet.textContent = t('planner.router.inlet', { d: PL.m(d), lo, hi: Math.max(lo + 1, Math.ceil(d * 1.6)) });
+      // the inlet on another floor than the router: the cable also goes through the ceiling
+      if (PL.multi() && p.net.opticFloor && p.net.routerFloor && p.net.opticFloor !== p.net.routerFloor) inlet.textContent += ' ' + t('planner.router.inletFloor', { floor: PL.floorName(p.net.opticFloor) });
     });
     return c;
   }
@@ -430,122 +563,205 @@
   }
 
   // ---------------------------------------------------------------------------------------------------------------
-  // 5. second access point
+  // 5. more access points (SPEC 14.2): AP / mesh / repeater - any number (≤ 8 in the building), each with its own row
   // ---------------------------------------------------------------------------------------------------------------
-  /**
-   * Where a newly switched-on second node starts: towards the weakest room. A wireless node (repeater / mesh over Wi-Fi)
-   * stops where the router's signal on its link band is still good (SPEC 10: a repeater deep in the weak area serves a
-   * strong signal but little speed); the marker never lands on a room's name.
-   */
-  function suggestNode(p, mode) {
-    const a = PL.S.a;
-    const E = WH.engine;
-    let best = null;
-    if (a) for (const r of p.plan.rooms) {
-      if (p.goal.excluded.includes(r.roomId)) continue;
-      const s = a.perRoom.trial.get(r.roomId);
-      if (s && s.n && (!best || s.mean < best.mean)) best = { mean: s.mean, r };
-    }
-    let q = E.project.nearestFloor(p.plan, best ? E.geom.labelPoint(best.r.points) : p.node.pos);
-    try {
-      if (best && (mode === 'repeater' || mode === 'mesh_wifi')) {
-        const ctx = PL.ensureCtx(p);
-        const band = p.node.backhaulBand;
-        const off = (PL.S.offs && PL.S.offs[String(band)]) || 0;
-        const from = p.net.router;
-        const want = p.node.backhaulThreshold + 3;
-        let ok = null;
-        for (let i = 4; i <= 24; i++) {
-          const c = { x: from.x + ((q.x - from.x) * i) / 24, y: from.y + ((q.y - from.y) * i) / 24 };
-          const room = E.project.roomAt(p.plan, c);
-          if (!room || p.goal.excluded.includes(room.roomId)) continue;
-          if (E.model.softSignal(ctx, from, c, band, off) >= want) ok = c;
-        }
-        if (ok) q = ok;
-      }
-      // keep the room's name readable: step ~0.9 m off the label point when the spot is that close to one
-      const lp = p.plan.rooms.map((r) => ({ r, l: E.geom.labelPoint(r.points) }));
-      const near = lp.find((x) => Math.hypot((x.l.x - q.x) * 1080, (x.l.y - q.y) * 942) * p.scale.mpp < 0.7);
-      if (near) {
-        const d = 0.9 / p.scale.mpp;
-        const room = E.project.roomAt(p.plan, q) || near.r;
-        const c = [[0, d], [0, -d], [d, 0], [-d, 0]].map(([dx, dy]) => ({ x: near.l.x + dx / 1080, y: near.l.y + dy / 942 })).find((c) => E.project.roomAt(p.plan, c) === room);
-        if (c) q = c;
-      }
-      if (PL.insidePoint) q = PL.insidePoint(q, 0.4);
-    } catch (e) { /* the plain suggestion */ }
-    return PL.pt(q);
+  let nodesCard = null;
+  let revealId = null;
+  const KINDS = ['ap_cable', 'mesh_cable', 'mesh_wifi', 'repeater'];
+  const HELP = { ap_cable: 'apCable', mesh_cable: 'meshCable', mesh_wifi: 'meshWifi', repeater: 'repeater' };
+  const bandsText = (bs) => WH.engine.BANDS.filter((b) => bs && bs[bk(b)]).map((b) => PL.band(b)).join(' + ') + WH.util.NBSP + t('planner.ghz');
+
+  function cardNodes() {
+    const N = PL.nodes;
+    const list = el('div.pl-nlist', { role: 'list' });
+    const empty = el('p.text-sm.text-ink2.pl-nempty', t('planner.nodes.empty'));
+    const add = ui().button({ i18n: 'planner.nodes.add', icon: 'plus', variant: 'soft', block: true, onClick: () => N.menu(add) });
+    add.setAttribute('aria-haspopup', 'menu');
+    const maxNote = el('p.text-xs.text-muted', { hidden: true });
+    const c = ui().card({ id: 'pl-nodes', i18n: 'planner.nodes.title', icon: 'node', hint: 'nodesList', open: false, body: [empty, list, add, maxNote] });
+    nodesCard = c;
+    const rows = new Map();
+    let order = '';
+    syncs.push((q) => {
+      const all = PL.allNodes();
+      const on = all.filter((x) => x.node.enabled).length;
+      c.setBadge(all.length ? (on === all.length ? all.length : `${on}/${all.length}`) : null);
+      empty.hidden = all.length > 0;
+      add.disabled = !N.canAdd() || !P().plan.rooms.length;
+      maxNote.hidden = N.canAdd();
+      if (!maxNote.hidden) maxNote.textContent = t('planner.nodes.max', { n: N.max() });
+      const ids = all.map((x) => x.node.id);
+      for (const id of [...rows.keys()]) if (!ids.includes(id)) { rows.get(id).el.remove(); rows.delete(id); }
+      for (const id of ids) if (!rows.has(id)) rows.set(id, nodeRow(id));
+      const k = ids.join(',');
+      if (k !== order) { order = k; list.replaceChildren(...ids.map((id) => rows.get(id).el)); }
+      for (const x of all) rows.get(x.node.id).sync(q, x);
+      if (revealId && rows.has(revealId)) { const r = rows.get(revealId); revealId = null; requestAnimationFrame(() => r.reveal()); }
+    });
+    return c;
   }
 
-  function cardNode() {
-    const MODES = ['none', 'ap_cable', 'mesh_cable', 'mesh_wifi', 'repeater'];
-    const HK = { none: 'secondAp', ap_cable: 'apCable', mesh_cable: 'meshCable', mesh_wifi: 'meshWifi', repeater: 'repeater' };
-    const wirelessMode = (m) => m === 'mesh_wifi' || m === 'repeater';
-    const modeHint = ui().hint('apCable');
-    const mode = ui().select(MODES.map((m) => ({ value: m, label: `planner.node.${m}` })), {
-      value: P().node.mode,
-      onChange: (v) => commit('planner.undo.node', (p) => { const was = p.node.mode; p.node.mode = v; if (was === 'none' && v !== 'none') p.node.pos = suggestNode(p, v); }, ['node']),
+  /** One node's row: a header (icon, name, what it is and how it is linked, on / off, delete) and its settings below
+   *  (open for the selected node - a click on the row or on its marker). The row's controls keep their own sync list. */
+  function nodeRow(id) {
+    const N = PL.nodes;
+    const nd = () => N.ref(P(), id);
+    const TOP = N.TOPICS;
+    const own = [];
+    const saved = syncs;
+    syncs = own;
+    const ico = el('span.pl-nrow__ico');
+    const name = el('span.pl-nrow__name.truncate');
+    const sub = el('span.pl-nrow__sub');
+    const bodyId = WH.util.uid('pl-nrow');
+    const main = el('button.pl-nrow__main', { type: 'button', 'aria-expanded': 'false', 'aria-controls': bodyId }, ico, el('span.pl-nrow__txt', name, sub), el('span.pl-nrow__chev', ui().icon('chevron-down', 16)));
+    main.addEventListener('click', () => N.select(N.selected() === id ? null : id));
+    const onSw = ui().switch({ checked: true, onChange: (v) => N.toggle(id, v) });
+    onSw.classList.add('pl-nrow__sw');
+    const del = ui().iconButton({ icon: 'trash', tip: 'planner.nodes.delete', size: 'sm', onClick: () => N.remove(id) });
+    // name (an own name stays; the default "AP 3" follows the type)
+    const nameIn = el('input.input', { type: 'text', maxlength: '50', autocomplete: 'off', spellcheck: 'false' });
+    nameIn.addEventListener('change', () => {
+      const v = nameIn.value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 50);
+      if (!v) { nameIn.value = PL.nodeName(nd()); return; }
+      N.patch(id, (n) => { if (n.name === v) return false; n.name = v; return undefined; }, 'planner.undo.nodeName');
     });
+    own.push(() => { const n = nd(); if (n && !focused(nameIn)) nameIn.value = PL.nodeName(n); });
+    const nameF = ui().field({ i18n: 'planner.nodes.name', control: nameIn });
+    // type
+    const modeHint = ui().hint('apCable');
+    const mode = ui().select(KINDS.map((m) => ({ value: m, label: `planner.node.${m}` })), {
+      value: (nd() || {}).mode || 'ap_cable',
+      onChange: (v) => N.patch(id, (n) => {
+        if (n.mode === v) return false;
+        n.mode = v;
+        const nn = N.defaultName(n.name, v);
+        if (nn) n.name = nn;
+        return undefined;
+      }, 'planner.undo.nodeType'),
+    });
+    own.push(() => {
+      const n = nd();
+      if (!n) return;
+      if (!focused(mode)) mode.value = n.mode;
+      if (modeHint.getAttribute('data-hint') !== HELP[n.mode]) {
+        modeHint.setAttribute('data-hint', HELP[n.mode]);
+        modeHint.setAttribute('aria-label', t('ui.hint.about', { topic: t(`help.${HELP[n.mode]}.t`) }));
+      }
+    });
+    const modeF = ui().field({ i18n: 'planner.node.mode', control: [mode, modeHint] });
+    // bands
     const bands = el('div.cluster.pl-nbands', WH.engine.BANDS.map((b) => {
       const cb = el('input', { type: 'checkbox' });
       cb.addEventListener('change', () => {
-        const ok = commit('planner.undo.node', (p) => {
-          const bs = { ...p.node.bands, [bk(b)]: cb.checked };
+        const ok = N.patch(id, (n) => {
+          const bs = { ...n.bands, [bk(b)]: cb.checked };
           if (!Object.values(bs).some(Boolean)) return false;
-          p.node.bands = bs;
-          if (!bs[bk(p.node.backhaulBand)]) p.node.backhaulBand = [5, 2.4, 6].find((x) => bs[bk(x)]);
-        }, ['node']);
-        if (!ok && !cb.checked && P().node.bands[bk(b)]) { cb.checked = true; ui().toast({ i18n: 'planner.node.oneBand' }, { kind: 'warn' }); }
+          n.bands = bs;
+          if (!bs[bk(n.backhaulBand)]) n.backhaulBand = [5, 2.4, 6].find((x) => bs[bk(x)]);
+          return undefined;
+        }, 'planner.undo.node');
+        const n = nd();
+        if (!ok && !cb.checked && n && n.bands[bk(b)]) { cb.checked = true; ui().toast({ i18n: 'planner.node.oneBand' }, { kind: 'warn' }); }
       });
-      syncs.push(() => { cb.checked = !!P().node.bands[bk(b)]; });
+      own.push(() => { const n = nd(); if (n) cb.checked = !!n.bands[bk(b)]; });
       return el('label.check', cb, el('span', `${PL.band(b)} ${t('planner.ghz')}`), ui().hint(b === 2.4 ? 'band24' : `band${b}`));
     }));
-    const nodeSlider = (o) => slider(Object.assign({ undo: 'planner.undo.node', topics: ['node'] }, o));
-    const power = nodeSlider({ i18n: 'planner.node.power', hint: 'power', min: -10, max: 6, step: 1, fmt: (v) => PL.db(v), get: () => P().node.power, set: (p, v) => { p.node.power = v; } });
-    const bh = selField({ i18n: 'planner.node.bhBand', hint: 'backhaul', undo: 'planner.undo.node', opts: () => WH.engine.BANDS.filter((b) => P().node.bands[bk(b)]).map((b) => ({ value: b, label: `${PL.band(b)} ${t('planner.ghz')}` })), get: () => P().node.backhaulBand, set: (p, v) => { p.node.backhaulBand = Number(v); } });
-    const thr = nodeSlider({ i18n: 'planner.node.bhThr', min: -80, max: -55, step: 1, fmt: (v) => WH.util.dbm(v), get: () => P().node.backhaulThreshold, set: (p, v) => { p.node.backhaulThreshold = v; } });
-    const bhLine = el('div.notice');
-    // SPEC 10: the node's real ceiling (node.maxMbps) and the speed its link to the router allows
-    const maxF = numField({ i18n: 'planner.node.max', hint: 'nodeMax', unit: 'planner.mbps', min: 10, max: 10000, step: 1, ph: '—', undo: 'planner.undo.nodeMax', get: () => (Number.isFinite(P().node.maxMbps) ? P().node.maxMbps : null), set: (p, v) => { p.node.maxMbps = v; } });
+    const set = (fn) => (p, v) => { const n = N.ref(p, id); if (n) fn(n, v); };
+    const get = (fn, dflt) => () => { const n = nd(); return n ? fn(n) : dflt; };
+    const power = slider({ i18n: 'planner.node.power', hint: 'power', min: -10, max: 6, step: 1, fmt: (v) => PL.db(v), undo: 'planner.undo.node', topics: TOP, get: get((n) => n.power, 0), set: set((n, v) => { n.power = v; }) });
+    // its uplink: the router or another node (any floor, never one behind it - no cycles)
+    const uplink = selField({ i18n: 'planner.nodes.uplink', hint: 'uplink', undo: 'planner.undo.nodeUplink', topics: TOP, opts: () => N.uplinkOptions(id), get: get((n) => n.uplink || 'router', 'router'), set: set((n, v) => { n.uplink = v; }) });
+    // SPEC 14.3: which floor it stands on (a home with floors) - moved there at the same spot, snapped onto that floor
+    const floorF = selField({
+      i18n: 'planner.nodes.floor', hint: 'floorSwitch', undo: 'planner.undo.nodeFloor', topics: ['nodes', 'floors', 'plan'],
+      opts: () => PL.floorList().slice().reverse().map((f) => ({ value: f.id, label: f.name })),
+      get: () => { const x = PL.nodeById(id); return (x && x.floor) || PL.floorId() || ''; },
+      set: (p, v) => { WH.engine.project.moveNodeToFloor(p, id, v); },
+    });
+    const bh = selField({ i18n: 'planner.node.bhBand', hint: 'backhaul', undo: 'planner.undo.node', topics: TOP, opts: () => { const n = nd(); return WH.engine.BANDS.filter((b) => n && n.bands[bk(b)]).map((b) => ({ value: b, label: `${PL.band(b)} ${t('planner.ghz')}` })); }, get: get((n) => n.backhaulBand, 5), set: set((n, v) => { n.backhaulBand = Number(v); }) });
+    const thr = slider({ i18n: 'planner.node.bhThr', min: -80, max: -55, step: 1, fmt: (v) => WH.util.dbm(v), undo: 'planner.undo.node', topics: TOP, get: get((n) => n.backhaulThreshold, -65), set: set((n, v) => { n.backhaulThreshold = v; }) });
+    const bhLine = el('div.notice', { hidden: true });
+    const wireless = el('div.stack', bh, thr, bhLine);
+    // SPEC 10: the node's real ceiling ("Kolik zvládne") and the speed its link allows
+    const maxF = numField({ i18n: 'planner.node.max', hint: 'nodeMax', unit: 'planner.mbps', min: 10, max: 10000, step: 1, ph: '—', undo: 'planner.undo.nodeMax', topics: TOP, get: get((n) => (Number.isFinite(n.maxMbps) ? n.maxMbps : null), null), set: set((n, v) => { n.maxMbps = v; }) });
     maxF.classList.add('pl-nmax');
     const bhSpeed = el('p.pl-bhspeed', { hidden: true });
-    const wireless = el('div.stack', bh, thr, bhLine);
-    const sub = el('div.stack.pl-nsub', ui().field({ i18n: 'planner.node.bands', control: bands }), power, wireless, maxF, bhSpeed, el('p.text-xs.text-muted', t('planner.node.drag')));
-    const c = ui().card({ id: 'pl-node', i18n: 'planner.node.title', icon: 'node', hint: 'secondAp', open: false, body: [ui().field({ i18n: 'planner.node.mode', control: [mode, modeHint] }), sub] });
-    syncs.push(() => {
-      const n = P().node;
-      if (!focused(mode)) mode.value = n.mode;
-      sub.hidden = n.mode === 'none';
-      wireless.hidden = !wirelessMode(n.mode);
-      modeHint.hidden = n.mode === 'none';
-      if (modeHint.getAttribute('data-hint') !== HK[n.mode]) {
-        modeHint.setAttribute('data-hint', HK[n.mode]);
-        modeHint.setAttribute('aria-label', t('ui.hint.about', { topic: t(`help.${HK[n.mode]}.t`) }));
-      }
-      c.setBadge(n.mode !== 'none' ? t('planner.node.on') : null);
-      const a = PL.S.a;
-      bhLine.hidden = wireless.hidden || !a || a.backhaul === null;
-      if (!bhLine.hidden) {
-        const ok = a.backhaul >= n.backhaulThreshold;
-        bhLine.className = 'notice notice--' + (ok ? 'ok' : 'warn');
-        bhLine.replaceChildren(ui().icon(ok ? 'check-circle' : 'warning', 18), el('span', t(ok ? 'planner.node.bhOk' : 'planner.node.bhWeak', { v: WH.util.dbm(a.backhaul), q: PL.qWord(a.backhaul) })));
-      }
-      // "Propojení s routerem ≈ 280 Mb/s" (wireless; needs a speed curve) / by cable no link limit
-      const bs = n.mode === 'none' ? null : PL.wi.backhaulMbps();
-      const lk = n.mode === 'none' ? null : PL.wi.link();
-      const mx = Number.isFinite(n.maxMbps) ? n.maxMbps : null;
-      const maxTxt = mx !== null ? ' ' + t('planner.node.maxOnly', { v: PL.mbps(mx) }) : '';
-      let txt = '';
-      if (n.mode !== 'none') {
-        if (!wirelessMode(n.mode)) txt = t('planner.node.bhCable') + maxTxt;
+    const show = ui().button({ label: '—', icon: 'target', size: 'sm', variant: 'ghost', onClick: () => PL.showNode(id) });
+    const dragTip = el('p.text-xs.text-muted', t('planner.nodes.drag'));
+    const body = el('div.stack.pl-nrow__body', { id: bodyId, hidden: true }, nameF, modeF, floorF, ui().field({ i18n: 'planner.node.bands', control: bands }), power, uplink, wireless, maxF, bhSpeed, el('div.pl-nrow__foot', show), dragTip);
+    const root = el('div.pl-nrow', { role: 'listitem' }, el('div.pl-nrow__head', main, onSw, del), body);
+    syncs = saved;
+    let icoKey = '';
+    let rowKey = '';
+    return {
+      el: root,
+      reveal() {
+        try { root.scrollIntoView({ block: 'nearest', behavior: WH.util.prefersReducedMotion() ? 'auto' : 'smooth' }); } catch (e) { /* ignore */ }
+        try { main.focus({ preventScroll: true }); } catch (e) { /* ignore */ }
+      },
+      sync(q, x) {
+        const n = x.node;
+        const open = PL.nodes.selected() === id;
+        const nm = PL.nodeName(n);
+        const wl = PL.nodeWireless(n.mode);
+        const serving = PL.nodeList().some((y) => y.id === id);
+        const info = PL.nodes.info(id);
+        // header: the type's icon, the name and one line about it ("Mesh přes Wi-Fi · 2,4 + 5 GHz · Wi-Fi k routeru · −62 dBm")
+        if (icoKey !== n.mode) { icoKey = n.mode; ico.replaceChildren(ui().icon(PL.nodeIcon(n.mode), 18)); }
+        const upName = n.uplink && n.uplink !== 'router' ? (PL.nodeById(n.uplink) ? PL.nodeName(PL.nodeById(n.uplink).node) : '') : '';
+        const parts = [t('planner.node.' + n.mode), bandsText(n.bands), t(`planner.nodes.sub${wl ? 'Wifi' : 'Cable'}${upName ? 'N' : 'R'}`, { up: upName })];
+        let warn = '';
+        if (!n.enabled) warn = t('planner.nodes.off');
+        else if (!serving) warn = t('planner.nodes.chainOff');
+        else if (wl && info && Number.isFinite(info.backhaul)) parts.push(`${WH.util.dbm(info.backhaul)} · ${PL.qWord(info.backhaul)}`);
+        if (PL.multi() && !x.active) parts.push(t('planner.nodes.subFloor', { floor: x.floorName }));
+        const rk = JSON.stringify([nm, parts, warn, info && info.weakBackhaul, open, n.enabled, WH.i18n.lang]);
+        if (rk !== rowKey) {
+          rowKey = rk;
+          name.textContent = nm;
+          sub.replaceChildren(...[el('span', parts.join(' · ')), warn ? el('span.pl-nrow__warn', ` · ${warn}`) : null].filter(Boolean));
+          sub.classList.toggle('is-weak', !!(info && info.weakBackhaul && n.enabled));
+          root.classList.toggle('is-sel', open);
+          root.classList.toggle('is-off', !n.enabled);
+          main.setAttribute('aria-expanded', String(open));
+          main.setAttribute('aria-label', t('planner.nodes.rowAria', { name: nm, what: parts.join(', ') + (warn ? `, ${warn}` : '') }));
+          onSw.input.setAttribute('aria-label', t('planner.nodes.onAria', { name: nm }));
+          del.setAttribute('aria-label', t('planner.nodes.delAria', { name: nm }));
+          show.querySelector('.btn__label').textContent = x.active || !PL.multi() ? t('planner.nodes.show') : t('planner.nodes.showFloor', { floor: x.floorName });
+        }
+        onSw.setChecked(n.enabled);
+        body.hidden = !open;
+        if (!open) return;
+        for (const f of own) f(q);
+        floorF.hidden = !PL.multi();
+        wireless.hidden = !wl;
+        // the wireless uplink's quality (dBm) - from the latest analysis
+        bhLine.hidden = !wl || !info || !Number.isFinite(info.backhaul);
+        if (!bhLine.hidden) {
+          const ok = !info.weakBackhaul;
+          const up = upName || t('planner.nodes.withRouter');   // "Spojení s routerem" (instrumental)
+          bhLine.className = 'notice notice--' + (ok ? 'ok' : 'warn');
+          bhLine.replaceChildren(ui().icon(ok ? 'check-circle' : 'warning', 18), el('span', t(ok ? 'planner.nodes.bhOk' : 'planner.nodes.bhWeak', { up, v: WH.util.dbm(info.backhaul), q: PL.qWord(info.backhaul) })));
+        }
+        // the speed of its uplink chain ("Propojení ≈ 280 Mb/s") and its own ceiling - once the pointer rests (the links
+        // are computed per analysis; a drag frame keeps the last text)
+        if (q === 'coarse') return;
+        const mx = Number.isFinite(n.maxMbps) ? n.maxMbps : null;
+        const maxTxt = mx !== null ? ' ' + t('planner.node.maxOnly', { v: PL.mbps(mx) }) : '';
+        const lk = serving ? PL.wi.linkOf(id) : null;
+        const bs = lk && lk.known && Number.isFinite(lk.down) ? lk.down : NaN;
+        let txt = '';
+        if (!serving) txt = '';
+        else if (!wl && !upName) txt = t('planner.node.bhCable') + maxTxt;
         else if (Number.isFinite(bs)) txt = mx !== null && mx < bs ? t('planner.node.bhSpeedMax', { v: PL.mbps(bs), m: PL.mbps(mx) }) : t('planner.node.bhSpeedCap', { v: PL.mbps(bs) });
-        // no speed curve yet: the link quality in dBm is in the notice above, plus the ceiling when known
+        else if (!wl) txt = t('planner.nodes.bhViaNode', { up: upName }) + maxTxt;
         else txt = lk && lk.reason === 'weak' ? t('planner.node.bhTooWeak') : t('planner.node.bhNoCurve') + maxTxt;
-      }
-      bhSpeed.hidden = !txt;
-      bhSpeed.textContent = txt;
-    });
-    return c;
+        if (txt && lk && lk.hops > 1) txt += ' ' + t('planner.nodes.hops', { n: lk.hops });
+        bhSpeed.hidden = !txt;
+        bhSpeed.textContent = txt;
+      },
+    };
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -601,12 +817,32 @@
     const E = WH.engine;
     const dbm = (v) => WH.util.dbm(v);
     const mdl = (i18n, hint, prop, min, max, step, fmt) => slider({ i18n, hint, min, max, step, fmt, get: () => P().model[prop], set: (p, v) => { p.model[prop] = Math.round(v * 10) / 10; }, undo: 'planner.undo.model', topics: ['model'] });
+    // SPEC 14.1: typing the real width sets AND verifies the scale (method 'width')
     const width = numField({
-      i18n: 'planner.adv.width', hint: 'scale', unit: 'planner.unit.m', min: 1, max: 200, step: 0.1, d: 0, req: true, undo: 'planner.undo.scale',
+      i18n: 'planner.adv.width', hint: 'scale', unit: 'planner.unit.m', min: 1, max: 200, step: 0.1, d: 0, req: true, undo: 'planner.undo.scale', topics: ['scale'],
       off: () => !P().plan.rooms.length,
       get: () => (P().plan.rooms.length ? Math.round(E.project.widthFromMpp(P().plan, P().scale.mpp) * 10) / 10 : null),
-      set: (p, v) => { if (p.plan.rooms.length) p.scale.mpp = E.project.deriveMpp(p.plan, v); },
+      set: (p, v) => { if (p.plan.rooms.length) E.project.setScale(p, { mpp: E.project.deriveMpp(p.plan, v), method: 'width', ref: { metres: v } }); },
     });
+    // what the scale makes of the flat ("≈ 58,3 m², největší Obývák 24,1 m²") and whether anybody checked it
+    const areaTxt = el('span');
+    const areaLine = el('div.field__hint.pl-area', areaTxt);
+    width.append(areaLine);
+    const scaleBtn = ui().button({ i18n: 'planner.scale.set', icon: 'ruler', size: 'sm', onClick: () => PL.scale.open() });
+    const scaleRow = el('div.pl-scalerow', el('span.pl-scalerow__state'), scaleBtn);
+    syncs.push((q) => {
+      if (q === 'coarse') return;
+      const ar = PL.scale.area();
+      areaLine.hidden = !ar || !(ar.areaM2 > 0);
+      if (!areaLine.hidden) areaTxt.textContent = ar.largest ? t('planner.scale.area', { a: PL.scale.fmt(ar.areaM2), room: ar.largest.name, r: PL.scale.fmt(ar.largest.areaM2) }) : t('planner.scale.areaOnly', { a: PL.scale.fmt(ar.areaM2) });
+      const ok = PL.scale.verified();
+      const stt = scaleRow.firstChild;
+      stt.className = 'pl-scalerow__state ' + (ok ? 'is-ok' : 'is-warn');
+      stt.replaceChildren(ui().icon(ok ? 'check-circle' : 'warning', 16), el('span', t(ok ? 'planner.scale.ok' : 'planner.scale.badge')));
+      scaleRow.hidden = !P().plan.rooms.length;
+    });
+    const ceil = ceilingSection();
+    syncs.push((q) => ceil.sync(q));
     const roomsBox = el('div.pl-roomchecks');
     const checks = new Map();
     let rk = '';
@@ -692,6 +928,8 @@
     });
     const advCard = ui().card({ id: 'pl-adv', i18n: 'planner.adv.title', icon: 'settings', open: false, body: [
       width,
+      scaleRow,
+      ceil.el,
       el('h4', t('planner.adv.model')),
       fitNote,
       mdl('planner.adv.near', 'nearSignal', 'nearSignal', -55, -25, 1, dbm),
@@ -725,6 +963,56 @@
   }
   let showRB = () => {};
 
+  /** SPEC 14.3: the slabs between the floors - one block per floor that has a floor above it: material (concrete 15 dB,
+   *  reinforced concrete 20 dB, wood 8 dB, own value), its loss and the storey height. Shown with two or more floors. */
+  function ceilingSection() {
+    const E = WH.engine;
+    const MATS = ['concrete', 'reinforced_concrete', 'wood', 'custom'];
+    const box = el('div.stack.pl-ceil', { hidden: true });
+    const head = el('div.pl-cap', el('span', t('planner.ceil.title')), ui().hint('ceilingLoss'));
+    let key = '';
+    let own = [];
+    const fl = (id) => (P().floors || []).find((f) => f.id === id) || null;
+    function block(lower, upper) {
+      const id = lower.id;
+      const dflt = (m) => { const v = E.project.CEILING_MATERIALS && E.project.CEILING_MATERIALS[m]; return Number.isFinite(v) ? v : null; };
+      const matOpts = () => MATS.map((m) => ({ value: m, label: m === 'custom' ? t('planner.ceil.mat.custom') : t('planner.ceil.matDb', { m: t('planner.ceil.mat.' + m), d: WH.util.fmt(dflt(m), 0) }) }));
+      const saved = syncs;
+      syncs = own;
+      const mat = selField({ i18n: 'planner.ceil.material', undo: 'planner.undo.ceiling', topics: ['floors'], opts: matOpts, get: () => { const f = fl(id); return f && f.ceiling ? f.ceiling.material : 'concrete'; }, set: (p, v) => { E.project.setCeiling(p, id, { material: v }); } });
+      const loss = slider({
+        i18n: 'planner.ceil.loss', hint: 'ceilingLoss', min: 0, max: 40, step: 1, fmt: (v) => `${WH.util.fmt(v, 0)}${WH.util.NBSP}dB`, undo: 'planner.undo.ceiling', topics: ['floors'],
+        get: () => { const f = fl(id); return f && f.ceiling ? f.ceiling.lossDb : 15; },
+        // a value of its own makes the material "Vlastní" (the list shows each material's default)
+        set: (p, v) => { const f = (p.floors || []).find((x) => x.id === id); const m = f && f.ceiling ? f.ceiling.material : 'custom'; E.project.setCeiling(p, id, { material: dflt(m) === Math.round(v) ? m : 'custom', lossDb: Math.round(v) }); },
+      });
+      const height = slider({
+        i18n: 'planner.ceil.height', hint: 'ceilingHeight', min: 2, max: 6, step: 0.1, fmt: (v) => PL.m(v), undo: 'planner.undo.ceiling', topics: ['floors'],
+        get: () => { const f = fl(id); return f && f.ceiling ? f.ceiling.heightM : 2.7; },
+        set: (p, v) => { E.project.setCeiling(p, id, { heightM: Math.round(v * 10) / 10 }); },
+      });
+      syncs = saved;
+      return el('div.pl-ceil__slab', el('div.pl-ceil__t', ui().icon('stairs', 16), el('span', t('planner.ceil.between', { a: lower.name, b: upper.name }))), mat, loss, height);
+    }
+    return {
+      el: box,
+      sync(q) {
+        const list = PL.floorList();
+        if (list.length < 2) { box.hidden = true; return; }
+        box.hidden = false;
+        const k = JSON.stringify([list.map((f) => [f.id, f.name, f.level]), WH.i18n.lang]);
+        if (k !== key) {
+          key = k;
+          own = [];
+          const blocks = [];
+          for (let i = 0; i + 1 < list.length; i++) blocks.push(block(list[i], list[i + 1]));
+          box.replaceChildren(head, ...blocks.reverse(), el('p.text-xs.text-muted', t('planner.ceil.note')));
+        }
+        for (const f of own) f(q);
+      },
+    };
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   let raf = 0;
   let pendQ = 'coarse';
@@ -734,6 +1022,10 @@
   }
   const side = (PL.side = {
     showRouterBands: () => showRB(),
+    /** "Další přístupové body" open (a node added from elsewhere, a marker clicked). */
+    openNodes: () => { if (nodesCard) nodesCard.setOpen(true); },
+    /** Open the card, the node's row, and bring it into view (its marker was clicked / it was just added). */
+    revealNode: (id) => { if (nodesCard) nodesCard.setOpen(true); revealId = id; side.schedule('full'); },
     mount(node) {
       host = node;
       side.render();
@@ -746,7 +1038,7 @@
       // the "Prvotní měření" guide sits at the top on desktop (the action bar steps aside while it is open; the slot is
       // empty while it is closed)
       const slot = PL.calib && PL.calib.sideSlot ? PL.calib.sideSlot() : null;
-      host.replaceChildren(...[actionBar(), slot, cardStart(), cardResult(), cardRouter(), cardMeas(), cardNode(), cardSpeed(), cardAdv()].filter(Boolean));
+      host.replaceChildren(...[actionBar(), slot, cardStart(), cardResult(), cardRouter(), cardMeas(), cardNodes(), cardSpeed(), cardAdv()].filter(Boolean));
       if (PL.calib && PL.calib.afterSideRender) PL.calib.afterSideRender();
       run('full');
     },

@@ -96,7 +96,7 @@
     if (!pr || !pr.net || !pr.plan.rooms.length) return null;
     for (const k of ['router', 'baseline', 'optic']) {
       const p = pr.net[k];
-      if (!p) continue;
+      if (!p || !ED.onActiveFloor(k === 'optic' ? pr.net.opticFloor : pr.net.routerFloor)) continue;
       const q = ED.render.scr(p);
       if (Math.hypot(q.x - sp.x, q.y - sp.y) <= 13) return k;
     }
@@ -140,6 +140,13 @@
     } catch (err) { s.doorPreview = null; }
   }
 
+  function doorEnds() {
+    const pl = ED.plan();
+    const out = [];
+    if (pl) for (const d of pl.doors) out.push(d.a, d.b);
+    return out;
+  }
+
   /** Snapped cursor of the drawing tools (+ Shift constraint, polygon closing / crossing state). */
   function cursorFrom(e) {
     const s = S();
@@ -148,7 +155,9 @@
     const d = s.draft;
     if (!d || d.asking) return;
     const first = d.kind === 'poly' && d.pts.length ? d.pts[0] : null;
-    let c = ED.snap(raw, { free: e.altKey, extra: first ? [first] : null });
+    // the scale tool also snaps to door ends ("a door is 80 cm wide" is the most common known length)
+    const extra = first ? [first] : d.kind === 'scale' ? doorEnds() : null;
+    let c = ED.snap(raw, { free: e.altKey, extra, tolPx: d.kind === 'scale' ? 10 : 8 });
     const anchor = d.kind === 'poly' ? d.pts[d.pts.length - 1] : d.a;
     if (e.shiftKey && anchor) c = d.kind === 'rect' ? squareFrom(anchor, c) : ED.constrain45(anchor, c);
     s.cur = c;
@@ -621,7 +630,7 @@
         return;
       }
       done = true;
-      ED.setMpp(v / px);
+      ED.scaling.fromPoints(d.a, d.b, v);
       if (scalePop) scalePop.close();
     };
     input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } });

@@ -187,7 +187,7 @@ test('recipe 2.9: what-if at the measured points (router moved, then a repeater 
   const bed = list[0];
   assert.ok(bed.delta > 0, `the bedroom gains ${bed.delta}`);
   // 2) a repeater in the bedroom on top: strong there, but its link to the router caps the speed
-  project.node = { ...project.node, mode: 'repeater', maxMbps: 300 };
+  project.nodes = [{ ...E.project.newNode(project, { mode: 'repeater', pos: { x: 0.303704, y: 0.550955 } }), maxMbps: 300 }];
   ctx = E.model.createContext(project);
   offs = E.model.offsets(ctx, project);
   list = E.analysis.predictAtMeasurements(ctx, project, { offsets: offs });

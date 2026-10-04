@@ -44,17 +44,24 @@
    *   array as nodeWins), sourceEdges = the border between the two zones (raster.sourceEdges, [] without a node),
    *   sourceShare = raster.sourceShare of the goal's rooms + every room's node share (null without a node).
    */
-  function run(project, opts) {
+  function run(projectIn, opts) {
     const o = opts || {};
+    // SPEC 14.3: the analysis of one floor (default: the active one)
+    const project = o.floor !== undefined && o.floor !== null && E.project.atFloor ? E.project.atFloor(projectIn, o.floor) : projectIn;
     const ctx = o.ctx || model.createContext(project);
     const grid = raster.grid(ctx, { cell: o.cell || 4 });
     const band = units.normBandMode(o.band) || units.normBandMode(project.view.band) || 5;
     const soften = model.softenOf(o.soften);
     const offsets = o.offsets || model.offsets(ctx, project, { soften });
     const aa = o.aa !== undefined ? o.aa : grid.cell <= 4 ? 2 : 1;
+    // (no spread: the state's non-enumerable compat `node` stays readable as a.params.trial.node)
+    const withAa = (st) => {
+      st.aa = aa;
+      return st;
+    };
     const params = {
-      today: { ...model.fieldParams(project, 'today', { band, offsets, soften }), aa },
-      trial: { ...model.fieldParams(project, 'trial', { band, offsets, soften }), aa },
+      today: withAa(model.fieldParams(project, 'today', { band, offsets, soften })),
+      trial: withAa(model.fieldParams(project, 'trial', { band, offsets, soften })),
     };
     const auto = band === 'auto';
     const reuse = o.reuse || {};
@@ -65,7 +72,8 @@
     const bandKeyPart = auto
       ? [params.today.bands.join(','), params.today.steer.six, params.today.steer.five, params.today.bands.map((b) => model.offsetFor(offsets, b)).join(',')].join('/')
       : model.offsetFor(offsets, band);
-    const key = cache ? [ctx.version, grid.cell, aa, soften, band, params.today.router.x, params.today.router.y, bandKeyPart].join('|') : null;
+    const rfl = params.today.router.floor === undefined || params.today.router.floor === null ? '' : params.today.router.floor;
+    const key = cache ? [ctx.version, ctx.floor === undefined || ctx.floor === null ? '' : ctx.floor, grid.cell, aa, soften, band, params.today.router.x, params.today.router.y, rfl, bandKeyPart].join('|') : null;
     let today;
     let todayBands = null;
     if (key && cache.key === key && cache.today && cache.today.length === grid.cols * grid.rows) {
@@ -83,7 +91,7 @@
       }
     }
     const sameRouter = params.trial.router.x === params.today.router.x && params.trial.router.y === params.today.router.y;
-    const trialIsToday = sameRouter && !params.trial.node;
+    const trialIsToday = sameRouter && !model.stateNodes(params.trial).length;
     let tr;
     if (trialIsToday) {
       // trial == today (nothing moved, no second node): compute once, hand out an independent copy
@@ -121,6 +129,27 @@
     };
     const backhaul = model.backhaulSignal(ctx, params.trial);
     const node = params.trial.node;
+    const tNodes = model.stateNodes(params.trial);
+    const share = tr.nodeWins ? raster.sourceShare(grid, tr.nodeWins, targetRooms, excluded) : null;
+    // SPEC 14.2: every node - its uplink, its backhaul, how much of this floor's goal area it wins (and with
+    // opts.curves its link's Mb/s)
+    const links = tNodes.length && o.curves !== undefined && E.speed ? E.speed.nodeLinks(ctx, params.trial, o.curves, { backhaulCurve: o.backhaulCurve }) : null;
+    const nodeInfo = tNodes.map((nd, k) => {
+      const bh = model.isWirelessNode(nd) ? model.backhaulSignal(ctx, params.trial, k) : null;
+      return {
+        id: nd.id === undefined ? null : nd.id,
+        name: nd.name || '',
+        index: k,
+        floor: nd.floor === undefined ? null : nd.floor,
+        mode: nd.mode,
+        onFloor: nd.floor === undefined || nd.floor === null || nd.floor === ctx.floor,
+        uplink: nd.uplink || 'router',
+        backhaul: bh,
+        weakBackhaul: bh !== null && isNum(nd.backhaulThreshold) && bh < nd.backhaulThreshold,
+        share: share && share.bySource[k + 1] !== undefined ? share.bySource[k + 1] : 0,
+        link: links ? links[k] || null : null,
+      };
+    });
     return {
       ctx,
       grid,
@@ -144,8 +173,52 @@
       // SPEC 10.3: who serves what (the planner's "Zdroj signálu" layer and the Result sentence)
       source: tr.nodeWins || null,
       sourceEdges: tr.nodeWins ? raster.sourceEdges(grid, tr.nodeWins) : [],
-      sourceShare: tr.nodeWins ? raster.sourceShare(grid, tr.nodeWins, targetRooms, excluded) : null,
+      sourceShare: share,
+      // SPEC 14: the floor of this analysis and every node of the building
+      floor: ctx.floor === undefined ? null : ctx.floor,
+      nodes: nodeInfo,
     };
+  }
+
+  /**
+   * "Celý dům" (SPEC 14.3): run() on every floor and the building as a whole - the floors' goal areas pooled (area
+   * weighted: every cell has the same area on every floor).
+   * @param {object} project
+   * @param {{cell?:number, band?:number|'auto', soften?:number, aa?:number, ctx?:object, offsets?:object, cache?:object}} [opts]
+   *        cell default 8 (cheap enough for every settled frame); cache = an object you keep ({}): each floor's today
+   *        field + statistics stay cached in it; ctx = a context of the project (default the active floor's)
+   * @returns {{floors:Array<{id:string|null, name:string, level:number, active:boolean, areaM2:number, cells:number,
+   *   stats:{today:object, trial:object}}>, total:{today:object, trial:object}, delta:{coverage:number, mean:number}}}
+   */
+  function building(project, opts) {
+    const o = opts || {};
+    const PJ = E.project;
+    const cell = o.cell || 8;
+    const soften = model.softenOf(o.soften);
+    const ctxA = o.ctx || model.createContext(project);
+    const offsets = o.offsets || model.offsets(ctxA, project, { soften });
+    const act = PJ.activeFloorId(project);
+    const list = Array.isArray(project.floors) && project.floors.length ? project.floors.slice().sort((a, b) => a.level - b.level) : [null];
+    const floors = [];
+    const today = [];
+    const trial = [];
+    for (const f of list) {
+      const id = f ? f.id : null;
+      const ctx = id === null || id === act ? ctxA : model.floorContext(ctxA, id);
+      const pf = id === null ? project : PJ.atFloor(project, id);
+      let sub;
+      if (o.cache) sub = o.cache[String(id)] || (o.cache[String(id)] = {});
+      const a = run(pf, { cell, ctx, offsets, band: o.band, soften, aa: o.aa, cache: sub });
+      const area = PJ.planArea(pf.plan, project.scale.mpp, { excluded: pf.goal.excluded });
+      let cells = 0;
+      for (const rid of a.targetRooms || a.grid.roomIds.filter((x) => !pf.goal.excluded.includes(x))) cells += (a.grid.roomCells.get(rid) || []).length;
+      floors.push({ id, name: f ? f.name : '', level: f ? f.level : 0, active: id === act, areaM2: area.areaM2, cells, stats: { today: a.stats.today, trial: a.stats.trial } });
+      today.push({ grid: a.grid, field: a.today, roomIds: a.targetRooms, excluded: pf.goal.excluded });
+      trial.push({ grid: a.grid, field: a.trial, roomIds: a.targetRooms, excluded: pf.goal.excluded });
+    }
+    const th = project.model.threshold;
+    const total = { today: raster.statsMany(today, th), trial: raster.statsMany(trial, th) };
+    return { floors, total, delta: { coverage: total.trial.coverage - total.today.coverage, mean: total.trial.mean - total.today.mean } };
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -168,6 +241,7 @@
   /** Floor points on a lattice (<= ~3000), at least `wall` m from every wall, `inside` m inside their room, not in furniture. */
   function spotCandidates(ctx, project, router, sigAt, relax) {
     const plan = project.plan;
+    const dist3 = (p) => model.distance3(ctx, router, p);
     const mpp = ctx.mpp;
     const bb = E.project.planBounds(plan);
     const areaPx = Math.max(1, (bb.maxX - bb.minX) * W * (bb.maxY - bb.minY) * H);
@@ -192,7 +266,7 @@
         out.push({
           p,
           roomId: room.roomId,
-          d: geom.distM(router, p, mpp),
+          d: dist3(p),
           walls: model.wallCount(ctx, router, p),
           sig: sigAt(p), // exact rays: only used to rank
           clear: Math.min(wd, 1e6) * mpp,
@@ -221,14 +295,16 @@
    *          of that number; distance in m from the router; walls = walls / closed doors on the straight line. [] for
    *          a plan without rooms.
    */
-  function suggestSpots(ctx, project, opts) {
+  function suggestSpots(ctx, projectIn, opts) {
     const o = opts || {};
+    // SPEC 14.3: the spots lie on the context's floor; the router may be on another one (distances are 3-D)
+    const project = ctx && ctx.floor !== null && ctx.floor !== undefined && E.project.atFloor ? E.project.atFloor(projectIn, ctx.floor) : projectIn;
     const plan = project.plan;
     if (!plan || !plan.rooms || !plan.rooms.length) return [];
     const band = units.normBandMode(o.band) || units.normBandMode(project.view.band) || 5;
     const count = clamp(Math.round(isNum(o.count) ? o.count : 5), 1, 8);
     const minGap = isNum(o.minGap) && o.minGap >= 0 ? o.minGap : 1.5;
-    const router = o.router && isNum(o.router.x) && isNum(o.router.y) ? o.router : project.net.baseline;
+    const router = model.asRouter(ctx, o.router && isNum(o.router.x) && isNum(o.router.y) ? o.router : project.net.baseline);
     const offsets = o.offsets || model.offsets(ctx, project);
     const off = model.offsetFor(offsets, band);
     const mpp = ctx.mpp;
@@ -242,7 +318,7 @@
       for (const b of bands) sig[units.bandKey(b)] = model.signal(ctx, router, p, b, model.offsetFor(offsets, b));
       return sig[units.bandKey(model.steerBand(sig, bands, steer))];
     };
-    const state = { band: auto ? 'auto' : band, bands, steer, router, node: null, offsets };
+    const state = { band: auto ? 'auto' : band, bands, steer, router, nodes: [], node: null, offsets };
     let cands = [];
     for (const relax of SPOT_RELAX) {
       cands = spotCandidates(ctx, project, router, sigAt, relax);
@@ -354,7 +430,7 @@
    */
   function whatIfActive(project) {
     if (!project || !project.net) return false;
-    if (model.nodeParams(project)) return true;
+    if (model.nodeList(project).length) return true;
     const r = project.net.router;
     const b = project.net.baseline;
     if (!r || !b || !isNum(r.x) || !isNum(r.y) || !isNum(b.x) || !isNum(b.y)) return false;
@@ -381,6 +457,8 @@
     delta: null,
     predicted: null,
     source: 'router',
+    sourceIndex: 0,
+    sourceId: null,
     changed: false,
     speed: null,
     reason: null,
@@ -404,10 +482,12 @@
    *          and 7.9 (band 'auto' = every point + steering)
    * @returns {Array<object>} one entry per measurement (in project order; only `band`'s when given)
    */
-  function predictAtMeasurements(ctx, project, opts) {
+  function predictAtMeasurements(ctx, projectIn, opts) {
     const o = opts || {};
     // no usable context (model.createContext) or project: nothing to predict (never throws)
-    if (!ctx || !ctx.p || !ctx.p.bandPower || !isNum(ctx.mpp) || !project || !project.net || !project.plan) return [];
+    if (!ctx || !ctx.p || !ctx.p.bandPower || !isNum(ctx.mpp) || !projectIn || !projectIn.net || !projectIn.plan) return [];
+    // SPEC 14.3: the measurements of the context's floor (the router and the nodes may be on other floors)
+    const project = ctx.floor !== null && ctx.floor !== undefined && E.project.atFloor ? E.project.atFloor(projectIn, ctx.floor) : projectIn;
     const list = Array.isArray(project.measurements) ? project.measurements : [];
     if (!list.length) return [];
     const net = project.net;
@@ -415,9 +495,11 @@
     const hasRooms = Array.isArray(plan.rooms) && plan.rooms.length > 0;
     const okPt = (q) => !!(q && isNum(q.x) && isNum(q.y));
     // a broken marker counts as missing: every entry then gets reason 'position'
-    const baseline = okPt(net.baseline) ? net.baseline : null;
-    const router = okPt(net.router) ? net.router : null;
-    const node = model.nodeParams(project);
+    const baseline = okPt(net.baseline) ? model.asRouter(ctx, net.baseline) : null;
+    const router = okPt(net.router) ? model.asRouter(ctx, net.router) : null;
+    // every serving node of the building (SPEC 14.2)
+    const nodes = model.nodeList(project);
+    const node = nodes[0] || null;
     const soften = o.soften;
     const offsets = o.offsets || model.offsets(ctx, project, { soften });
     const bandOpt = o.band === undefined || o.band === null ? null : units.normBandMode(o.band);
@@ -457,22 +539,36 @@
       }
       return { curve: null, approx: false };
     };
-    // the node's uplink: its signal once, the link per client curve (the backhaul band's own curve when there is one)
-    const nodeOnSomeBand = !!node;
-    let bhSig = null;
-    if (nodeOnSomeBand && model.isWirelessNode(node) && router && baseline) {
-      const v = model.backhaulSignal(ctx, { router, node, offsets, soften });
-      bhSig = isNum(v) ? v : null;
-    }
-    let bCurve;
-    const backhaulCurve = () => {
-      if (bCurve === undefined) bCurve = o.backhaulCurve !== undefined ? (speedM.validCurve(o.backhaulCurve) ? o.backhaulCurve : null) : node ? ownCurve(units.normBand(node.backhaulBand) || 5, goalDevice) : null;
-      return bCurve;
+    // the nodes' uplinks (SPEC 14.2 chains): their signals once, the links per client curve (each backhaul band's own
+    // curve when there is one)
+    const bhSigs = nodes.map((nd, k) => {
+      if (!model.isWirelessNode(nd) || !router || !baseline) return null;
+      const v = model.backhaulSignal(ctx, { router, nodes, offsets, soften }, k);
+      return isNum(v) ? v : null;
+    });
+    const bCurves = new Map();
+    const backhaulCurveOf = (nd) => {
+      if (o.backhaulCurve !== undefined) return speedM.validCurve(o.backhaulCurve) ? o.backhaulCurve : null;
+      const bb = units.normBand(nd.backhaulBand) || 5;
+      if (!bCurves.has(bb)) bCurves.set(bb, ownCurve(bb, goalDevice));
+      return bCurves.get(bb);
     };
     const links = new Map();
-    const linkFor = (curve) => {
-      if (!links.has(curve)) links.set(curve, speedM.linkFromSignal(node, bhSig, curve, backhaulCurve()));
-      return links.get(curve);
+    /** The chain of links for one client curve; linkFor(curve)[k] = node k's link. */
+    const linksFor = (curve) => {
+      if (links.has(curve)) return links.get(curve);
+      const out = new Array(nodes.length).fill(null);
+      const linkOf = (k, depth) => {
+        if (out[k]) return out[k];
+        const nd = nodes[k];
+        const ui = model.uplinkIndexOf(nodes, nd);
+        const up = ui >= 0 && depth < nodes.length ? linkOf(ui, depth + 1) : null;
+        out[k] = speedM.linkFromSignal(nd, bhSigs[k], curve, backhaulCurveOf(nd), up);
+        return out[k];
+      };
+      for (let k = 0; k < nodes.length; k++) linkOf(k, 0);
+      links.set(curve, out);
+      return out;
     };
 
     const out = [];
@@ -507,8 +603,18 @@
       const newOn = (b) => {
         const off = model.offsetFor(offsets, b);
         const rN = model.softSignal(ctx, router, p, b, off, soften);
-        const nN = model.nodeActive(node, b) ? model.softSignal(ctx, node.pos, p, b, off + (node.power || 0), soften) : null;
-        return { rN, nN, best: nN !== null && nN > rN ? nN : rN };
+        // the strongest node serving this band (SPEC 14.2), wherever it stands
+        let nN = null;
+        let nK = -1;
+        for (let k = 0; k < nodes.length; k++) {
+          if (!model.nodeActive(nodes[k], b)) continue;
+          const v = model.softSignal(ctx, nodes[k].pos, p, b, off + (nodes[k].power || 0), soften);
+          if (nN === null || v > nN) {
+            nN = v;
+            nK = k;
+          }
+        }
+        return { rN, nN, nK, best: nN !== null && nN > rN ? nN : rN };
       };
       let bandNew = band;
       let nw = null;
@@ -538,12 +644,14 @@
       e.nodeNew = nw.nN;
       e.modelNew = viaNode ? nw.nN : nw.rN;
       e.source = viaNode ? 'node' : 'router';
+      e.sourceIndex = viaNode ? nw.nK + 1 : 0;
+      e.sourceId = viaNode ? nodes[nw.nK].id || null : null;
       e.delta = e.modelNew - today;
       e.predicted = e.measured !== null ? clamp(e.measured + e.delta, model.MIN_SIGNAL, model.MAX_SIGNAL) : e.modelNew;
       e.changed = Math.abs(e.delta) >= CHANGE_DB || viaNode || bandNew !== band;
       const cToday = curveFor(band, m.device);
       const cNew = bandNew === band ? cToday : curveFor(bandNew, m.device);
-      e.speed = speedAt(e, m, cToday, cNew, viaNode ? linkFor : null, lim);
+      e.speed = speedAt(e, m, cToday, cNew, viaNode ? (curve) => linksFor(curve)[nw.nK] || null : null, lim);
     });
     return out;
   }
@@ -681,5 +789,5 @@
     return out;
   }
 
-  E.analysis = { run, suggestSpots, SPOT_KINDS, predictAtMeasurements, summarizePredictions, whatIfActive, WHATIF_DB };
+  E.analysis = { run, building, suggestSpots, SPOT_KINDS, predictAtMeasurements, summarizePredictions, whatIfActive, WHATIF_DB };
 })();

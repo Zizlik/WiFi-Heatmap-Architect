@@ -75,6 +75,7 @@
     'file.savePlanPng': 'Uložit půdorys jako PNG',
     'file.saveMapPng': 'Uložit mapu signálu jako PNG',
     'file.demo': 'Ukázkový byt',
+    'file.demoHouse': 'Ukázkový dům se dvěma patry',
     'file.new': 'Nový prázdný plán',
     'file.theme': 'Vzhled…',
     'file.install': 'Nainstalovat jako aplikaci',
@@ -89,6 +90,7 @@
     'file.clear.ok': 'Smazat vše',
     'file.cleared': 'Uložená data jsou smazána.',
     'file.demoLoaded': 'Načten ukázkový byt.',
+    'file.demoHouseLoaded': 'Načten ukázkový dům se dvěma patry. Patro přepneš vlevo na mapě nebo Ctrl+↑ a Ctrl+↓.',
     'file.newCreated': 'Vytvořen prázdný plán. Začni kreslit místnosti.',
     'file.noViewPng': 'Tuto mapu zatím nejde exportovat.',
 
@@ -230,7 +232,7 @@
     'measure.speed.t': 'Rychlost internetu',
     'measure.speed.b': 'Rychlost změříš přímo v aplikaci: při přidávání měření spusť vestavěný test rychlosti (běží přes servery Cloudflare). Jde to i přes fast.com nebo speedtest.net. Měř stejným zařízením hned po signálu, ať k sobě hodnoty patří, a zapiš si stahování i odesílání. Nejjednodušší je tlačítko Změřit vše, které udělá obojí najednou.',
     'measure.rules.t': 'Zlatá pravidla měření',
-    'measure.rules.b': 'Měř se zařízením připojeným k hlavnímu routeru a s vypnutým druhým uzlem. Stůj tam, kde zařízení opravdu používáš (na půl metru přesně). Udělej 2 až 3 měření po sobě a zapiš prostřední hodnotu. Pásmo nehlídej, jen ho u měření zapiš (nebo ho nech zjistit pomocníka).',
+    'measure.rules.b': 'Měř se zařízením připojeným k hlavnímu routeru a s vypnutými dalšími přístupovými body. Stůj tam, kde zařízení opravdu používáš (na půl metru přesně). Udělej 2 až 3 měření po sobě a zapiš prostřední hodnotu. Pásmo nehlídej, jen ho u měření zapiš (nebo ho nech zjistit pomocníka).',
     'measure.steer.t': 'Wi-Fi 7 a automatické přepínání pásem',
     'measure.steer.b': 'Pokud tvůj router přepíná pásma sám (jedna síť pro 2,4, 5 i 6 GHz, Wi-Fi 7 s MLO), je to v pořádku. Nic nepřepínej, měř normálně. Aplikace si u každého měření zapíše pásmo, na kterém jsi zrovna byl, a model ladí pro každé pásmo zvlášť. Když pásmo nevíš, vyber „Nevím“ a aplikace ho odhadne. Na mapě pak zvol pásmo Auto: ukáže, kde budeš nejspíš na 6, 5 a kde na 2,4 GHz.',
 
@@ -360,6 +362,7 @@
     'file.savePlanPng': 'Save floor plan as PNG',
     'file.saveMapPng': 'Save signal map as PNG',
     'file.demo': 'Demo flat',
+    'file.demoHouse': 'Demo two-storey house',
     'file.new': 'New empty plan',
     'file.theme': 'Appearance…',
     'file.install': 'Install as an app',
@@ -374,6 +377,7 @@
     'file.clear.ok': 'Delete everything',
     'file.cleared': 'Saved data deleted.',
     'file.demoLoaded': 'Demo flat loaded.',
+    'file.demoHouseLoaded': 'Demo two-storey house loaded. Switch floors on the left of the map or with Ctrl+↑ and Ctrl+↓.',
     'file.newCreated': 'Empty plan created. Start drawing rooms.',
     'file.noViewPng': 'This map cannot be exported yet.',
 
@@ -512,7 +516,7 @@
     'measure.speed.t': 'Internet speed',
     'measure.speed.b': 'Measure speed right in the app: when you add a measurement, run the built-in speed test (it uses Cloudflare servers). fast.com or speedtest.net work too. Use the same device right after the signal so the values belong together, and note both download and upload. Easiest of all is the Measure everything button, which does both in one go.',
     'measure.rules.t': 'Golden rules of measuring',
-    'measure.rules.b': 'Measure with the device connected to the main router and the second node switched off. Stand where you actually use the device (within half a metre). Take 2 to 3 measurements in a row and note the middle value. Do not try to control the band, just note it with the measurement (or let the helper find it out).',
+    'measure.rules.b': 'Measure with the device connected to the main router and the extra access points switched off. Stand where you actually use the device (within half a metre). Take 2 to 3 measurements in a row and note the middle value. Do not try to control the band, just note it with the measurement (or let the helper find it out).',
     'measure.steer.t': 'Wi-Fi 7 and automatic band switching',
     'measure.steer.b': 'If your router switches bands by itself (one network for 2.4, 5 and 6 GHz, Wi-Fi 7 with MLO), that is fine. Do not switch anything, just measure normally. The app notes the band you were on with every measurement and tunes the model for each band separately. If you do not know the band, choose “I don’t know” and the app estimates it. Then pick the Auto band on the map: it shows where you will most likely be on 6, 5 or 2.4 GHz.',
 

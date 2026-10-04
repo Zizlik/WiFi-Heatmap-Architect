@@ -37,6 +37,9 @@
     // --- network objects -----------------------------------------------------------------------------------------
     router: `<rect x="3" y="13" width="18" height="7" rx="2"/>${dot(7, 16.5)}${dot(11, 16.5)}<path d="M7.5 13L5.5 5.5M16.5 13l2-7.5"/>`,
     home: '<path d="M3 11l9-8 9 8"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-6h4v6"/>',
+    // floors (SPEC 14.3): a staircase for "patro" controls, a two-storey house for the demo house
+    stairs: '<path d="M3.5 18.5h4.25v-4.25H12V10h4.25V5.75h4.25"/><path d="M3.5 18.5H20.5V5.75"/>',
+    building: '<path d="M3 10.5L12 3.5l9 7"/><path d="M5 9v11.5h14V9"/><path d="M5 14.5h14"/><path d="M10.25 20.5v-3.25h3.5v3.25"/><path d="M10.25 9.5h3.5v2.25h-3.5z"/>',
     pin: '<path d="M12 21s7-6.2 7-11.5a7 7 0 0 0-14 0C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
     sparkles: '<path d="M10.5 3.5l1.8 5.2 5.2 1.8-5.2 1.8-1.8 5.2-1.8-5.2L3.5 10.5l5.2-1.8z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/>',
     target: `<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>${fillDot(12, 12, 1)}`,

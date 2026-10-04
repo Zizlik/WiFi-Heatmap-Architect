@@ -19,7 +19,12 @@
     router: { get: (p) => p.net.router, set: (p, q) => { p.net.router = q; }, topic: 'net', floor: true, undo: 'planner.undo.router' },
     today: { get: (p) => p.net.baseline, set: (p, q) => { p.net.baseline = q; }, topic: 'net', floor: true, undo: 'planner.undo.today' },
     inlet: { get: (p) => p.net.optic, set: (p, q) => { p.net.optic = q; }, topic: 'net', floor: false, undo: 'planner.undo.inlet' },
-    node: { get: (p) => p.node.pos, set: (p, q) => { p.node.pos = q; }, topic: 'node', floor: true, undo: 'planner.undo.node' },
+    // SPEC 14.2: every node of the active floor has its own marker (keyed by the node's id)
+    node: {
+      get: (p, id) => { const n = (p.nodes || []).find((x) => x.id === id); return n ? n.pos : null; },
+      set: (p, q, id) => { const n = (p.nodes || []).find((x) => x.id === id); if (n) n.pos = q; },
+      topic: 'nodes', floor: true, undo: 'planner.undo.nodeMove',
+    },
     meas: {
       get: (p, id) => p.measurements.find((m) => m.id === id) || null,
       set: (p, q, id) => { const m = p.measurements.find((x) => x.id === id); if (m) { m.x = q.x; m.y = q.y; } },
@@ -55,14 +60,20 @@
     // measuring mode: only its own two bars take room
     const mi = PL.mm && PL.mm.insets && PL.mm.insets();
     if (mi) { top = mi.top + 14; bot = mi.bottom + 14; }
+    // the floor switch (SPEC 14.3) stands at the left edge: the plan starts right of it
+    let left = Math.max(pad, 16);
+    const fs = st.floorSlot;
+    if (fs && !fs.hidden && fs.offsetWidth && !mi) left = Math.max(left, fs.offsetLeft + fs.offsetWidth + 12);
+    const right = Math.max(pad, 16);
     const bw = (b.maxX - b.minX) * W;
     const bh = (b.maxY - b.minY) * H;
-    const s = Math.min((sh - top - bot) / bh, (sw - 2 * Math.max(pad, 16)) / bw);
+    const s = Math.min((sh - top - bot) / bh, (sw - left - right) / bw);
     if (!(s > 0.02) || !Number.isFinite(s)) return b;
     const T = Math.max(0, top - pad) / s / H;
     const B = Math.max(0, bot - pad) / s / H;
-    const X = Math.max(0, 16 - pad) / s / W;
-    return { minX: b.minX - X, maxX: b.maxX + X, minY: b.minY - T, maxY: b.maxY + B };
+    const XL = Math.max(0, left - pad) / s / W;
+    const XR = Math.max(0, right - pad) / s / W;
+    return { minX: b.minX - XL, maxX: b.maxX + XR, minY: b.minY - T, maxY: b.maxY + B };
   }
   // The view follows the plan (re-fit after plan edits / chrome size changes) until the user pans or zooms himself.
   let userNav = false;
@@ -75,6 +86,10 @@
     st.vp.fit(fitBox(), { animate: !!animate });
   };
   const autoFit = () => { if (st && !userNav) PL.fit(false); };
+  /** Re-fit after the plan changed under the view (another floor) - unless the user placed the view himself. */
+  PL.autoFit = () => { if (st && !userNav && boundsKey() !== fitKey) PL.fit(true); };
+  /** The chrome around the plan changed (the floor switch appeared / went away): fit again unless the user navigated. */
+  PL.refitChrome = () => autoFit();
 
   /** Client px -> normalized point (WH.viewport maps from the stage's padding box = the canvas origin). */
   const toWorld = (cx, cy) => st.vp.toWorld(cx, cy);
@@ -134,13 +149,23 @@
     if (id) b.dataset.id = id;
     const dot = el('span.pl-mk__dot');
     if (kind === 'router') dot.append(el('span.pl-mk__txt', { 'data-i18n': 'planner.mk.routerLetter' }, t('planner.mk.routerLetter')));
-    // the second node (SPEC 10.3): the type's icon in the disc + a name tag ("AP 2" / "Mesh 2" / "Opakovač"), filled by
-    // place() for the current type and language - as prominent as the router's R
+    // a node (SPEC 10.3 / 14.2): the type's icon in the disc + a name tag ("AP 2" / "Mesh 3" / "Opakovač" or the user's
+    // own name), filled by place() for its type, name and language - as prominent as the router's R
     if (kind === 'node') { dot.append(el('span.pl-mk__ico')); b._tag = el('span.pl-mk__tag', { 'aria-hidden': 'true' }); }
     if (kind === 'inlet') dot.append(ui().icon('globe', 16));
     b.append(dot);
     if (kind === 'node') b.append(b._tag);
     if (kind === 'today') b.append(el('span.pl-mk__label', { 'data-i18n': 'planner.mk.todayShort' }, t('planner.mk.todayShort')));
+    // a source on another floor (SPEC 14.3): a faded ghost with "na jiném patře"; a click goes to that floor
+    if (kind === 'far') {
+      b.append(el('span.pl-mk__label', { 'data-i18n': 'planner.fl.ghostCap' }, t('planner.fl.ghostCap')));
+      b.addEventListener('click', () => farClick(b));
+      b.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse' && !drag) markerTip(b); });
+      b.addEventListener('pointerleave', () => { if (!drag) hideTip(); });
+      b.addEventListener('focus', () => { if (b.matches(':focus-visible')) markerTip(b); });
+      b.addEventListener('blur', () => hideTip());
+      return b;
+    }
     // the value label (full / short text, see 15-whatif.js) and the numbered badge used when even the short text has
     // no room; the label is placed by layoutLabels() (right, left, above, below)
     if (kind === 'meas') { b._val = el('span.pl-mk__val'); b._no = el('span.pl-mk__no', { 'aria-hidden': 'true' }, el('span.pl-mk__nt')); b.append(b._val, b._no); }
@@ -198,9 +223,22 @@
     const kind = b.dataset.kind;
     if (kind === 'today') ghostPopover(b);
     else if (kind === 'meas') { const m = KIND.meas.get(PL.P(), b.dataset.id); if (m) PL.openMeasure(m, m.id); }
+    // a node: its settings open in the sidebar ("Další přístupové body")
+    else if (kind === 'node') PL.nodes.select(b.dataset.id, { reveal: true, force: true });
+  }
+  /** A ghost of a source on another floor: go to that floor and put the focus on the real marker there. */
+  function farClick(b) {
+    const g = (PL.ghostList() || []).find((x) => x.key === b.dataset.key);
+    if (!g || !PL.fl.go(g.floor)) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const mk = g.kind === 'router' ? st && st.mk.router : st && st.nodes.get(g.id);
+      if (mk && !mk.hidden) { try { mk.focus({ preventScroll: true }); } catch (err) { /* ignore */ } }
+    }));
   }
   function onMkKey(e) {
     const kind = e.currentTarget.dataset.kind;
+    // Ctrl+↑ / Ctrl+↓ switch the floor (17-floors.js), they never nudge a marker
+    if (e.ctrlKey || e.metaKey) return;
     const d = ui().keys.arrowDelta(e, 0.25, 4);
     if (d) {
       e.preventDefault();
@@ -302,6 +340,83 @@
   }
   PL.centerGlyph = centerGlyph;
 
+  /** The node markers of the active floor (SPEC 14.2), keyed by the node's id: the type's icon + its name, faded while
+   *  switched off (it can still be moved), ringed while its settings are open in the sidebar. */
+  function placeNodes(p, has, pos) {
+    const seen = new Set();
+    const sel = PL.nodes.selected();
+    if (!PL.tagW) PL.tagW = new Map();
+    for (const n of p.nodes || []) {
+      seen.add(n.id);
+      let b = st.nodes.get(n.id);
+      if (!b) { b = markerEl('node', n.id); st.nodes.set(n.id, b); st.layer.insertBefore(b, st.mk.router); }
+      const k = `${n.mode}|${PL.nodeName(n)}|${WH.i18n.lang}`;
+      if (b._nk !== k) {
+        b._nk = k;
+        b.querySelector('.pl-mk__ico').replaceChildren(ui().icon(PL.nodeIcon(n.mode), 18));
+        b._tag.textContent = PL.nodeName(n);
+        b._tw = 0;
+      }
+      b.hidden = !has || !n.pos;
+      b.classList.toggle('is-off', !n.enabled);
+      b.classList.toggle('is-sel', sel === n.id);
+      pos(b, n.pos);
+      if (!b.hidden && !b._tw) b._tw = b._tag.offsetWidth || 0;
+      PL.tagW.set(n.id, b._tw || 48);
+    }
+    for (const [id, b] of st.nodes) if (!seen.has(id)) { b.remove(); st.nodes.delete(id); PL.tagW.delete(id); }
+  }
+  /** The sources on other floors (SPEC 14.3): faded ghosts "na jiném patře"; a click goes to that floor. */
+  function placeGhosts(has, pos) {
+    const list = has ? PL.ghostList() : [];
+    const seen = new Set();
+    for (const g of list) {
+      seen.add(g.key);
+      let b = st.ghosts.get(g.key);
+      if (!b) { b = markerEl('far'); b.dataset.key = g.key; st.ghosts.set(g.key, b); st.layer.prepend(b); }
+      const k = `${g.kind}|${g.mode || ''}|${g.name}|${g.floor}|${PL.floorName(g.floor)}|${WH.i18n.lang}`;
+      if (b._gk !== k) {
+        b._gk = k;
+        const dot = b.querySelector('.pl-mk__dot');
+        dot.replaceChildren(g.kind === 'router' ? el('span.pl-mk__txt', t('planner.mk.routerLetter')) : ui().icon(PL.nodeIcon(g.mode), 16));
+        b.classList.toggle('is-router', g.kind === 'router');
+        b.setAttribute('aria-label', t('planner.fl.ghostAria', { what: g.name, floor: PL.floorName(g.floor) }));
+      }
+      b.hidden = false;
+      pos(b, g.pos);
+    }
+    for (const [key, b] of st.ghosts) if (!seen.has(key)) { b.remove(); st.ghosts.delete(key); }
+  }
+  /** The "kabel" / "Wi-Fi" chip in the middle of every node's dashed uplink line (10-core draws the lines); hidden while
+   *  the two ends stand too close for it. */
+  function placeLinks(p, has, snap) {
+    const list = has ? PL.uplinks() : [];
+    const seen = new Set();
+    const rects = [];
+    for (const L of list) {
+      seen.add(L.id);
+      let c = st.links.get(L.id);
+      if (!c) { c = el('div.pl-link', { 'aria-hidden': 'true' }); st.links.set(L.id, c); st.layer.prepend(c); }
+      const a = st.vp.toScreen(L.from);
+      const b2 = st.vp.toScreen(L.to);
+      const room = Math.hypot(a.x - b2.x, a.y - b2.y) >= 70;
+      const lk = `${L.wireless}|${WH.i18n.lang}`;
+      if (c._lk !== lk) { c._lk = lk; c._w = 0; c.replaceChildren(ui().icon(L.wireless ? 'wifi' : 'cable', 16), el('span', t(L.wireless ? 'planner.mk.linkWifi' : 'planner.mk.linkCable'))); }
+      c.classList.toggle('is-far', !!L.far);
+      c.hidden = !room;
+      if (room) {
+        const mx = (a.x + b2.x) / 2;
+        const my = (a.y + b2.y) / 2;
+        c.style.transform = `translate(${snap(mx)}px,${snap(my)}px) translate(-50%,-50%)`;
+        if (!c._w) c._w = c.offsetWidth || 60;
+        PL.linkW = c._w;
+        rects.push({ l: mx - c._w / 2, t: my - 11, r: mx + c._w / 2, b: my + 11 });
+      }
+    }
+    for (const [id, c] of st.links) if (!seen.has(id)) { c.remove(); st.links.delete(id); }
+    PL.linkRects = rects;
+  }
+
   /** Position every marker over the canvas (called after each draw). */
   function place() {
     if (!st) return;
@@ -315,63 +430,35 @@
       const s = vp.toScreen(q);
       b.style.transform = `translate(${snap(s.x)}px,${snap(s.y)}px) translate(-50%,-50%)`;
     };
-    for (const k of ['router', 'node']) {
-      const g = st.mk[k].querySelector('.pl-mk__txt');
-      if (g && !st.mk[k].hidden && g.dataset.glyph !== g.textContent) centerGlyph(g);
-    }
+    const g0 = st.mk.router.querySelector('.pl-mk__txt');
+    if (g0 && !st.mk.router.hidden && g0.dataset.glyph !== g0.textContent) centerGlyph(g0);
     const M = st.mk;
-    M.router.hidden = !has;
-    M.today.hidden = !has || !PL.moved();
-    M.node.hidden = !has || p.node.mode === 'none';
-    M.inlet.hidden = !has;
-    // the node's marker says what it is (SPEC 10.3): the type's icon + the name tag, per type and language
-    const nk = `${p.node.mode}|${WH.i18n.lang}`;
-    if (!M.node.hidden && M.node._nk !== nk) {
-      M.node._nk = nk;
-      M.node.querySelector('.pl-mk__ico').replaceChildren(ui().icon(PL.nodeIcon(p.node.mode), 18));
-      M.node._tag.textContent = PL.nodeLabel(p.node.mode);
-      PL.nodeTagW = 0;
-    }
+    // SPEC 14.3: the router (trial + today) and the inlet stand on their own floor; elsewhere the router is a ghost
+    const rHere = PL.routerHere();
+    M.router.hidden = !has || !rHere;
+    M.today.hidden = !has || !rHere || !PL.moved();
+    M.inlet.hidden = !has || !PL.opticHere();
     pos(M.router, p.net.router);
     pos(M.today, p.net.baseline);
-    pos(M.node, p.node.pos);
     pos(M.inlet, p.net.optic);
-    if (!M.node.hidden) PL.nodeTagW = M.node._tag.offsetWidth || PL.nodeTagW || 0;
-    // the link between the node and the router: a "kabel" / "Wi-Fi" chip in the middle of the dashed line (10-core
-    // draws the line); hidden while the two markers stand too close for it
-    const L = st.link;
-    PL.linkRect = null;
-    if (!M.node.hidden && p.node.pos && p.net.router) {
-      const a = vp.toScreen(p.net.router);
-      const b2 = vp.toScreen(p.node.pos);
-      const far = Math.hypot(a.x - b2.x, a.y - b2.y) >= 70;
-      const wl = PL.nodeWireless(p.node.mode);
-      const lk = `${wl}|${WH.i18n.lang}`;
-      if (L._lk !== lk) { L._lk = lk; L.replaceChildren(ui().icon(wl ? 'wifi' : 'cable', 16), el('span', t(wl ? 'planner.mk.linkWifi' : 'planner.mk.linkCable'))); }
-      L.hidden = !far;
-      if (far) {
-        const mx = (a.x + b2.x) / 2;
-        const my = (a.y + b2.y) / 2;
-        L.style.transform = `translate(${snap(mx)}px,${snap(my)}px) translate(-50%,-50%)`;
-        PL.linkW = L.offsetWidth || PL.linkW || 60;
-        PL.linkRect = { l: mx - PL.linkW / 2, t: my - 11, r: mx + PL.linkW / 2, b: my + 11 };
-      }
-    } else L.hidden = true;
+    placeNodes(p, has, pos);
+    placeGhosts(has, pos);
+    placeLinks(p, has, snap);
     // phones / zoomed out: the inlet disc overlapped today's dashed ring, its "Today" label and the router disc - push
     // it just clear (on screen only, so all of them stay visible and grabbable; the router may stand right at the
     // inlet, a real and common place: the inlet then sits beside it like a cluster)
-    if (has && p.net.optic) {
+    if (has && p.net.optic && !M.inlet.hidden) {
       const o = vp.toScreen(p.net.optic);
       const R_IN = 13 + 3;                                    // inlet disc radius + a small gap
       const obst = [];                                        // {c, r} discs and {l, t, r, b} boxes, host px
-      if (PL.moved()) {
+      if (PL.moved() && rHere) {
         const c = vp.toScreen(p.net.baseline);
         obst.push({ c, r: 14 });
         const lab = M.today.querySelector('.pl-mk__label');
         const lw = (lab && lab.offsetWidth) || 40;
         obst.push({ l: c.x - lw / 2, r: c.x + lw / 2, t: c.y + 17, b: c.y + 35 });   // the label below the ring (CSS)
       }
-      obst.push({ c: vp.toScreen(p.net.router), r: 17 });
+      if (rHere) obst.push({ c: vp.toScreen(p.net.router), r: 17 });
       let x = o.x;
       let y = o.y;
       for (let it = 0; it < 3; it++) {
@@ -479,16 +566,25 @@
     }
     const hit = (r, list, own) => list.some((o) => (!own || o.own !== own) && r.l < o.r && r.r > o.l && r.t < o.b && r.b > o.t);
     const obst = dots.map((d) => ({ l: d.s.x - 9, t: d.s.y - 9, r: d.s.x + 9, b: d.s.y + 9, own: d.b }));
-    for (const k of ['router', 'node', 'inlet', 'today']) {
+    const pr = PL.P();
+    for (const k of ['router', 'inlet', 'today']) {
       const mk = st.mk[k];
       if (mk.hidden) continue;
-      const q = k === 'router' ? PL.P().net.router : k === 'node' ? PL.P().node.pos : k === 'inlet' ? PL.P().net.optic : PL.P().net.baseline;
+      const q = k === 'router' ? pr.net.router : k === 'inlet' ? pr.net.optic : pr.net.baseline;
       const c = st.vp.toScreen(q);
       const r = k === 'router' ? 19 : 16;
-      // the node's name tag hangs to the right of its disc; today's caption below its ring
-      obst.push({ l: c.x - r, t: c.y - r, r: c.x + r + (k === 'node' ? PL.nodeTagW || 48 : 0), b: c.y + r + (k === 'today' ? 20 : 0) });
+      // today's caption below its ring
+      obst.push({ l: c.x - r, t: c.y - r, r: c.x + r, b: c.y + r + (k === 'today' ? 20 : 0) });
     }
-    if (PL.linkRect) obst.push({ ...PL.linkRect });
+    // every node's disc + the name tag hanging to its right; the ghosts of other floors + their caption below
+    for (const n of pr.nodes || []) {
+      const mk = st.nodes.get(n.id);
+      if (!mk || mk.hidden || !n.pos) continue;
+      const c = st.vp.toScreen(n.pos);
+      obst.push({ l: c.x - 16, t: c.y - 16, r: c.x + 16 + ((PL.tagW && PL.tagW.get(n.id)) || 48), b: c.y + 16 });
+    }
+    for (const g of PL.ghostList()) { const c = st.vp.toScreen(g.pos); obst.push({ l: c.x - 15, t: c.y - 15, r: c.x + 15, b: c.y + 33 }); }
+    for (const r of PL.linkRects || []) obst.push({ ...r });
     // the numbered pins of the "Prvotní měření" guide (28-calib-wizard.js) while it is open
     const cs = PL.calib && PL.calib.isOpen && PL.calib.isOpen() ? PL.calib.state() : null;
     if (cs && cs.step === 'measure') {
@@ -563,7 +659,12 @@
     const room = (q) => (PL.roomAt(q) || {}).name || t('planner.tip.outside');
     st.mk.router.setAttribute('aria-label', t('planner.mk.routerAria', { room: room(p.net.router), v: sig(p.net.router) }));
     st.mk.today.setAttribute('aria-label', t('planner.mk.todayAria', { room: room(p.net.baseline) }));
-    st.mk.node.setAttribute('aria-label', t('planner.mk.nodeAria', { lbl: PL.nodeLabel(), room: room(p.node.pos) }));
+    for (const n of p.nodes || []) {
+      const b = st.nodes.get(n.id);
+      if (!b || !n.pos) continue;
+      const a = t('planner.mk.nodeAriaN', { lbl: PL.nodeName(n), type: t('planner.node.' + n.mode), room: room(n.pos) });
+      b.setAttribute('aria-label', n.enabled ? a : `${a} ${t('planner.nodes.offAria')}`);
+    }
     st.mk.inlet.setAttribute('aria-label', t('planner.mk.inletAria'));
   }
 
@@ -608,8 +709,9 @@
     const E = WH.engine;
     const room = E.project.roomAt(pr.plan, p);
     if (!room || !S.ctx || !S.offs) { hideTip(); return; }
-    const d = E.model.pointSignalDetail(S.ctx, p, E.model.fieldParams(pr, 'trial', { offsets: S.offs }));
-    const nodeOn = pr.node.mode !== 'none';
+    const state = E.model.fieldParams(pr, 'trial', { offsets: S.offs });
+    const d = E.model.pointSignalDetail(S.ctx, p, state);
+    const nodeOn = (state.nodes || []).length > 0;
     const auto = E.model.isAuto(pr.view.band);
     const out = [
       el('div.pl-tip__title', room.name),
@@ -618,16 +720,26 @@
         auto && d.band ? el('span.pl-tip__dot', '·') : null, auto && d.band ? el('span', PL.bands.ghz(d.band)) : null),
     ];
     if ((PL.moved() || nodeOn) && Number.isFinite(d.baseline)) out.push(line({ class: 'text-muted' }, t('planner.tip.delta', { d: PL.db(d.combined - d.baseline) })));
-    // what the walls on the way cost on this band (2.4 GHz gets through more easily, SPEC 7.1)
-    const wl = PL.pathLoss(pr.net.router, p, auto ? d.band : pr.view.band);
-    if (Number.isFinite(wl) && wl >= 0.5) out.push(line({ class: 'text-muted' }, t('planner.tip.walls', { d: WH.util.fmt(wl, 0) })));
-    // SPEC 10.3: who is the stronger source here, with both numbers ("Silnější zdroj: AP 2 (−48 dBm) · router (−71 dBm)")
-    if (nodeOn && d.node !== null && Number.isFinite(d.router)) {
-      const nodeBest = d.bestSource === 'node';
-      const names = [PL.nodeLabel(), t('planner.tip.routerName')];
-      const vals = [WH.util.dbm(d.node), WH.util.dbm(d.router)];
-      const i = nodeBest ? 0 : 1;
-      out.push(line({ class: 'text-muted pl-tip__src' }, el('i.pl-sw', { style: { background: nodeBest ? 'var(--pl-node)' : 'var(--danger)' } }), el('span', t('planner.tip.source', { a: names[i], va: vals[i], b: names[1 - i], vb: vals[1 - i] }))));
+    // what the walls on the way cost on this band (2.4 GHz gets through more easily, SPEC 7.1) - the router on this floor;
+    // on another floor (SPEC 14.3) the ceilings in between instead
+    if (PL.routerHere()) {
+      const wl = PL.pathLoss(pr.net.router, p, auto ? d.band : pr.view.band);
+      if (Number.isFinite(wl) && wl >= 0.5) out.push(line({ class: 'text-muted' }, t('planner.tip.walls', { d: WH.util.fmt(wl, 0) })));
+    } else if (PL.multi()) {
+      const gap = E.project.floorGap(pr, pr.net.routerFloor, PL.floorId());
+      if (gap && gap.levels) out.push(line({ class: 'text-muted' }, t('planner.tip.ceiling', { floor: PL.floorName(pr.net.routerFloor), d: WH.util.fmt(gap.lossDb * PL.bandK(auto ? d.band || 5 : pr.view.band), 0) })));
+    }
+    // SPEC 10.3 / 14.2: who is the stronger source here, with the numbers of the two strongest ("Silnější zdroj: AP 2
+    // (−48 dBm) · router (−71 dBm)")
+    if (nodeOn && Array.isArray(d.nodes) && Number.isFinite(d.router)) {
+      const list = [{ k: 0, v: d.router }];
+      d.nodes.forEach((v, i) => { if (Number.isFinite(v)) list.push({ k: i + 1, v }); });
+      if (list.length > 1) {
+        list.sort((x, y) => y.v - x.v);
+        const [a, b] = list;
+        const name = (x) => PL.sourceName(x.k, state.nodes);
+        out.push(line({ class: 'text-muted pl-tip__src' }, el('i.pl-sw', { style: { background: a.k ? 'var(--pl-node)' : 'var(--danger)' } }), el('span', t('planner.tip.source', { a: name(a), va: WH.util.dbm(a.v), b: name(b), vb: WH.util.dbm(b.v) }))));
+      }
     }
     if (d.weakBackhaul) out.push(line({ class: 'pl-tip__warn' }, t('planner.tip.weakBackhaul')));
     if (S.sp) {
@@ -635,11 +747,11 @@
       if (!sp.curve) out.push(line({ class: 'text-muted' }, t('planner.tip.speedNone')));
       else {
         // the same rule as the Speed map (SPEC 10): the stronger source, the node's link and ceiling, the plan
-        const ps = E.speed.pointSpeed(S.ctx, p, E.model.fieldParams(pr, 'trial', { offsets: S.offs }), sp.curve, PL.speedLimits(pr), { backhaulCurve: sp.bhCurve || undefined, link: sp.link || undefined });
+        const ps = E.speed.pointSpeed(S.ctx, p, state, sp.curve, PL.speedLimits(pr), { backhaulCurves: sp.bhCurves || undefined, links: sp.links && sp.links.length ? sp.links : undefined });
         if (ps.known) out.push(speedLine(ps.down, ps.up));
         else out.push(line({ class: 'text-muted' }, t(ps.reason === 'backhaul' ? 'planner.tip.speedBh' : 'planner.tip.speedWeak')));
         const k = ps.known && ps.limitedBy ? ps.limitedBy : null;
-        if (k) out.push(line({ class: 'pl-tip__cap' }, ui().icon('lock', 16), el('span', PL.wi.capText({ k, v: ps.capDown }))));
+        if (k) out.push(line({ class: 'pl-tip__cap' }, ui().icon('lock', 16), el('span', PL.wi.capText({ k, v: ps.capDown }) + (ps.sourceIndex > 0 && (k === 'backhaul' || k === 'device') && state.nodes.length > 1 ? ` (${PL.sourceName(ps.sourceIndex, state.nodes)})` : ''))));
         // the map's speeds keep the planning reserve, the ceilings are the raw numbers: say why they differ
         if (ps.known && pr.goal.reserve > 0) out.push(line({ class: 'text-muted text-xs' }, t('planner.tip.reserve', { r: WH.util.fmtPct(pr.goal.reserve) })));
       }
@@ -653,9 +765,33 @@
     const r = b.getBoundingClientRect();
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
+    if (kind === 'far') {
+      // a source on another floor: what it is, where it stands, and that a click goes there
+      const g = PL.ghostList().find((x) => x.key === b.dataset.key);
+      if (!g) return;
+      showTipAt([el('div.pl-tip__title', g.name), line({ class: 'text-muted' }, t('planner.fl.ghostTip', { floor: PL.floorName(g.floor) }))], cx, cy);
+      tipOwner = b;
+      return;
+    }
+    if (kind === 'node') {
+      const n = (PL.P().nodes || []).find((x) => x.id === b.dataset.id);
+      if (!n) return;
+      const nf = PL.nodes.info(n.id);
+      const out = [el('div.pl-tip__title', `${PL.nodeName(n)} · ${t('planner.node.' + n.mode)}`)];
+      if (!n.enabled) out.push(line({ class: 'pl-tip__warn' }, t('planner.nodes.offTip')));
+      else if (nf && PL.nodeWireless(n.mode) && Number.isFinite(nf.backhaul)) {
+        // its uplink: the router or the node it connects through (a repeater behind AP 2: "Spojení s AP 2")
+        const upX = n.uplink && n.uplink !== 'router' ? PL.nodeById(n.uplink) : null;
+        const up = upX ? PL.nodeName(upX.node) : t('planner.nodes.withRouter');
+        out.push(line({ class: nf.weakBackhaul ? 'pl-tip__warn' : 'text-muted' }, t(nf.weakBackhaul ? 'planner.nodes.bhWeak' : 'planner.nodes.bhOk', { up, v: WH.util.dbm(nf.backhaul), q: PL.qWord(nf.backhaul) })));
+      }
+      out.push(line({ class: 'text-muted' }, t('planner.mk.nodeTipN')));
+      showTipAt(out, cx, cy);
+      tipOwner = b;
+      return;
+    }
     if (kind !== 'meas') {
-      const title = kind === 'node' ? `${PL.nodeLabel()} · ${t('planner.mk.node')}` : t(`planner.mk.${kind}`);
-      showTipAt([el('div.pl-tip__title', title), line({ class: 'text-muted' }, t(`planner.mk.${kind}Tip`))], cx, cy);
+      showTipAt([el('div.pl-tip__title', t(`planner.mk.${kind}`)), line({ class: 'text-muted' }, t(`planner.mk.${kind}Tip`))], cx, cy);
       tipOwner = b;
       return;
     }
@@ -667,7 +803,9 @@
     const out = [el('div.pl-tip__title', m.name), line(sig ? el('b.num', WH.util.dbm(m.value)) : el('span', t('planner.m.sigEstimated')), el('span.pl-tip__dot', '·'), el('span', bi.text))];
     if (bi.kind === 'none') out.push(line({ class: 'pl-tip__warn' }, t('planner.bd.unverified')));
     if (S.ctx && S.offs && bi.band) {
-      const model = WH.engine.model.softSignal(S.ctx, pr.net.baseline, m, bi.band, WH.engine.model.offsetFor(S.offs, bi.band));
+      // (the router may stand on another floor - SPEC 14.3: the source point carries its floor)
+      const from = pr.net.routerFloor ? { ...pr.net.baseline, floor: pr.net.routerFloor } : pr.net.baseline;
+      const model = WH.engine.model.softSignal(S.ctx, from, m, bi.band, WH.engine.model.offsetFor(S.offs, bi.band));
       out.push(line({ class: 'text-muted' }, sig ? t('planner.tip.model', { v: WH.util.dbm(model), d: PL.db(m.value - model) }) : t('planner.tip.modelOnly', { v: WH.util.dbm(model) })));
     }
     if (m.download !== null || m.upload !== null) out.push(speedLine(m.download, m.upload));
@@ -706,15 +844,53 @@
     });
   };
 
+  /** Show one node on the map (its sidebar row "Ukázat na mapě", a newly added one): another floor first, the marker into
+   *  view, its tooltip and a short pulse. */
+  PL.showNode = (id) => {
+    const x = PL.nodeById(id);
+    if (!x || !st) return;
+    if (!x.active && x.floor && !PL.fl.go(x.floor)) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const b = st.nodes.get(id);
+      if (!b || b.hidden) return;
+      const r = b.getBoundingClientRect();
+      const sr = st.el.getBoundingClientRect();
+      if (r.right < sr.left + 20 || r.left > sr.right - 20 || r.bottom < sr.top + 20 || r.top > sr.bottom - 20) PL.panBy(sr.left + sr.width / 2 - (r.left + r.width / 2), sr.top + sr.height / 2 - (r.top + r.height / 2));
+      markerTip(b);
+      b.classList.remove('is-pulse');
+      void b.offsetWidth;
+      b.classList.add('is-pulse');
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => { if (tipOwner === b) hideTip(); b.classList.remove('is-pulse'); }, 2600);
+    }));
+  };
+  /** Before the floor changes under the user: a drag / keyboard nudge / open measurement form ends (17-floors.js). */
+  PL.cancelGestures = () => {
+    closePending();
+    hideTip();
+    endKbd();
+    if (drag) { drag.cancelled = true; if (store().gestureOpen) store().cancel(); drag = null; if (st) st.el.classList.remove('is-dragging'); }
+    if (S.opt) S.opt.abort();
+  };
+
   // ---------------------------------------------------------------------------------------------------------------
   // actions: move router, back to today, mark as today, measurements
   // ---------------------------------------------------------------------------------------------------------------
   function moveRouterTo(p) {
+    // SPEC 14.3: the router (today and trial) stands on its own floor; a click on another floor offers to go there
+    if (!PL.routerHere()) { routerElsewhere(); return; }
     const q = snapPos('router', p);
     store().commit('planner.undo.router', (pr) => { pr.net.router = q; }, ['net']);
     store().setPref('planner.movedOnce', true);
     afterMoveAnnounce('router');
   }
+  let elseToast = null;
+  function routerElsewhere() {
+    const fid = PL.P().net.routerFloor;
+    if (elseToast) elseToast.close();
+    elseToast = ui().toast({ text: t('planner.fl.routerElsewhere', { floor: PL.floorName(fid) }), action: { label: t('planner.fl.goThere'), fn: () => PL.fl.go(fid) } }, { kind: 'info', ms: 6000 });
+  }
+  PL.routerElsewhere = routerElsewhere;
   function backToToday() {
     if (!PL.moved()) { ui().toast({ i18n: 'planner.router.alreadyToday' }, { ms: 2200 }); return; }
     store().commit('planner.undo.back', (p) => { p.net.router = { ...p.net.baseline }; }, ['net']);
@@ -758,9 +934,13 @@
   // ---------------------------------------------------------------------------------------------------------------
   // find the best place
   // ---------------------------------------------------------------------------------------------------------------
-  /** What the optimizer's answer depends on (band, goal, second node, plan): a found best spot is only "the best" while
-   *  this stays the same. */
-  function optKey() { const q = PL.P(); return [q.view.band, JSON.stringify(q.goal), JSON.stringify(q.node), q.plan.rooms.length, S.planVer].join('|'); }
+  /** What the optimizer's answer depends on (band, goal, the nodes, the floors, plan): a found best spot is only "the best"
+   *  while this stays the same. */
+  function optKey() {
+    const q = PL.P();
+    const fl = PL.multi() ? JSON.stringify([q.net.routerFloor, PL.floorId(), (q.floors || []).map((f) => [f.id, f.level, f.ceiling])]) : '';
+    return [q.view.band, JSON.stringify(q.goal), JSON.stringify(PL.nodeList()), q.plan.rooms.length, S.planVer, fl].join('|');
+  }
   /** The router stands where "Find the best spot" put it (and nothing it depends on changed since). */
   PL.atBest = () => !!(S.best && PL.same(PL.P().net.router, S.best.pos) && S.best.key === optKey());
 
@@ -769,12 +949,11 @@
     const p = PL.P();
     const E = WH.engine;
     if (!p.plan.rooms.length) { ui().toast({ i18n: 'planner.noplan.t' }, { kind: 'warn' }); return; }
-    const ctx = E.model.createContext(p);
     PL.ensureCtx(p);
-    const grid = E.raster.grid(ctx, { cell: 4 });
     const g = p.goal;
+    const nodes = PL.nodeList();
     let speed = null;
-    if (p.view.layer === 'speed' && S.sp && S.sp.curve && p.node.mode === 'none') {
+    if (p.view.layer === 'speed' && S.sp && S.sp.curve && !nodes.length) {
       speed = { curve: S.sp.curve, targetDown: g.targetDown, targetUp: g.targetUp, limits: PL.speedLimits(p), reserve: g.reserve };
     }
     const sig = optKey;
@@ -788,14 +967,24 @@
     st.progBar.setValue(0);
     st.el.classList.add('stage--loading');
     PL.notifySide();
+    const ctl = { onProgress: (f) => st.progBar.setValue(f), signal: ac.signal };
     let r = null;
     try {
-      r = await E.optimize.find(ctx, grid, {
-        // Auto (SPEC 13): the router's own bands + steering thresholds, so a 6 GHz router is searched on 6 GHz too
-        band: p.view.band, bands: E.model.routerBandList(p), steer: E.model.steerOf(p),
-        goalRoom: g.room === 'all' ? null : g.room, allowedRoom: g.allowedRoom === 'any' ? null : g.allowedRoom,
-        threshold: p.model.threshold, excluded: g.excluded, router: { ...p.net.router }, node: E.model.nodeParams(p), offsets: { ...S.offs }, speed,
-      }, { onProgress: (f) => st.progBar.setValue(f), signal: ac.signal });
+      if (PL.multi()) {
+        // SPEC 14.3: the router stays on its floor; with the whole home as the goal every floor's places count (area
+        // weighted), with one room as the goal that room (ENGINE-API S.4 findProject)
+        r = await E.optimize.findProject(p, { cell: 4, band: p.view.band, speed, offsets: { ...S.offs } }, ctl);
+      } else {
+        const ctx = E.model.createContext(p);
+        const grid = E.raster.grid(ctx, { cell: 4 });
+        r = await E.optimize.find(ctx, grid, {
+          // Auto (SPEC 13): the router's own bands + steering thresholds, so a 6 GHz router is searched on 6 GHz too
+          band: p.view.band, bands: E.model.routerBandList(p), steer: E.model.steerOf(p),
+          goalRoom: g.room === 'all' ? null : g.room, allowedRoom: g.allowedRoom === 'any' ? null : g.allowedRoom,
+          // the nodes stay where they are (SPEC 14.2): the router alone moves
+          threshold: p.model.threshold, excluded: g.excluded, router: { ...p.net.router }, nodes, offsets: { ...S.offs }, speed,
+        }, ctl);
+      }
     } catch (e) {
       if (e && e.name === 'AbortError') ui().toast({ i18n: 'planner.opt.cancelled' }, { ms: 2200 });
       else {
@@ -821,10 +1010,14 @@
     S.best = { pos: PL.pt(r.pos), key: before };
     store().commit('planner.undo.optimize', (pr) => { pr.net.router = PL.pt(r.pos); }, ['net']);
     store().setPref('planner.movedOnce', true);
-    const room = PL.roomName(r.roomId) || t('planner.tip.outside');
+    // the room lies on the router's floor (maybe not the one on screen): its name, plus the floor's when it differs
+    const rp = PL.routerPlan();
+    const rr = rp.rooms.find((x) => x.roomId === r.roomId);
+    let room = rr ? rr.name : t('planner.tip.outside');
+    if (!PL.routerHere()) room = t('planner.opt.roomFloor', { room, floor: PL.floorName(PL.P().net.routerFloor) });
     const pct = WH.util.fmtPct;
     ui().toast({
-      text: t('planner.opt.found', { room, a: pct(r.before ? r.before.coverage : 0), b: pct(r.after.coverage) }) + (speed ? ' ' + t('planner.opt.bySpeed') : ''),
+      text: t(PL.multi() && g.room === 'all' ? 'planner.opt.foundHouse' : 'planner.opt.found', { room, a: pct(r.before ? r.before.coverage : 0), b: pct(r.after.coverage) }) + (speed ? ' ' + t('planner.opt.bySpeed') : ''),
       action: { i18n: 'ui.undo', fn: () => { if (store().labels().undo === 'planner.undo.optimize') store().undo(); } },
     }, { kind: 'ok' });
     if (!PL.same(cur, r.pos)) afterMoveAnnounce('router');
@@ -846,9 +1039,12 @@
       // SPEC 10: what the hatch means ("omezí propojení s routerem (≈ 300 Mb/s)")
       let cap = '';
       if (S.capHatch && S.sp && S.sp.capKind) {
-        const l = S.sp.link || {};
-        const v = S.sp.capKind === 'device' ? p.node.maxMbps : Number.isFinite(l.capDown) ? l.capDown : l.down;
+        // the node capped on the largest area (10-core derive): its link / its own ceiling, named when there are several
+        const cn = S.sp.capNode || {};
+        const l = cn.link || S.sp.link || {};
+        const v = S.sp.capKind === 'device' ? cn.maxMbps : Number.isFinite(l.capDown) ? l.capDown : l.down;
         cap = t('planner.legend.cap', { what: PL.wi.capNoun({ k: S.sp.capKind, v: Number.isFinite(v) ? v : null }) });
+        if (cn.name && PL.nodeList().length > 1) cap += ` (${cn.name})`;
       }
       return { cls: 'pl-legend--speed', title: t('planner.legend.speed', { d: PL.mbps(g.targetDown), u: PL.mbps(g.targetUp) }), hint: 'speedView', stops: ['--heat-1', '--heat-3', '--heat-5', '--heat-6'], words: [['planner.legend.below', 0], ['planner.legend.meets', 1]], ticks: [0, 50, 100, 150].map((n, i) => [i / 3, WH.util.fmtPct(n)]), unknown: true, cap };
     }
@@ -880,8 +1076,14 @@
     const L = legendSpec();
     const p = PL.P();
     const rb = WH.engine.model.routerBandList(p);
-    const nodeOn = p.node.mode !== 'none';
-    const key = JSON.stringify(L) + p.view.ranges + p.view.sourceZones + p.model.rangeThreshold + WH.i18n.lang + JSON.stringify(zoneShare()) + rb.join(',') + p.node.mode + S.mode + !!S.hatch;
+    const list = PL.nodeList();
+    const nodeOn = list.length > 0;
+    // SPEC 14.2: who wins somewhere on this floor (the zones of 10-core derive): the blue hatch's nodes and the grey ones
+    const z = S.zones || { present: [], weakSet: new Set() };
+    const okNames = z.present.filter((k) => !(z.weakSet && z.weakSet.has(k))).map((k) => PL.sourceName(k, list));
+    const weakNames = z.present.filter((k) => z.weakSet && z.weakSet.has(k)).map((k) => PL.sourceName(k, list));
+    const lineNames = S.cont ? S.cont.nodes.map((n) => n.name) : [];
+    const key = JSON.stringify([L, okNames, weakNames, lineNames]) + p.view.ranges + p.view.sourceZones + p.model.rangeThreshold + WH.i18n.lang + JSON.stringify(zoneShare()) + rb.join(',') + S.mode + !!S.hatch + !!S.srcHatch;
     if (key === legendKey) return;
     legendKey = key;
     const box = st.legend;
@@ -905,20 +1107,22 @@
     }
     if (p.view.ranges && S.mode !== 'speed') {
       const row = el('div.pl-legend__extra.pl-legend__ranges', rb.map((b) => el('span', el(`i.pl-dash.pl-dash--b${String(b).replace('.', '')}`, { style: { borderColor: `var(${PL.BAND_VAR[b]})` } }), PL.band(b))), el('span.text-muted', t('planner.legend.rangeAt', { v: WH.util.dbm(p.model.rangeThreshold) })), ui().hint('rangeThreshold'));
-      // SPEC 10.3: lines around both sources - "čáry: router · AP 2", the node's sample on its blue backing
-      if (nodeOn) {
+      // SPEC 10.3 / 14.2: lines around every source - "čáry: router · AP 2, Mesh 3", the nodes' sample on its blue backing
+      if (lineNames.length) {
         row.append(el('span.pl-legend__src', el('span.text-muted', t('planner.legend.lines')),
           el('i.pl-dash.pl-dash--b5.pl-dash--router'), el('span', t('planner.legend.srcRouter')), el('span.pl-tip__dot', '·'),
-          el('i.pl-dash.pl-dash--b5.pl-dash--node'), el('span', PL.nodeLabel())));
+          el('i.pl-dash.pl-dash--b5.pl-dash--node'), el('span', PL.namesShort(lineNames))));
       }
       parts.push(row);
     }
     // the layer "Zdroj signálu": what the hatch means ("šrafy: tady je silnější AP 2, jinde router"); a wireless node with a
-    // weak uplink is marked by the grey weak-uplink hatch instead of the blue one, and the row says so. Not in the Speed
-    // view (the layer is not drawn there, like the range lines)
+    // weak uplink is marked by the grey weak-uplink hatch instead of the blue one, and its row says so. Only hatches that
+    // are painted get a row; not in the Speed view (the layer is not drawn there, like the range lines)
     if (nodeOn && p.view.sourceZones !== false && S.mode !== 'speed') {
-      const weak = !!S.hatch;
-      parts.push(el('div.pl-legend__extra.pl-legend__source', el('span', el(`i.pl-sw.${weak ? 'pl-sw--cap' : 'pl-sw--src'}`), t(weak ? 'planner.legend.sourceWeak' : 'planner.legend.source', { node: PL.nodeLabel() })), ui().hint('layerSource')));
+      const rows = [];
+      if (S.srcHatch && okNames.length) rows.push(el('span', el('i.pl-sw.pl-sw--src'), t(okNames.length > 1 ? 'planner.legend.sourceMany' : 'planner.legend.source', { node: PL.orShort(okNames) })));
+      if (S.hatch && weakNames.length) rows.push(el('span', el('i.pl-sw.pl-sw--cap'), t(weakNames.length > 1 ? 'planner.legend.sourceWeakMany' : 'planner.legend.sourceWeak', { node: PL.orShort(weakNames) })));
+      if (rows.length) parts.push(el('div.pl-legend__extra.pl-legend__source', ...rows, ui().hint('layerSource')));
     }
     box.replaceChildren(...parts);
   }
@@ -938,11 +1142,14 @@
     const p = PL.P();
     // a dot on Vrstvy while the map hides a layer it shows by default (SPEC 10.2) - e.g. the measurement dots stay hidden
     // after a reload; layers switched ON (range lines, dBm numbers) are visible on the map anyway. "Zdroj signálu" counts
-    // only while a second node is on (SPEC 10.3)
-    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.points === false || v.whatif === false || (p.node.mode !== 'none' && v.sourceZones === false));
+    // only while a node serves (SPEC 10.3)
+    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.points === false || v.whatif === false || (PL.anyNode() && v.sourceZones === false));
     if (layersPop) layersPop.sync();
     st.noplan.hidden = p.plan.rooms.length > 0;
     paintBanner(p, v);
+    // SPEC 14.3: the floor switch follows floors added / renamed in the editor; SPEC 14.1: the header badge
+    PL.fl.sync();
+    PL.scale.syncBadge();
   }
   PL.paintChrome = paintToolbars;
 
@@ -1009,8 +1216,19 @@
     const bh = (b.maxY - b.minY + 2 * m) * H;
     const scale = Math.max(0.6, Math.min(1.4, 900 / bw));
     const head = 64;
-    const nodeOn = p.node.mode !== 'none';
-    const foot = 92 + (nodeOn ? 18 : 0);   // SPEC 10.3: one more legend line about the two sources
+    // SPEC 10.3 / 14.2: one more legend line per thing about the sources - whose range lines are drawn, what the blue and
+    // the grey hatch mean (the same rows as the screen legend, so only what is painted)
+    const list = PL.nodeList();
+    const z = S.zones || { present: [], weakSet: new Set() };
+    const okNames = z.present.filter((k) => !(z.weakSet && z.weakSet.has(k))).map((k) => PL.sourceName(k, list));
+    const weakNames = z.present.filter((k) => z.weakSet && z.weakSet.has(k)).map((k) => PL.sourceName(k, list));
+    const srcRows = [];
+    if (list.length && S.mode !== 'speed') {
+      if (p.view.ranges && S.cont && S.cont.nodes.length) srcRows.push({ kind: 'lines', names: S.cont.nodes.map((n) => n.name) });
+      if (p.view.sourceZones !== false && S.srcHatch && okNames.length) srcRows.push({ kind: 'src', names: okNames });
+      if (p.view.sourceZones !== false && S.hatch && weakNames.length) srcRows.push({ kind: 'weak', names: weakNames });
+    }
+    const foot = 92 + srcRows.length * 18;
     const w = Math.round(Math.max(560, bw * scale));
     const h = Math.round(head + bh * scale + foot);
     const dpr = 2;
@@ -1033,18 +1251,23 @@
     // the layers as on screen: "Body měření" off = no dots, "Předpověď u bodů" off = the measured values only (wi.label)
     const pts = p.view.points !== false ? p.measurements : [];
     for (const ms of pts) taken.push(box(ms, 8));
-    taken.push(box(p.net.router, 16), box(p.net.optic, 10));
-    const nodeLbl = nodeOn ? PL.nodeLabel() : '';
-    if (nodeOn) {
-      // the node's disc + its name tag, and the "kabel" / "Wi-Fi" text in the middle of the link
-      c.font = `800 11px ${fam}`;
-      const bx = box(p.node.pos, 16);
-      bx.r += c.measureText(nodeLbl).width + 14;
+    // SPEC 14.3: the router / inlet only on their own floor, the sources of other floors as faded ghosts
+    const rHere = PL.routerHere();
+    const ghosts = PL.ghostList();
+    if (rHere) taken.push(box(p.net.router, 16));
+    if (PL.opticHere()) taken.push(box(p.net.optic, 10));
+    const nodesHere = (p.nodes || []).filter((n) => n.pos);
+    c.font = `800 11px ${fam}`;
+    for (const n of nodesHere) {
+      // every node's disc + its name tag
+      const bx = box(n.pos, 16);
+      bx.r += c.measureText(PL.nodeName(n)).width + 14;
       taken.push(bx);
-      const [mx, my] = sc({ x: (p.net.router.x + p.node.pos.x) / 2, y: (p.net.router.y + p.node.pos.y) / 2 });
-      taken.push({ l: mx - 22, t: my - 9, r: mx + 22, b: my + 9 });
     }
-    if (PL.moved()) taken.push(box(p.net.baseline, 13));
+    // the "kabel" / "Wi-Fi" texts in the middle of the uplinks; the ghosts with their caption
+    for (const L of PL.uplinks()) { const [mx, my] = sc({ x: (L.from.x + L.to.x) / 2, y: (L.from.y + L.to.y) / 2 }); taken.push({ l: mx - 22, t: my - 9, r: mx + 22, b: my + 9 }); }
+    for (const g of ghosts) { const bx = box(g.pos, 13); bx.b += 16; taken.push(bx); }
+    if (PL.moved() && rHere) taken.push(box(p.net.baseline, 13));
     const hits = (a) => a.l < 2 || a.t < head || a.r > w - 2 || a.b > h - foot || taken.some((b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t);
     const spot = (txt, x, y) => {
       const tw = c.measureText(txt).width;
@@ -1091,8 +1314,24 @@
       c.fillStyle = col('--map-label');
       c.fillText(txt, at.x, at.y);
     }
-    disc(p.net.optic, 9, col('--pl-inlet'), '');
-    if (PL.moved()) {
+    if (PL.opticHere()) disc(p.net.optic, 9, col('--pl-inlet'), '');
+    // the sources on other floors: a faded dashed disc with R / the node's tag and "na jiném patře" below
+    for (const g of ghosts) {
+      const [x, y] = sc(g.pos);
+      c.save();
+      c.globalAlpha = 0.55;
+      disc(g.pos, 11, g.kind === 'router' ? col('--danger') : col('--pl-node'), g.kind === 'router' ? t('planner.mk.routerLetter') : PL.nodeTag({ name: g.name, mode: g.mode }), true, g.kind === 'router' ? col('--on-danger') : col('--pl-node-ink'));
+      c.restore();
+      c.font = `600 10px ${fam}`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.lineWidth = 3;
+      c.strokeStyle = col('--map-halo');
+      c.strokeText(t('planner.fl.ghostCap'), x, y + 22);
+      c.fillStyle = col('--ink-2');
+      c.fillText(t('planner.fl.ghostCap'), x, y + 22);
+    }
+    if (PL.moved() && rHere) {
       disc(p.net.baseline, 12, '', '', true);
       const [x, y] = sc(p.net.baseline);
       c.font = `700 11px ${fam}`;
@@ -1103,11 +1342,15 @@
       c.fillStyle = col('--ink-2');
       c.fillText(t('planner.mk.todayShort'), x, y + 24);
     }
-    if (nodeOn) {
-      // like on screen (SPEC 10.3): the blue disc with "2" + the name tag "AP 2" / "Mesh 2" / "Opakovač" attached on the right
-      const [x, y] = sc(p.node.pos);
+    for (const n of nodesHere) {
+      // like on screen (SPEC 10.3 / 14.2): the blue disc with the node's tag + its name attached on the right; a node that
+      // is switched off stays faded
+      const [x, y] = sc(n.pos);
+      const nm = PL.nodeName(n);
+      c.save();
+      if (!n.enabled) c.globalAlpha = 0.45;
       c.font = `800 11px ${fam}`;
-      const tw = c.measureText(nodeLbl).width;
+      const tw = c.measureText(nm).width;
       c.beginPath();
       if (c.roundRect) c.roundRect(x, y - 11, tw + 30, 22, [0, 11, 11, 0]); else c.rect(x, y - 11, tw + 30, 22);
       c.fillStyle = col('--pl-node');
@@ -1118,12 +1361,13 @@
       c.fillStyle = col('--pl-node-ink');
       c.textAlign = 'left';
       c.textBaseline = 'middle';
-      c.fillText(nodeLbl, x + 20, y + 0.5);
-      disc(p.node.pos, 14, col('--pl-node'), '2', false, col('--pl-node-ink'));
+      c.fillText(nm, x + 20, y + 0.5);
+      disc(n.pos, 14, col('--pl-node'), PL.nodeTag(n), false, col('--pl-node-ink'));
+      c.restore();
     }
-    disc(p.net.router, 15, col('--danger'), t('planner.mk.routerLetter'), false, col('--on-danger'));
+    if (rHere) disc(p.net.router, 15, col('--danger'), t('planner.mk.routerLetter'), false, col('--on-danger'));
     // title + date
-    const target = p.goal.room === 'all' ? t('planner.res.all') : PL.roomName(p.goal.room);
+    const target = p.goal.room === 'all' ? t(PL.multi() ? 'planner.res.allFloor' : 'planner.res.all') : PL.roomName(p.goal.room);
     const st2 = a ? a.stats : null;
     let title = '';
     if (S.mode === 'speed' && S.sp && S.sp.stats) title = t('planner.export.speed', { b: PL.bandText(p.view.band), target, v: WH.util.fmtPct(S.sp.stats.coverage) });
@@ -1135,7 +1379,9 @@
     c.fillText(title, 20, 34);
     c.font = `500 13px ${fam}`;
     c.fillStyle = col('--muted');
-    c.fillText(`${p.name} · ${new Date().toLocaleDateString(WH.i18n.locale)} · ${t('shell.estimate')}`, 20, 54);
+    // SPEC 14.3: which floor the picture shows; SPEC 14.1: an unverified scale is said right in the picture
+    const sub = [p.name, PL.multi() ? PL.floorName(PL.floorId()) : '', new Date().toLocaleDateString(WH.i18n.locale), t(PL.scale.needed() ? 'planner.scale.badge' : 'shell.estimate')].filter(Boolean);
+    c.fillText(sub.join(' · '), 20, 54);
     // legend
     const L = legendSpec();
     const lx = 20;
@@ -1156,15 +1402,15 @@
     L.words.forEach(([k, pos]) => { c.textAlign = pos <= 0 ? 'left' : pos >= 1 ? 'right' : 'center'; c.fillText(t(k), lx + lw * pos, ly + 26); });
     c.fillStyle = col('--muted');
     L.ticks.forEach(([pos, txt]) => { c.textAlign = pos <= 0 ? 'left' : pos >= 1 ? 'right' : 'center'; c.fillText(txt, lx + pos * lw, ly + 41); });
-    // SPEC 10.3: the two sources - whose range lines are drawn (with the same samples as the screen legend: the node's on
-    // its blue backing) and what the hatch means (its swatch: blue, or the grey weak-uplink hatch)
-    if (nodeOn && S.mode !== 'speed') {
+    // SPEC 10.3 / 14.2: the sources - whose range lines are drawn (with the same samples as the screen legend: the nodes'
+    // on their blue backing) and what the hatches mean (their swatch: blue, or the grey weak-uplink hatch), one row each
+    srcRows.forEach((row, i) => {
       let x = lx;
-      const y = ly + 58;
+      const y = ly + 58 + i * 18;
       c.textAlign = 'left';
       c.textBaseline = 'middle';
       c.font = `600 11px ${fam}`;
-      const text = (s) => { c.fillStyle = col('--ink-2'); c.fillText(s, x, y); x += c.measureText(s).width; };
+      const text = (str) => { c.fillStyle = col('--ink-2'); c.fillText(str, x, y); x += c.measureText(str).width; };
       const dash = (nodeSide) => {
         x += 4;
         c.save();
@@ -1180,27 +1426,26 @@
         c.restore();
         x += 20;
       };
-      if (p.view.ranges) { text(t('planner.legend.lines')); dash(false); text(t('planner.legend.srcRouter')); text(' · '); dash(true); text(nodeLbl); x += 14; }
-      if (p.view.sourceZones !== false) {
-        const weak = !!S.hatch;
-        const sw = 10;
-        c.save();
-        c.beginPath();
-        c.rect(x, y - sw / 2, sw, sw);
-        c.clip();
-        c.strokeStyle = weak ? col('--map-wall') : col('--pl-node');
-        c.lineWidth = 1.2;
-        c.beginPath();
-        for (let d = -sw; d < sw * 2; d += 4) { c.moveTo(x + d, y + sw / 2); c.lineTo(x + d + sw, y - sw / 2); }
-        c.stroke();
-        c.restore();
-        c.strokeStyle = weak ? col('--line-strong') : col('--pl-node');
-        c.lineWidth = 1;
-        c.strokeRect(x + 0.5, y - sw / 2 + 0.5, sw - 1, sw - 1);
-        x += sw + 5;
-        text(t(weak ? 'planner.legend.sourceWeak' : 'planner.legend.source', { node: nodeLbl }));
-      }
-    }
+      if (row.kind === 'lines') { text(t('planner.legend.lines')); dash(false); text(t('planner.legend.srcRouter')); text(' · '); dash(true); text(PL.namesShort(row.names, 4)); return; }
+      const weak = row.kind === 'weak';
+      const sw = 10;
+      c.save();
+      c.beginPath();
+      c.rect(x, y - sw / 2, sw, sw);
+      c.clip();
+      c.strokeStyle = weak ? col('--map-wall') : col('--pl-node');
+      c.lineWidth = 1.2;
+      c.beginPath();
+      for (let d = -sw; d < sw * 2; d += 4) { c.moveTo(x + d, y + sw / 2); c.lineTo(x + d + sw, y - sw / 2); }
+      c.stroke();
+      c.restore();
+      c.strokeStyle = weak ? col('--line-strong') : col('--pl-node');
+      c.lineWidth = 1;
+      c.strokeRect(x + 0.5, y - sw / 2 + 0.5, sw - 1, sw - 1);
+      x += sw + 5;
+      const many = row.names.length > 1;
+      text(t(weak ? (many ? 'planner.legend.sourceWeakMany' : 'planner.legend.sourceWeak') : (many ? 'planner.legend.sourceMany' : 'planner.legend.source'), { node: PL.orShort(row.names) }));
+    });
     return new Promise((res, rej) => cv.toBlob((blob) => (blob ? res(blob) : rej(new Error('toBlob'))), 'image/png'));
   }
 
@@ -1262,7 +1507,7 @@
   }
 
   /** Why the layer "Zdroj signálu" has nothing to show (its switch is greyed): 'noNode' | null. */
-  PL.srcWhy = () => (PL.P().node.mode === 'none' ? 'noNode' : null);
+  PL.srcWhy = () => (PL.anyNode() ? null : 'noNode');
 
   let wiToast = null;
   /** P: the layer "Předpověď u bodů" on / off with a short toast (+ why it has nothing to show right now). */
@@ -1353,11 +1598,12 @@
     const side = el('aside.sidebar.pl-side', { 'data-i18n-aria': 'planner.side.aria', 'aria-label': t('planner.side.aria') });
     root.append(el('div.layout.pl-layout', vstage, side));
 
-    const mk = { router: markerEl('router'), today: markerEl('today'), node: markerEl('node'), inlet: markerEl('inlet') };
-    // the "kabel" / "Wi-Fi" chip on the node's link to the router (SPEC 10.3; decorative - the Second AP card says it)
-    const link = el('div.pl-link', { hidden: true, 'aria-hidden': 'true' });
-    layer.append(link, mk.inlet, mk.today, mk.node, mk.router);
-    st = { el: vstage, canvas, layer, tl, tr, bottom, tools, legend, tip, views, bands, toolBtns, layersBtn, noplan, sbSlot, sb, sbTitle, sbSteps, sbCount, sbSub, sbAdd, sbBack, prog, progBar, mk, link, meas: new Map(), place };
+    const mk = { router: markerEl('router'), today: markerEl('today'), inlet: markerEl('inlet') };
+    // the node markers (SPEC 14.2), their "kabel" / "Wi-Fi" link chips (decorative - the node list says it) and the ghosts
+    // of the sources on other floors (SPEC 14.3) are created by place() as the project needs them
+    layer.append(mk.inlet, mk.today, mk.router);
+    st = { el: vstage, canvas, layer, tl, tr, bottom, tools, legend, tip, views, bands, toolBtns, layersBtn, noplan, sbSlot, sb, sbTitle, sbSteps, sbCount, sbSub, sbAdd, sbBack, prog, progBar, mk,
+      nodes: new Map(), links: new Map(), ghosts: new Map(), meas: new Map(), place };
     st.vp = WH.viewport(vstage, { onChange: () => { if (st.vp.panning) userNav = true; hideTip(); PL.requestDraw(); }, fitBox, dblClickFit: false });
     const touches = new Set();
     vstage.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') { touches.add(e.pointerId); if (touches.size > 1) userNav = true; } });
@@ -1374,6 +1620,8 @@
     PL.stage = st;
     PL.root = root;
     if (PL.mm && PL.mm.mount) PL.mm.mount(st);
+    // SPEC 14.3: the floor switch at the left edge (shown with two or more floors)
+    PL.fl.mount(st);
     setTool(S.tool, true);
 
     // canvas interaction: hover tooltip, click = tool action, double-click on empty space = fit
@@ -1434,9 +1682,11 @@
       if (tp.size === 1 && (tp.has('prefs') || tp.has('history'))) { PL.notifySide(); return; }
       const replaced = tp.has('project:replaced');
       if (replaced || tp.has('plan')) S.planVer += 1;
-      if (replaced || tp.has('plan') || tp.has('scale') || tp.has('model')) S.geomDirty = true;
+      // (floors: another floor's plan or a ceiling changed - the context traces the sources of other floors too)
+      if (replaced || tp.has('plan') || tp.has('scale') || tp.has('model') || tp.has('floors')) S.geomDirty = true;
       if (replaced || tp.has('measurements')) S.measVer += 1;
       if (replaced) {
+        PL.nodes.select(null);
         if (PL.mm && PL.mm.active) PL.mm.exit();
         S.cacheF = {};
         S.cacheC = {};
@@ -1513,7 +1763,7 @@
     K(['arrowleft', 'arrowright', 'arrowup', 'arrowdown'], 'planner.keys.arrows', (e) => {
       const d = ui().keys.arrowDelta(e, 0.25, 4);
       if (d) nudge('router', undefined, d.dx, d.dy);
-    }, { repeat: true, anyShift: true, order: 8, when: () => !!st && document.activeElement === st.canvas && PL.P().plan.rooms.length > 0 });
+    }, { repeat: true, anyShift: true, order: 8, when: () => !!st && document.activeElement === st.canvas && PL.P().plan.rooms.length > 0 && PL.routerHere() });
     K('enter', 'planner.keys.enter', () => {
       if (S.pending) { S.pending.submit(); return true; }
       const r = st.el.getBoundingClientRect();
@@ -1543,15 +1793,19 @@
     if (!p || !p.plan.rooms.length) return;
     const E = WH.engine.project;
     const off = (q) => q && !E.floorMaskAt(p.plan, q);
-    // measurements are not moved silently: the list flags them with an undoable "Posunout dovnitř" (SPEC 10)
-    const bad = off(p.net.router) || off(p.net.baseline) || off(p.node.pos);
+    // measurements are not moved silently: the list flags them with an undoable "Posunout dovnitř" (SPEC 10). Only what
+    // stands on this floor is checked against its plan (SPEC 14.3: the router may live on another floor)
+    const rHere = PL.routerHere();
+    const bad = (rHere && (off(p.net.router) || off(p.net.baseline))) || (p.nodes || []).some((n) => off(n.pos));
     if (!bad) return;
     const fix = (q) => (off(q) ? PL.pt(E.nearestFloor(p.plan, q)) : q);
     store().update((pr) => {
-      pr.net.router = fix(pr.net.router);
-      pr.net.baseline = fix(pr.net.baseline);
-      pr.node.pos = fix(pr.node.pos);
-    }, ['net', 'node'], { quiet: true });
+      if (rHere) {
+        pr.net.router = fix(pr.net.router);
+        pr.net.baseline = fix(pr.net.baseline);
+      }
+      for (const n of pr.nodes || []) if (n.pos) n.pos = fix(n.pos);
+    }, ['net', 'nodes'], { quiet: true });
     ui().toast({ i18n: 'planner.snapped' }, { kind: 'info' });
   }
 
@@ -1572,6 +1826,8 @@
     hide() {
       if (PL.mm && PL.mm.active) PL.mm.exit();
       S.visible = false;
+      // the header badge goes back to "Orientační odhad" (SPEC 14.1: it reads "Měřítko neověřeno" only here)
+      PL.scale.syncBadge();
       if (S.opt) S.opt.abort();
       closePending();
       hideTip();

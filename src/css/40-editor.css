@@ -188,10 +188,109 @@
 .ed-row { min-height: 36px; padding: 4px 8px; }
 .ed-row__dot { flex: none; width: 12px; height: 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--c); }
 
+/* ---- live dimensions (SPEC 14.1) ---------------------------------------------------- */
+.ed-pill--dim rect { fill-opacity: .86; }
+.ed-pill--dim text { font-size: 11px; font-weight: 600; }
+
+/* ---- floors (SPEC 14.3): tabs above the stage, the floor below as a faint outline ---------- */
+.ed-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.ed-main > .stage { flex: 1 1 auto; min-height: 0; }
+.ed-floors {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0;
+  padding: 4px 6px 4px 10px; border: 1px solid var(--line); border-radius: var(--r-lg);
+  background: var(--surface); box-shadow: var(--shadow-1);
+}
+.ed-floors[hidden] { display: none; }
+.ed-floors__label { display: inline-flex; align-items: center; gap: 6px; flex: none; color: var(--muted); font-size: var(--fs-sm); font-weight: 650; }
+.ed-floors__label .icon { color: var(--accent); }
+.ed-floors__tabs { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+.ed-floors__tabs::-webkit-scrollbar { display: none; }
+.ed-ftab {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  min-height: 32px; padding: 0 12px; border: 1px solid transparent; border-radius: var(--r-pill);
+  background: transparent; color: var(--ink-2); font: inherit; font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; cursor: pointer;
+}
+.ed-ftab:hover { background: var(--hover-wash); color: var(--ink); }
+.ed-ftab[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-soft-ink); }
+.ed-ftab:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.ed-ftab__name { max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
+.ed-ftab__n { min-width: 20px; justify-content: center; }
+.ed-floors__acts { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.ed-floors__ghost { flex: none; min-height: 32px; gap: 8px; }
+.ed-floors__ghost .switch__label { font-size: var(--fs-sm); }
+.ed-floors__ghost[hidden] { display: none; }
+@media (pointer: coarse) { .ed-ftab { min-height: 44px; } }
+.ed-ghost { opacity: .2; pointer-events: none; }
+.ed-ghost-room { fill: var(--map-room-line); fill-opacity: .25; stroke: var(--map-wall); stroke-width: 1.25; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.ed-ghost-wall { stroke: var(--map-wall); stroke-width: 4px; stroke-linecap: square; vector-effect: non-scaling-stroke; }
+
+/* ---- hint line action + the scale requests -------------------------------------------- */
+.ed-hint__live { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.ed-hint__act { display: inline-flex; flex: none; gap: 6px; margin-left: 2px; }
+.ed-hint__act[hidden] { display: none; }
+.ed-hint__act .btn { min-height: 26px; padding: 0 10px; }
+.ed-hint[data-kind="ask"] { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-soft-ink); }
+.ed-hint[data-kind="ask"] .ed-hint__icon { color: inherit; }
+
+
+/* ---- "Měřítko" card (top of the inspector) ------------------------------------------- */
+.ed-scale-card .card-body__inner > * + * { margin-top: 10px; }
+.ed-scale-card .card-body__inner > [hidden] { display: none; }
+.ed-scale-card.is-unverified { border-color: var(--warn); }
+.ed-scale-card.is-flash { animation: ed-flash 1.2s ease 1; }
+@keyframes ed-flash { 0%, 60% { box-shadow: 0 0 0 3px var(--focus-glow), var(--shadow-1); } 100% { box-shadow: var(--shadow-1); } }
+@media (prefers-reduced-motion: reduce) { .ed-scale-card.is-flash { animation: none; } }
+.ed-scale-status { display: inline-flex; align-items: center; flex: none; }
+.ed-scale-sum { display: flex; flex-direction: column; gap: 4px; }
+.ed-scale-total__row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+.ed-scale-total { color: var(--ink); font-size: var(--fs-xl); font-weight: 750; line-height: 1.15; }
+.ed-scale-total__lab { color: var(--muted); font-size: var(--fs-sm); }
+.ed-scale-ext { color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.4; overflow-wrap: anywhere; }
+.ed-scale-ext[hidden] { display: none; }
+.ed-scale-how { display: flex; align-items: flex-start; gap: 6px; color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.45; }
+.ed-scale-how .icon { flex: none; margin-top: 1px; }
+.ed-scale-how[hidden] { display: none; }
+.ed-scale-how[data-kind="ok"] .icon { color: var(--ok); }
+.ed-scale-how[data-kind="warn"] .icon { color: var(--warn); }
+.ed-scale-ask { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--accent-line); border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent-soft-ink); }
+.ed-scale-ask[hidden] { display: none; }
+.ed-scale-ask__t { display: flex; align-items: center; gap: 2px; font-size: var(--fs-md); font-weight: 750; color: var(--ink); }
+.ed-scale-ask__b { margin: 0; font-size: var(--fs-sm); line-height: 1.45; color: var(--ink-2); }
+.ed-scale-ask__alt { --gap: 4px; }
+.ed-scale-ask .btn--ghost { --btn-ink: var(--accent-soft-ink); }
+.ed-scale-form { display: flex; flex-direction: column; gap: 6px; }
+.ed-scale-form.is-off { opacity: .6; }
+.ed-scale-field .field__row { gap: 6px; }
+.ed-scale-field .field__row .input { flex: 1 1 auto; min-width: 0; max-width: 140px; }
+.ed-scale-field .field__row .btn { flex: none; }
+.ed-scale-prev, .ed-scale-excl { overflow-wrap: anywhere; }
+.ed-scale-prev[hidden], .ed-scale-excl[hidden] { display: none; }
+.ed-scale-methods { display: flex; flex-direction: column; gap: 10px; }
+.ed-scale-panel { display: flex; flex-direction: column; gap: 8px; }
+.ed-scale-panel[hidden] { display: none; }
+.ed-scale-text { margin: 0; color: var(--ink-2); font-size: var(--fs-sm); line-height: 1.45; }
+.ed-scale-open[hidden], .ed-scale-more[hidden], .ed-scale-warn[hidden], .ed-scale-sum[hidden], .ed-scale-empty[hidden] { display: none; }
+.ed-scale-more { border-top: 1px solid var(--line); }
+.ed-scale-more > summary { font-size: var(--fs-sm); }
+.ed-scale-line { color: var(--muted); font-size: var(--fs-xs); }
+.ed-scale-obj { padding-top: 10px; border-top: 1px dashed var(--line); }
+.ed-scale-obj.is-unverified .field__label { color: var(--warn-ink); }
+.ed-leave-pop .ed-scale-ask__alt { margin-top: 6px; }
+.ed-leave-pop .ed-scale-ask .btn--ghost, .ed-leave-pop .btn--ghost { justify-content: flex-start; }
+
+/* floor section of the plan card */
+.ed-floor-sec[hidden], .ed-ceil[hidden], .ed-floor-sec .cluster[hidden] { display: none; }
+.ed-ceil .field--inline .input { max-width: 96px; }
+
 /* ---- narrow screens ------------------------------------------------------------------ */
 @media (max-width: 899px) {
   /* horizontal rail: tools + undo/redo share the width (zoom moved to the floating .ed-zoombar) */
   .ed-rail { gap: 2px; }
+  .ed-main { flex: none; }
+  .ed-main > .stage { flex: none; height: clamp(300px, 58dvh, 620px); }
+  .ed-floors { padding: 4px 6px; }
+  .ed-floors__label > span:not(.hint) { display: none; }
+  .ed-floors__tabs { flex-basis: 0; }
   .ed-rail .tool-rail__btn { flex: 1 1 0; min-width: 32px; max-width: 48px; }
   .ed-opts { bottom: calc(var(--stage-pad) + 54px); }  /* above the zoom row */
   .ed-optbar { flex-wrap: nowrap; overflow-x: auto; border-radius: var(--r-lg); scrollbar-width: none; }
@@ -201,6 +300,10 @@
 @media (max-width: 600px) {
   .ed-topbar { gap: 8px; }
   .ed-hint { padding: 5px 10px 5px 8px; font-size: var(--fs-xs); }
+  /* a question with a button ("Víš, kolik má byt m²?" [Zadat plochu]): the button goes under the text instead of
+     squeezing it into a 90 px column of four lines */
+  .ed-hint:has(.ed-hint__act:not([hidden])) { flex-wrap: wrap; row-gap: 4px; }
+  .ed-hint__act { margin-left: 28px; }
   .ed-done { padding: 0 12px; gap: 6px; }
   .ed-done__to { display: none; }   /* "Hotovo ->": the tooltip and the header switch say where it goes */
   .ed-empty { padding: 96px 12px 56px; }

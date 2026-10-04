@@ -38,6 +38,12 @@
     'engine.svg.title': 'Půdorys pro Wi-Fi',
     'engine.svg.desc': 'Přibližný půdorys. Rozměry, umístění zdí a útlum ověř podle skutečnosti.',
     'engine.svg.todayLetter': 'D',
+    // SPEC 14: default names of nodes and floors
+    'engine.node.name': 'AP {n}',
+    'engine.floor.ground': 'Přízemí',
+    'engine.floor.upper': '{n}. patro',
+    'engine.floor.basement': 'Suterén',
+    'engine.floor.basementN': '{n}. suterén',
   };
 
   const en = {
@@ -67,6 +73,12 @@
     'engine.svg.title': 'Floor plan for Wi-Fi',
     'engine.svg.desc': 'Approximate floor plan. Check dimensions, wall positions and attenuation against reality.',
     'engine.svg.todayLetter': 'T',
+    // SPEC 14: default names of nodes and floors ({n} of engine.floor.upper is an English ordinal: 1st, 2nd ...)
+    'engine.node.name': 'AP {n}',
+    'engine.floor.ground': 'Ground floor',
+    'engine.floor.upper': '{n} floor',
+    'engine.floor.basement': 'Basement',
+    'engine.floor.basementN': 'Basement {n}',
   };
 
   E.text.add('cs', cs);

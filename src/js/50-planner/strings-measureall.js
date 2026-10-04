@@ -147,7 +147,7 @@
     // ---- hints -----------------------------------------------------------------------------------------------------
     'help.measureAll.t': 'Změřit vše',
     'help.measureAll.b': 'Jedno klepnutí změří všechno najednou: zjistí zařízení, vezme Wi-Fi údaje (z pomocníka nebo z vloženého výpisu), spustí rychlý test rychlosti a měření samo uloží. Co se nepovede, se přeskočí – zbytek zůstane.',
-    'help.measureAll.more': 'Měř se zařízením připojeným k hlavnímu routeru a s vypnutým druhým bodem. Měření jde kdykoli zrušit.',
+    'help.measureAll.more': 'Měř se zařízením připojeným k hlavnímu routeru a s vypnutými dalšími přístupovými body. Měření jde kdykoli zrušit.',
     'help.devinfo.t': 'Co se dá o zařízení zjistit?',
     'help.devinfo.b': 'Prohlížeč pozná systém, prohlížeč a někdy typ připojení (Wi-Fi nebo mobilní data). Název Wi-Fi, sílu signálu, kanál ani rychlost linky ale z bezpečnostních důvodů nevidí žádný prohlížeč – zjistíš je příkazem na počítači, pomocníkem pro Wi-Fi nebo v telefonu aplikací WiFiman.',
     'help.devinfo.more': 'Nic z toho se nikam neposílá. Uloží se jen to, co uložíš u měření.',
@@ -299,7 +299,7 @@
     // ---- hints -----------------------------------------------------------------------------------------------------
     'help.measureAll.t': 'Measure everything',
     'help.measureAll.b': 'One tap measures it all: it detects the device, takes the Wi-Fi details (from the helper or a pasted output), runs a quick speed test and saves the measurement by itself. Whatever fails is skipped – the rest stays.',
-    'help.measureAll.more': 'Measure with the device connected to the main router and the second access point switched off. You can cancel at any time.',
+    'help.measureAll.more': 'Measure with the device connected to the main router and the extra access points switched off. You can cancel at any time.',
     'help.devinfo.t': 'What can be found out about the device?',
     'help.devinfo.b': 'The browser knows the system, the browser and sometimes the connection type (Wi-Fi or mobile data). The Wi-Fi name, signal strength, channel and link rate are hidden from every browser for security reasons – get them with a command on a computer, with the Wi-Fi helper, or on a phone with the WiFiman app.',
     'help.devinfo.more': 'None of it is sent anywhere. Only what you save with a measurement is stored.',

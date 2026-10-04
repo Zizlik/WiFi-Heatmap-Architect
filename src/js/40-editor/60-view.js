@@ -33,6 +33,7 @@
   let needFit = true;
   let pendingTool = null;
   let checkTimer = 0;
+  let lastFloor = null;
 
   // ---------------------------------------------------------------------------------------------------------------
   // layout
@@ -138,10 +139,15 @@
 
     const hintIcon = el('span.ed-hint__icon');
     const hintText = el('span.ed-hint__text', { id: 'ed-hint-text' });
-    const hint = el('div.stage__hint.ed-hint', { role: 'status', 'aria-live': 'polite' }, hintIcon, hintText);
+    const hintLive = el('span.ed-hint__live', { role: 'status', 'aria-live': 'polite' }, hintIcon, hintText);
+    // an optional action of the hint ("Zadat plochu", "Označit vzdálenost") sits outside the live region
+    const hintAct = el('span.ed-hint__act', { hidden: true });
+    const hint = el('div.stage__hint.ed-hint', hintLive, hintAct);
     const done = el('button.btn.btn--primary.ed-done', { type: 'button', 'data-tip': 'editor.done.tip', 'data-kbd': '2' },
       el('span', { 'data-i18n': 'editor.done' }, t('editor.done')), WH.ui.icon('arrow-right', 18), el('span.ed-done__to', 'Wi-Fi'), el('span.btn__kbd.hide-touch', WH.ui.kbd('2')));
-    done.addEventListener('click', () => WH.views.go('planner'));
+    // leaving with an unverified scale offers the "Víš, kolik má byt m²?" prompt once (non-blocking, SPEC 14.1)
+    const leave = () => WH.views.go('planner');
+    done.addEventListener('click', () => { if (!ED.scaling.askOnLeave(done, leave)) leave(); });
     const topSlot = el('div.stage__slot.stage__tc.ed-topbar', hint, done);
     const opts = el('div.stage__slot.stage__bc.ed-opts', { hidden: true });
     const zoom = el('div.stage__slot.stage__br.ed-zoombar.show-mobile', el('div.toolbar', { role: 'group', 'data-i18n-aria': 'editor.aria.zoom' },
@@ -149,15 +155,18 @@
     const empty = el('div.ed-empty', { hidden: true },
       el('div.ed-empty__card',
         el('span.icon-badge', WH.ui.icon('rect', 24)),
-        el('div.ed-empty__title', { 'data-i18n': 'editor.empty.t' }, t('editor.empty.t')),
-        el('p.ed-empty__text', { 'data-i18n': 'editor.empty.b' }, t('editor.empty.b')),
+        el('div.ed-empty__title'),
+        el('p.ed-empty__text'),
         el('div.cluster.ed-empty__btns',
           WH.ui.button({ i18n: 'editor.bg.upload', icon: 'upload', variant: 'primary', size: 'sm', onClick: () => WH.io.openPicker({ asBackground: true }) }),
           WH.ui.button({ i18n: 'editor.demo', icon: 'home', size: 'sm', onClick: () => ED.newProject('demo') }))));
     const stage = el('div.stage.ed-stage', svg, topSlot, opts, zoom, empty);
+    // floor tabs above the stage (SPEC 14.3; shown from two floors on)
+    const floors = ED.floors.buildBar();
+    const main = el('div.ed-main', floors, stage);
     const aside = el('aside.sidebar.sidebar--inspector.ed-inspector', { 'data-i18n-aria': 'editor.aria.inspector' });
-    root.append(el('div.layout.layout--rail.ed-layout', rail, stage, aside));
-    Object.assign(dom, { root, rail, svg, stage, topSlot, hint, hintIcon, hintText, done, opts, zoom, empty, aside });
+    root.append(el('div.layout.layout--rail.ed-layout', rail, main, aside));
+    Object.assign(dom, { root, rail, svg, stage, topSlot, hint, hintIcon, hintText, hintAct, done, opts, zoom, empty, aside, floors, main });
     labelRail();
     svg.setAttribute('aria-label', t('editor.aria.stage'));
   }
@@ -167,6 +176,9 @@
   // ---------------------------------------------------------------------------------------------------------------
   function hintFor() {
     if (S.flash) return { text: t(S.flash.key, S.flash.params), kind: S.flash.kind, icon: S.flash.kind === 'warn' ? 'warning' : S.flash.kind === 'ok' ? 'check-circle' : 'info' };
+    // the scale comes first while it is not verified (SPEC 14.1): new plan / traced image / "Víš, kolik má byt m²?"
+    const sh = ED.scaling.hint();
+    if (sh) return sh;
     const d = S.draft;
     const pl = ED.plan();
     const icon = TOOL_ICON[S.tool];
@@ -196,12 +208,18 @@
   function paintHint() {
     if (!mounted) return;
     const h = hintFor();
-    const key = `${h.icon}|${h.kind || ''}|${h.text}`;
+    const acts = h.actions || [];
+    const key = `${h.icon}|${h.kind || ''}|${h.text}|${acts.map((a) => a.i18n).join(',')}`;
     if (key === lastHint) return;
     lastHint = key;
     dom.hint.dataset.kind = h.kind || '';
     dom.hintIcon.replaceChildren(WH.ui.icon(h.icon || 'info', 18));
     dom.hintText.textContent = h.text;
+    const hadFocus = dom.hintAct.contains(document.activeElement);
+    dom.hintAct.replaceChildren();
+    dom.hintAct.hidden = !acts.length;
+    for (const a of acts) dom.hintAct.append(WH.ui.button({ i18n: a.i18n, icon: a.icon, size: 'sm', variant: a.primary ? 'primary' : 'soft', onClick: () => a.fn() }));
+    if (hadFocus && dom.hintAct.firstChild) dom.hintAct.firstChild.focus();
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -265,6 +283,13 @@
     const pl = ED.plan();
     const empty = !pl || (!pl.rooms.length && !pl.walls.length && !pl.furniture.length && !pl.background);
     dom.empty.hidden = !empty || ED.tools.draftBusy() || S.tool === 'scale';
+    if (dom.empty.hidden) return;
+    // an empty floor of a house: draw it (the floor below shows faintly); the demo flat would replace the whole house
+    const floor = ED.floors.count() > 1;
+    const b = floor ? ED.floors.below() : null;
+    dom.empty.querySelector('.ed-empty__title').textContent = t(floor ? 'editor.empty.floorT' : 'editor.empty.t');
+    dom.empty.querySelector('.ed-empty__text').textContent = floor ? t(b && ED.pref('ghost') ? 'editor.empty.floorGhost' : 'editor.empty.floorB', { name: b ? b.name : '' }) : t('editor.empty.b');
+    dom.empty.querySelectorAll('.ed-empty__btns .btn')[1].hidden = floor;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -275,12 +300,14 @@
     checkTimer = setTimeout(() => {
       if (WH.store.gestureOpen) { scheduleCheck(300); return; }
       const pl = ED.plan();
-      S.issues = ED.check.run(pl, ED.mpp());
+      // the drawing problems, then the scale sanity checks (SPEC 14.1; the scale card on top already says it too)
+      S.issues = ED.check.run(pl, ED.mpp()).concat(ED.scaling.issues());
       if (S.focus) {
         const same = S.issues.find((i) => i.key === S.focus.key);
         S.focus = same || null;
       }
       ED.inspector.renderIssues();
+      ED.floors.syncBar();
       ED.req();
     }, ms === undefined ? 300 : ms);
   }
@@ -314,6 +341,9 @@
     K('ctrl+d', 'editor.keys.duplicate', () => { ED.duplicate(S.sel); }, { when: () => !!S.sel, order: order++ });
     K(['arrowleft', 'arrowright', 'arrowup', 'arrowdown'], 'editor.keys.nudge', (e) => ED.tools.nudge(e), { when: (e) => !!S.sel && !onControl(e), repeat: true, anyShift: true, order: order++ });
     K('escape', 'editor.keys.esc', () => { ED.tools.escape(); }, { when: () => ED.tools.canEscape(), allowTyping: false, order: order++ });
+    // floors (SPEC 14.3): the same keys as on the Wi-Fi map
+    K('ctrl+arrowup', 'editor.keys.floorUp', () => { ED.floors.step(1); }, { when: () => ED.floors.count() > 1, order: order++ });
+    K('ctrl+arrowdown', 'editor.keys.floorDown', () => { ED.floors.step(-1); }, { when: () => ED.floors.count() > 1, order: order++ });
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -327,19 +357,30 @@
       S.hover = null;
       S.focus = null;
       S.ignored.clear();
+      // per-project answers to the scale questions (SPEC 14.1)
+      S.scaleSnooze = false;
+      S.leaveAsked = false;
+      S.importEdit = false;
+      S.scaleAsk = null;   // set again by the 'project:created' / 'project:imported' that follows a new plan
       needFit = true;
       if (S.visible) { needFit = false; S.vp.fit(fitBox(), { animate: false }); }
       ED.emit('sel', null);
     }
     if (S.sel && !ED.find(S.sel)) ED.select(null);
     if (S.hover && !ED.find(S.hover)) S.hover = null;
-    const geo = tp.includes('plan') || tp.includes('scale') || tp.includes('model') || tp.includes('project:replaced');
+    // another active floor (switched here or in the Wi-Fi view) = another plan on the stage
+    const fl = ED.activeFloorId();
+    const floorChanged = fl !== lastFloor;
+    lastFloor = fl;
+    if (floorChanged && tp.indexOf('project:replaced') < 0) { S.focus = null; if (S.sel && !ED.find(S.sel)) ED.select(null); }
+    const geo = floorChanged || tp.includes('plan') || tp.includes('scale') || tp.includes('model') || tp.includes('goal') || tp.includes('floors') || tp.includes('project:replaced');
     if (geo) { ED.req('world'); ED.inspector.planChanged(); scheduleCheck(); }
     if (tp.includes('net')) ED.req('overlay');
     if (tp.includes('history')) {
       paintHistory();
       if (ev.source !== 'live') { ED.inspector.planChanged(); scheduleCheck(); }
     }
+    ED.floors.syncBar();
     paintEmpty();
     paintHint();
   }
@@ -349,12 +390,14 @@
     const kind = pendingTool;
     pendingTool = null;
     ED.tools.setTool('rect');
-    if (kind === 'tracing_image') ED.flash('editor.hint.trace', null, 'info'); // a blank plan: the tool's own hint
+    // a traced image: the hint line asks for the scale first (ED.scaling.hint); once it is set, the tool's own hint
+    if (kind === 'tracing_image' && ED.scaling.verified()) ED.flash('editor.hint.trace', null, 'info');
   }
 
   function onNewPlan(kind) {
     if (kind !== 'tracing_image' && kind !== 'blank') return;
     pendingTool = kind;
+    S.scaleAsk = kind === 'blank' ? 'blank' : 'image';  // the hint line asks for the scale first (SPEC 14.1)
     if (mounted && S.visible) applyPending();
   }
 
@@ -376,18 +419,27 @@
     ED.on('sel', () => { ED.inspector.showTop(); ED.inspector.markSelected(); paintHint(); });
     ED.on('prefs', (k) => { if (k !== 'bgOpacity') ED.inspector.planChanged(); if (k === 'preset' || k === 'doorW') paintHint(); });
     ED.on('focus', () => ED.inspector.renderIssues());
-    WH.store.on(['plan', 'scale', 'net', 'model', 'project:replaced', 'history'], onStore);
+    ED.on('scale', () => { paintHint(); scheduleCheck(); });
+    WH.store.on(['plan', 'scale', 'net', 'model', 'goal', 'floors', 'nodes', 'view', 'project:replaced', 'history'], onStore);
     WH.bus.on('lang:changed', () => {
       if (!mounted) return;
       labelRail();
       dom.svg.setAttribute('aria-label', t('editor.aria.stage'));
       buildOpts();
+      // the floor tabs carry their own texts
+      const fb = ED.floors.buildBar();
+      dom.floors.replaceWith(fb);
+      dom.floors = fb;
+      ED.floors.syncBar();
       lastHint = '';
       paintHint();
+      paintEmpty();
       ED.inspector.refresh();
+      scheduleCheck(0);
       ED.renderAll();
     });
     mounted = true;
+    lastFloor = ED.activeFloorId();
     dom.stage.dataset.tool = S.tool;
     paintRail();
     buildOpts();
@@ -400,12 +452,15 @@
     S.vp.resize();
     if (needFit) { needFit = false; S.vp.fit(fitBox(), { animate: false, silent: true }); }
     applyPending();
+    lastFloor = ED.activeFloorId();
+    ED.floors.syncBar();
     ED.inspector.refresh();
     paintRail();
     paintEmpty();
     paintHint();
     scheduleCheck(60);
     ED.renderAll();
+    ED.scaling.consumePending();
   }
 
   function hide() {
@@ -421,6 +476,7 @@
     return [
       { target: '#view-editor .ed-rail', title: 'editor.tour.tools.t', body: 'editor.tour.tools.b', placement: 'right' },
       { target: '#view-editor .ed-hint', title: 'editor.tour.hint.t', body: 'editor.tour.hint.b', placement: 'bottom' },
+      { target: '#view-editor .ed-scale-card', title: 'editor.tour.scale.t', body: 'editor.tour.scale.b', placement: 'left', optional: true },
       { target: '#view-editor .ed-top-card', title: 'editor.tour.inspector.t', body: 'editor.tour.inspector.b', placement: 'left', optional: true },
       { target: '#view-editor .ed-check-card', title: 'editor.tour.check.t', body: 'editor.tour.check.b', placement: 'left', optional: true },
       { target: '#view-editor .ed-done', title: 'editor.tour.done.t', body: 'editor.tour.done.b', placement: 'bottom' },

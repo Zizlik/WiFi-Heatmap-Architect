@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { E } from './_load.mjs';
-import { n, room, wall, door, makeProject } from './_helpers.mjs';
+import { n, room, wall, door, makeProject, DEMO_BEDROOM } from './_helpers.mjs';
 
 const M = E.model;
 const P = E.project;
@@ -137,7 +137,7 @@ test('a wired AP next to a point: large delta, the node serves it, only plan / l
   assert.ok(e.speed.predDown > 300, `wired AP: ${e.speed.predDown}`);
   assert.equal(e.speed.limitedBy, null);
   // node.maxMbps = the device's ceiling
-  const pc = P.sanitize({ ...p, node: { ...p.node, maxMbps: 150 } });
+  const pc = P.sanitize({ ...p, nodes: [{ ...p.nodes[0], maxMbps: 150 }] });
   const [c] = run(pc);
   close(c.speed.predDown, 150, 1e-9);
   assert.equal(c.speed.limitedBy, 'device');
@@ -185,11 +185,11 @@ test('a repeater far from the router behind 2 walls: strong signal near it, but 
   assert.equal(home.delta, 0);
   assert.equal(home.speed.predDown, 450);
   // wireless mesh: the same with 0.6
-  const pm = P.sanitize({ ...p, node: { ...p.node, mode: 'mesh_wifi' } });
+  const pm = P.sanitize({ ...p, nodes: [{ ...p.nodes[0], mode: 'mesh_wifi' }] });
   const lm = S.nodeLink(ctx, M.fieldParams(pm, 'trial', { offsets: offs }), CURVE);
   close(lm.down / link.down, 0.6 / 0.5, 1e-9);
   // a repeater one wall closer (better uplink): a ceiling below the uplink binds as the device
-  const pd = P.sanitize({ ...p, node: { ...p.node, pos: n(660, 450), maxMbps: 20 } });
+  const pd = P.sanitize({ ...p, nodes: [{ ...p.nodes[0], pos: n(660, 450), maxMbps: 20 }] });
   const ld = S.nodeLink(ctx, M.fieldParams(pd, 'trial', { offsets: offs }), CURVE);
   assert.ok(ld.down > 20, `uplink ${ld.down}`);
   const md = A.predictAtMeasurements(ctx, P.sanitize({ ...pd, measurements: [meas('mid', 620, 450, -75, 25, 10)] }), { offsets: offs, curves: { 5: CURVE } })[0];
@@ -207,7 +207,7 @@ test('nodeLink: wired / no curve / too weak / another band / an explicit backhau
   const st = M.fieldParams(p, 'trial');
   const w = S.nodeLink(ctx, st, CURVE);
   assert.deepEqual({ wl: w.wireless, s: w.signal, d: w.down, k: w.known, c: w.capDown, f: w.factor }, { wl: false, s: null, d: null, k: true, c: 500, f: null });
-  const pr = P.sanitize({ ...p, node: { ...p.node, mode: 'repeater', maxMbps: null } });
+  const pr = P.sanitize({ ...p, nodes: [{ ...p.nodes[0], mode: 'repeater', maxMbps: null }] });
   const sr = M.fieldParams(pr, 'trial');
   const nc = S.nodeLink(ctx, sr, null);
   assert.equal(nc.known, false);
@@ -428,7 +428,7 @@ test('deterministic, input order kept, never throws on odd data (reasons instead
   }
   // a broken node (NaN position / power) is no node; an infinite power is ignored, never NaN
   for (const nd of [{ mode: 'ap_cable', pos: { x: NaN, y: 0.4 }, power: 'x' }, { ...node('repeater', 880, 450), power: Infinity }]) {
-    const rr = A.predictAtMeasurements(ctx, { ...p, node: nd });
+    const rr = A.predictAtMeasurements(ctx, { ...p, nodes: [nd] });
     assert.ok(rr.every((e) => e.reason === null && Number.isFinite(e.delta) && Number.isFinite(e.predicted)), JSON.stringify(nd));
   }
   // a half-built project (no view / goal / rooms array) still gives entries, no exception
@@ -472,25 +472,33 @@ test('summarizePredictions: counts, mean, best / worst, rooms, speed counts', ()
 
 test('node.maxMbps: null by default, 10-10000, sanitized, serialized, round trips (SVG too), in nodeParams', () => {
   const d = P.create({ template: 'demo', lang: 'cs' });
-  assert.equal(d.node.maxMbps, null);
-  assert.equal(P.defaults().node.maxMbps, null);
+  assert.deepEqual(d.nodes, []);
+  assert.equal(P.newNode(d).maxMbps, null);
   const cases = [[300, 300], [5, 10], [99999, 10000], [299.6, 300], ['300', null], [NaN, null], [null, null], [undefined, null], [-1, null], [0, null], [Infinity, null]];
   for (const [inp, want] of cases) {
     const raw = JSON.parse(JSON.stringify(d));
-    raw.node.maxMbps = inp;
-    if (inp === undefined) delete raw.node.maxMbps;
-    assert.equal(P.sanitize(raw).node.maxMbps, want, `maxMbps ${inp}`);
+    raw.nodes = [{ ...P.newNode(d, { mode: 'repeater' }), maxMbps: inp }];
+    if (inp === undefined) delete raw.nodes[0].maxMbps;
+    assert.equal(P.sanitize(raw).nodes[0].maxMbps, want, `maxMbps ${inp}`);
+    // the single node of older files (SPEC 14.2 migration) the same way
+    const old = JSON.parse(JSON.stringify(d));
+    delete old.nodes;
+    old.node = { mode: 'repeater', pos: DEMO_BEDROOM, maxMbps: inp };
+    if (inp === undefined) delete old.node.maxMbps;
+    assert.equal(P.sanitize(old).nodes[0].maxMbps, want, `legacy maxMbps ${inp}`);
   }
-  const p = P.sanitize({ ...d, node: { ...d.node, mode: 'repeater', maxMbps: 300 } });
-  assert.equal(P.sanitize(P.serialize(p)).node.maxMbps, 300);
+  const p = P.sanitize({ ...d, nodes: [{ ...P.newNode(d, { mode: 'repeater' }), maxMbps: 300 }] });
+  assert.equal(P.sanitize(P.serialize(p)).nodes[0].maxMbps, 300);
   assert.deepEqual(P.sanitize(P.serialize(p)), P.sanitize(p));
-  assert.deepEqual(P.parseSvgText(P.buildSvg(p)).project.node, p.node);
+  assert.deepEqual(P.parseSvgText(P.buildSvg(p)).project.nodes, p.nodes);
+  assert.equal(JSON.parse(P.serialize(p)).project.node.maxMbps, 300, 'older builds read the legacy node = nodes[0]');
   assert.equal(M.nodeParams(p).maxMbps, 300);
-  assert.equal(M.nodeParams({ ...p, node: { ...p.node, maxMbps: null } }).maxMbps, null);
+  assert.equal(M.nodeParams({ ...p, nodes: [{ ...p.nodes[0], maxMbps: null }] }).maxMbps, null);
   // older files (no key) load with null
-  const old = JSON.parse(P.serialize(d));
+  const old = JSON.parse(P.serialize(p));
+  delete old.project.nodes;
   delete old.project.node.maxMbps;
-  assert.equal(P.sanitize(old).node.maxMbps, null);
+  assert.equal(P.sanitize(old).nodes[0].maxMbps, null);
 });
 
 test('whatIfActive: router moved (> 1 px) or a node on', () => {
@@ -498,7 +506,7 @@ test('whatIfActive: router moved (> 1 px) or a node on', () => {
   assert.equal(A.whatIfActive(p), false);
   assert.equal(A.whatIfActive(P.sanitize({ ...p, net: { ...p.net, router: n(180.5, 450) } })), false);
   assert.equal(A.whatIfActive(P.sanitize({ ...p, net: { ...p.net, router: n(190, 450) } })), true);
-  assert.equal(A.whatIfActive(P.sanitize({ ...p, node: node('ap_cable', 880, 450) })), true);
+  assert.equal(A.whatIfActive(P.sanitize({ ...p, nodes: [node('ap_cable', 880, 450)] })), true);
 });
 
 test('the what-if is fast (demo, 30 measurements, repeater, curves built: < 120 ms)', () => {
@@ -509,7 +517,7 @@ test('the what-if is fast (demo, 30 measurements, repeater, curves built: < 120 
     if (!P.floorMaskAt(p.plan, q)) continue;
     ms.push({ id: `m${k}`, x: q.x, y: q.y, band: 5, value: k % 3 ? -50 - (k % 30) : null, name: 'x', download: 20 + 10 * (k % 30), upload: 10 + 3 * (k % 30), device: 'Telefon', t: k });
   }
-  const pr = P.sanitize({ ...p, measurements: ms, node: { ...p.node, mode: 'repeater', maxMbps: 300 } });
+  const pr = P.sanitize({ ...p, measurements: ms, nodes: [{ ...node('repeater', 0, 0), pos: DEMO_BEDROOM, maxMbps: 300 }] });
   const ctx = M.createContext(pr);
   const offs = M.offsets(ctx, pr);
   A.predictAtMeasurements(ctx, pr, { offsets: offs });

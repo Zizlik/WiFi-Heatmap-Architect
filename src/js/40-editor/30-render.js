@@ -25,6 +25,7 @@
   let lastScale = 0;
   let bg = null;
   let bgSrc = null;
+  let ghostRef = null;
   const layers = {};
   let ov = null;
   let fontFamily = '';
@@ -48,7 +49,7 @@
       + '<pattern id="ed-hatch" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)"><rect class="ed-hatch-bg" width="8" height="8"/><path class="ed-hatch-line" d="M0 0V8"/></pattern>'
       + '</defs><rect class="ed-dots" width="100%" height="100%" fill="url(#ed-dots)"/><g class="ed-world">'
       + '<image class="ed-bg" x="0" y="0" width="1080" height="942" preserveAspectRatio="none" style="display:none"/>'
-      + '<g class="ed-rooms"/><g class="ed-furns"/><g class="ed-walls"/><g class="ed-doors"/><g class="ed-labels"/>'
+      + '<g class="ed-ghost"/><g class="ed-rooms"/><g class="ed-furns"/><g class="ed-walls"/><g class="ed-doors"/><g class="ed-labels"/>'
       + '</g><g class="ed-ov"/>';
     world = svg.querySelector('.ed-world');
     dotPat = svg.querySelector('#ed-dots');
@@ -57,7 +58,8 @@
     hatchPat = svg.querySelector('#ed-hatch');
     bg = svg.querySelector('.ed-bg');
     bgSrc = null;
-    for (const k of ['rooms', 'furns', 'walls', 'doors', 'labels']) { layers[k] = svg.querySelector(`.ed-${k}`); layers[k]._map = new Map(); }
+    for (const k of ['ghost', 'rooms', 'furns', 'walls', 'doors', 'labels']) { layers[k] = svg.querySelector(`.ed-${k}`); layers[k]._map = new Map(); }
+    ghostRef = null;
     ov = svg.querySelector('.ed-ov');
     fontFamily = getComputedStyle(svg).fontFamily || 'sans-serif';
   }
@@ -145,7 +147,22 @@
     }
     bg.style.display = src && ED.pref('bg') ? '' : 'none';
     bg.setAttribute('opacity', String(ED.bgAlpha()));
+    ghostRender();
     for (const id of labelCache.keys()) if (!layers.labels._map.has(id)) labelCache.delete(id);
+  }
+
+  /** The floor below the active one, faint under the plan (SPEC 14.3: aligning the walls of two floors). Rebuilt only
+   *  when that plan changes (it cannot be edited while another floor is active). */
+  function ghostRender() {
+    const gp = ED.floors ? ED.floors.ghostPlan() : null;
+    if (gp === ghostRef) return;
+    ghostRef = gp;
+    const parts = [];
+    if (gp) {
+      for (const r of gp.rooms) parts.push(`<polygon class="ed-ghost-room" points="${ptsAttr(r.points)}"/>`);
+      for (const w of gp.walls) parts.push(`<line class="ed-ghost-wall" x1="${f2(w.a.x * W)}" y1="${f2(w.a.y * H)}" x2="${f2(w.b.x * W)}" y2="${f2(w.b.y * H)}"/>`);
+    }
+    layers.ghost.innerHTML = parts.join('');
   }
 
   /** Jamb ticks of a door: screen-constant length across its wall (world coordinates, so they follow the zoom). */
@@ -327,12 +344,51 @@
     return out;
   }
 
-  function pill(parts, x, y, text) {
-    const w = textW(text, 600) * 12 + 16;
+  function pill(parts, x, y, text, small) {
+    const fs = small ? 11 : 12;
+    const h = small ? 18 : 22;
+    const w = textW(text, 600) * fs + (small ? 12 : 16);
     const sz = ED.S.vp.size;
     const px = clamp(x, w / 2 + 4, Math.max(w / 2 + 4, sz.w - w / 2 - 4));
-    const py = clamp(y, 15, Math.max(15, sz.h - 15));
-    parts.push(`<g class="ed-pill" transform="translate(${f2(px)} ${f2(py)})"><rect x="${f2(-w / 2)}" y="-11" width="${f2(w)}" height="22" rx="11"/><text y="0.5">${esc(text)}</text></g>`);
+    const py = clamp(y, h / 2 + 4, Math.max(h / 2 + 4, sz.h - h / 2 - 4));
+    parts.push(`<g class="ed-pill${small ? ' ed-pill--dim' : ''}" transform="translate(${f2(px)} ${f2(py)})"><rect x="${f2(-w / 2)}" y="${-h / 2}" width="${f2(w)}" height="${h}" rx="${h / 2}"/><text y="0.5">${esc(text)}</text></g>`);
+  }
+
+  /** Live dimensions (SPEC 14.1): the length of every edge of a polygon that is long enough on screen, as a small pill
+   *  just outside the edge (`closed` = polygon, else an open chain). */
+  function edgeDims(parts, pts, closed) {
+    const sp = pts.map(scr);
+    const n = sp.length;
+    if (n < 2) return;
+    let cx = 0;
+    let cy = 0;
+    for (const q of sp) { cx += q.x; cy += q.y; }
+    cx /= n;
+    cy /= n;
+    for (let i = 0; i < (closed ? n : n - 1); i += 1) {
+      const a = sp[i];
+      const b = sp[(i + 1) % n];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      if (len < 64) continue;
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      let nx = -(b.y - a.y) / len;
+      let ny = (b.x - a.x) / len;
+      if (closed && (mx - cx) * nx + (my - cy) * ny < 0) { nx = -nx; ny = -ny; }
+      // clear of the edge and its midpoint handle whatever the edge's direction: half the pill's extent along the
+      // normal + a gap (a vertical edge needs half the pill's WIDTH, a horizontal one half its height)
+      const text = ED.fmtM(ED.dpx(pts[i], pts[(i + 1) % n]));
+      const d = 9 + Math.abs(nx) * (textW(text, 600) * 11 + 12) / 2 + Math.abs(ny) * 9;
+      pill(parts, mx + nx * d, my + ny * d, text, true);
+    }
+  }
+
+  /** "3,2 × 4,0 m · 12,8 m²" of an axis-aligned rectangle (rooms) / "3,2 × 4,0 m" (furniture). */
+  function rectLabel(a, b, withArea) {
+    const w = Math.abs(b.x - a.x) * W;
+    const h = Math.abs(b.y - a.y) * H;
+    const base = `${ED.fmtM(w, false)} × ${ED.fmtM(h)}`;
+    return withArea ? `${base} · ${WH.util.fmt(w * h * ED.mpp() * ED.mpp(), 1)}${WH.util.NBSP}m²` : base;
   }
 
   function outline(parts, o, cls) {
@@ -367,6 +423,11 @@
     const sel = S.sel ? ED.find(S.sel) : null;
     if (sel) {
       outline(parts, sel, 'ed-sel');
+      // live dimensions of the selection: edge lengths of a room / furniture piece, the length of a wall or door
+      if (S.tool === 'select') {
+        if (sel.points) edgeDims(parts, sel.points, true);
+        else if (!(S.drag && S.drag.label)) edgeDims(parts, [sel.a, sel.b], false);
+      }
       if (S.tool === 'select') {
         for (const h of handles()) {
           const hot = S.hoverHandle && S.hoverHandle.kind === h.kind && S.hoverHandle.i === h.i;
@@ -378,11 +439,13 @@
     }
     draftRender(parts, S);
     // read-only markers (they are moved in the Wi-Fi view)
+    // (only the ones on the floor shown here: net.routerFloor / net.opticFloor, SPEC 14.3)
     if (pr && pr.net && pl.rooms.length) {
       const G = WH.engine.geom;
-      if (pr.net.optic) marker(parts, pr.net.optic, 'ed-marker--inlet', 'globe');
-      if (pr.net.baseline && pr.net.router && G.dist(pr.net.baseline, pr.net.router) > 2) marker(parts, pr.net.baseline, 'ed-marker--today', 'home');
-      if (pr.net.router) marker(parts, pr.net.router, 'ed-marker--router', 'router');
+      const rHere = ED.onActiveFloor(pr.net.routerFloor);
+      if (pr.net.optic && ED.onActiveFloor(pr.net.opticFloor)) marker(parts, pr.net.optic, 'ed-marker--inlet', 'globe');
+      if (rHere && pr.net.baseline && pr.net.router && G.dist(pr.net.baseline, pr.net.router) > 2) marker(parts, pr.net.baseline, 'ed-marker--today', 'home');
+      if (rHere && pr.net.router) marker(parts, pr.net.router, 'ed-marker--router', 'router');
     }
     ov.innerHTML = parts.join('');
   }
@@ -401,10 +464,15 @@
         const pts = WH.engine.geom.rectPoints(d.a, cur);
         parts.push(`<polygon class="ed-draft" points="${pstr(pts)}"/>`);
         const q = scr(cur);
-        pill(parts, q.x + 18, q.y + 26, `${ED.fmtM(Math.abs(cur.x - d.a.x) * W, false)} × ${ED.fmtM(Math.abs(cur.y - d.a.y) * H)}`);
+        pill(parts, q.x + 18, q.y + 26, rectLabel(d.a, cur, S.tool === 'rect'));
       } else if (d.kind === 'poly' && d.pts.length) {
         const pts = d.pts.concat(cur && !S.closeHover ? [cur] : []);
-        if (pts.length >= 3) parts.push(`<polygon class="ed-draft ed-draft--fill" points="${pstr(pts)}"/>`);
+        if (pts.length >= 3) {
+          parts.push(`<polygon class="ed-draft ed-draft--fill" points="${pstr(pts)}"/>`);
+          // the area of the outline so far, in the middle of it
+          const c = WH.engine.geom.polygonCentroid(pts);
+          if (WH.engine.geom.pointInPolygon(c, pts)) { const q = scr(c); pill(parts, q.x, q.y, `≈${WH.util.NBSP}${ED.fmtArea(pts)}`, true); }
+        }
         parts.push(`<polyline class="ed-draft-line" points="${pstr(d.pts)}"/>`);
         const last = d.pts[d.pts.length - 1];
         const tgt = S.closeHover ? d.pts[0] : cur;

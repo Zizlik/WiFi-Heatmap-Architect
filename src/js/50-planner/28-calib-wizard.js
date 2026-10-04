@@ -347,11 +347,11 @@
     if (S.q === 'coarse') return tpCache.v;   // while dragging: the last full-quality numbers
     const g = p.goal;
     const lim = PL.speedLimits(p);
-    const key = [S.offsKey, a.ctx.version, a.band, a.params.trial.router.x, a.params.trial.router.y, a.params.today.router.x, a.params.today.router.y, p.node.mode,
+    const key = [S.offsKey, a.ctx.version, a.band, a.params.trial.router.x, a.params.trial.router.y, a.params.today.router.x, a.params.today.router.y, PL.nodeList().map((n) => n.id).join(','),
       g.targetDown, g.targetUp, g.device, JSON.stringify(lim), g.room, g.excluded.join(','), a.grid.cell, a.trial.length].join('|');
     if (key === tpCache.key) return tpCache.v;
     tpCache = { key, v: null };
-    if (p.node.mode !== 'none') return null;
+    if (PL.anyNode()) return null;
     let meas;
     try { meas = PL.filledMeasurements(); } catch (e) { return null; }
     // Auto (SPEC 13): the per-band curves, every place on the band a steering device would use
@@ -623,6 +623,13 @@
       requestAnimationFrame(() => open({ ...opts, from: null }));
       return;
     }
+    // SPEC 14.3: the guide measures around the router - on its floor (where the model learns the walls without a
+    // ceiling in between)
+    if (PL.multi() && !PL.routerHere() && PL.fl.go(P().net.routerFloor, { quiet: true })) {
+      ui().toast({ text: t('planner.fl.calibFloor', { floor: PL.floorName(P().net.routerFloor) }) }, { kind: 'info' });
+      requestAnimationFrame(() => open({ ...opts, from: null }));
+      return;
+    }
     const p = P();
     if (!p.plan.rooms.length) { ui().toast({ i18n: 'planner.noplan.t' }, { kind: 'warn' }); return; }
     validate();
@@ -708,7 +715,7 @@
     if (!panel || !state || !C.isOpen()) return;
     const p = P();
     const c = counts();
-    const key = JSON.stringify([state.step, state.cur, state.band, state.spots.map((s) => s.state + (s.mid || '') + (speedOnly(s) ? 'v' : '') + (fin(s.ax) ? 'a' : '')), PL.moved(), p.node.mode,
+    const key = JSON.stringify([state.step, state.cur, state.band, state.spots.map((s) => s.state + (s.mid || '') + (speedOnly(s) ? 'v' : '') + (fin(s.ax) ? 'a' : '')), PL.moved(), PL.anyNode(),
       run && run.id, busy(), lastSaved && lastSaved.text, picking, WH.i18n.lang, fitSig(p.model.fit), p.view.calibrate, isSheet(), p.measurements.filter((m) => m.wifi && m.wifi.band).length]);
     if (!force && key === renderKey) return;
     renderKey = key;
@@ -808,7 +815,7 @@
       body.push(el('p.pl-cw__p.text-muted', t('planner.cw.r.no')));
       foot.push(btn({ i18n: 'planner.cw.r.yes', icon: 'check', variant: 'primary', onClick: () => { store().setPref('planner.baselineOk', PL.posKey(P().net.baseline)); go('band'); } }, 'yes'));
     }
-    if (p.node.mode !== 'none') body.push(el('div.notice', ui().icon('info', 18), el('span', t('planner.cw.r.node'))));
+    if (PL.anyNode()) body.push(el('div.notice', ui().icon('info', 18), el('span', t('planner.cw.r.node'))));
     return { body, foot };
   }
 

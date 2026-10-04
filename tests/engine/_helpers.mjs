@@ -34,6 +34,15 @@ export function makeProject({ rooms = [], walls = [], doors = [], furniture = []
   return E.project.sanitize(raw);
 }
 
+/** A complete node of SPEC 14.2 (uplink router, enabled), for tests that need one AP / mesh / repeater. */
+export const mkNode = (fields = {}) => ({ id: 'node-1', name: 'AP 2', mode: 'ap_cable', pos: { x: 0.4, y: 0.4 }, bands: { '2.4': true, '5': true, '6': false }, power: 0, backhaulBand: 5, backhaulThreshold: -67, maxMbps: null, uplink: 'router', enabled: true, ...fields });
+
+/** The project with exactly one node: its current first node (if any) with `fields` on top, sanitized. */
+export const withNode = (p, fields = {}) => E.project.sanitize({ ...p, nodes: [{ ...mkNode(), ...(p.nodes && p.nodes[0] ? p.nodes[0] : {}), ...fields }] });
+
+/** Where the (off) second node of the old demo waited: the bedroom (P(2.6, 3.6) m). */
+export const DEMO_BEDROOM = { x: 0.303704, y: 0.550955 };
+
 /** A context for a project. */
 export const ctxOf = (p) => E.model.createContext(p);
 

@@ -396,19 +396,30 @@
    * Uses the DEFAULT model of the project (any existing fit is ignored), net.baseline, goal.device. null when there is
    * no measured signal to fit (nothing to store).
    * @param {object} project
-   * @param {{band?:2.4|5|6, device?:string, soften?:number, prior?:object, at?:number}} [opts] at = timestamp (default now)
+   * Several floors (SPEC 14.3): the fit learns from ONE floor's measurements - opts.floor, default net.routerFloor (n and
+   * the walls are learnt where no ceiling is in the way); the other floors' points still calibrate the router strength
+   * live (model.offsets pools every floor).
+   * @param {{band?:2.4|5|6, device?:string, soften?:number, prior?:object, at?:number, floor?:string}} [opts] at =
+   *        timestamp (default now)
    * @returns {object|null} {n, wallFactor, method, count, at, fitted, sig, byBand:{...}} - see project.cleanFit
    */
   function fitProject(project, opts) {
     const o = opts || {};
-    const ctx = model.createContext(project, { fit: false });
-    const device = o.device !== undefined ? o.device : project.goal && project.goal.device;
+    const pf = fitView(project, o.floor);
+    const ctx = model.createContext(pf, { fit: false });
+    const device = o.device !== undefined ? o.device : pf.goal && pf.goal.device;
     // points without a known band take part on their inferred band (SPEC 13; lower weight, no say in the shape)
-    const list = model.resolveBands(ctx, project, { soften: o.soften });
-    const r = fitCalibration(ctx, list, { band: o.band, baseline: project.net.baseline, device, soften: o.soften, prior: o.prior });
+    const list = model.resolveBands(ctx, pf, { soften: o.soften });
+    const r = fitCalibration(ctx, list, { band: o.band, baseline: pf.net.baseline, device, soften: o.soften, prior: o.prior });
     if (!r.total) return null;
     const bands = Object.keys(r.byBand).map(Number);
-    return E.project.cleanFit({ ...r, at: isNum(o.at) ? o.at : Date.now(), sig: fitSignature(project, bands) });
+    return E.project.cleanFit({ ...r, at: isNum(o.at) ? o.at : Date.now(), sig: fitSignature(pf, bands) });
+  }
+
+  /** The project as seen from the floor a fit is made on (SPEC 14.3): `floor`, default net.routerFloor. */
+  function fitView(project, floor) {
+    const id = floor !== undefined && floor !== null ? floor : project && project.net ? project.net.routerFloor : undefined;
+    return id !== undefined && id !== null && E.project.atFloor ? E.project.atFloor(project, id) : project;
   }
 
   /**
@@ -419,7 +430,7 @@
     const f = project && project.model && project.model.fit;
     if (!f || typeof f.sig !== 'string' || !f.byBand) return false;
     const bands = Object.keys(f.byBand).map(Number);
-    return fitSignature(project, bands) !== f.sig;
+    return fitSignature(fitView(project), bands) !== f.sig;
   }
 
   Object.assign(model, { fitCalibration, fitProject, fitStale, fitSignature, FIT });

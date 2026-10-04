@@ -10,7 +10,8 @@
   PL.H = H;
   const S = (PL.S = {
     visible: false, tool: 'router', ctx: null, geomDirty: true, offs: null, cal: null, offsKey: '', measVer: 0, planVer: 0,
-    a: null, q: null, sp: null, mode: 'signal', dim: false, heat: null, heatCell: 4, hatch: null, cont: null, contKey: '',
+    a: null, q: null, sp: null, mode: 'signal', dim: false, heat: null, heatCell: 4, hatch: null, cont: null, contCache: new Map(), contCommon: '',
+    zoneA: null, zones: { weak: null, src: null, present: [] },
     cacheF: {}, cacheC: {}, bufC: null, rgba: {}, frame: null, stale: true,
     peek: null,   // id of a measurement dot shown for a moment while the layer "Body měření" is off (20-stage showMeas)
   });
@@ -57,14 +58,59 @@
   PL.m = (n, d = 1) => WH.util.fmt(n, d) + WH.util.NBSP + 'm';
   PL.band = (b) => t(b === 2.4 ? 'planner.band.b24' : 'planner.band.b' + b);
   PL.mbps = (n) => WH.engine.units.formatMbps(n, WH.i18n.lang);
-  // SPEC 10.3: the second node on the map - what it is called by its type ("AP 2" / "Mesh 2" / "Opakovač"), its icon
-  // and whether its link to the router is wireless (the dashed line says "kabel" / "Wi-Fi")
-  PL.nodeOn = () => { const p = PL.P(); return !!(p && p.node && p.node.mode !== 'none'); };
-  PL.nodeLabel = (mode) => { const m = mode || PL.P().node.mode; return t('planner.mk.nodeLbl.' + (m === 'none' || !m ? 'ap_cable' : m)); };
-  PL.nodeIcon = (mode) => { const m = mode || PL.P().node.mode; return m === 'repeater' ? 'repeater' : m === 'mesh_cable' || m === 'mesh_wifi' ? 'mesh' : 'node'; };
-  PL.nodeWireless = (mode) => { const m = mode || PL.P().node.mode; return m === 'mesh_wifi' || m === 'repeater'; };
+  // ---------------------------------------------------------------------------------------------------------------
+  // SPEC 14.3 floors: the top-level plan / nodes / measurements / goal are always the ACTIVE floor's (ENGINE-API S)
+  // ---------------------------------------------------------------------------------------------------------------
+  const EP = () => WH.engine.project;
+  /** The active floor's id (null for a hand-made project without floors = one floor). */
+  PL.floorId = () => { const p = PL.P(); return p && Array.isArray(p.floors) && p.floors.length ? EP().activeFloorId(p) : null; };
+  /** Every floor, lowest level first ([] without floors). */
+  PL.floorList = () => { const p = PL.P(); return p && Array.isArray(p.floors) ? p.floors.slice().sort((a, b) => a.level - b.level) : []; };
+  /** The building has more than one floor (the floor switch, ghosts and per-floor results appear). */
+  PL.multi = () => PL.floorList().length > 1;
+  PL.floorName = (id) => { const p = PL.P(); const f = p && Array.isArray(p.floors) ? p.floors.find((x) => x.id === id) : null; return f ? f.name : ''; };
+  /** A point that lives on floor `fid` is on the floor the user looks at (no floors / no floor id = yes). */
+  PL.here = (fid) => { const a = PL.floorId(); return !a || !fid || fid === a; };
+  PL.routerHere = () => PL.here(PL.P().net.routerFloor);
+  PL.opticHere = () => PL.here(PL.P().net.opticFloor);
+  /** The plan of the router's floor (the allowed-room choice, the optimizer's answer). */
+  PL.routerPlan = () => { const p = PL.P(); if (PL.routerHere()) return p.plan; const f = EP().floorOf(p, p.net.routerFloor); return (f && f.plan) || p.plan; };
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // SPEC 14.2 nodes (AP / mesh / repeater, ≤ 8 in the building): names, icons, tags
+  // ---------------------------------------------------------------------------------------------------------------
+  /** The nodes that serve right now (enabled, uplink chain reaches the router), building order = the winner index - 1. */
+  PL.nodeList = () => { const p = PL.P(); try { return p ? WH.engine.model.nodeList(p) : []; } catch (e) { PL.report(e, 'planner.nodeList', { bug: true }); return []; } };
+  /** At least one node serves (the Result compares, the range lines / zones get node sources, ...). */
+  PL.anyNode = () => PL.nodeList().length > 0;
+  PL.nodeOn = PL.anyNode;
+  /** Every node of the building: [{node, floor, floorName, active, index}]. */
+  PL.allNodes = () => { const p = PL.P(); return p && Array.isArray(p.floors) ? EP().allNodes(p) : (p && p.nodes ? p.nodes.map((node, index) => ({ node, floor: null, floorName: '', active: true, index })) : []); };
+  PL.nodeById = (id) => PL.allNodes().find((x) => x.node.id === id) || null;
+  /** What a node type is called on the map when it has no name of its own ("AP 2" / "Mesh 2" / "Opakovač"). */
+  PL.nodeLabel = (mode) => t('planner.mk.nodeLbl.' + (mode && mode !== 'none' ? mode : 'ap_cable'));
+  /** The node's own (editable) name. */
+  PL.nodeName = (n) => (n && typeof n.name === 'string' && n.name.trim() ? n.name.trim() : PL.nodeLabel(n && n.mode));
+  PL.nodeIcon = (mode) => (mode === 'repeater' ? 'repeater' : mode === 'mesh_cable' || mode === 'mesh_wifi' ? 'mesh' : 'node');
+  PL.nodeWireless = (mode) => mode === 'mesh_wifi' || mode === 'repeater';
+  /** The short tag on a node's range line: the number its name ends with ("AP 3" -> "3"), else its first letter. */
+  PL.nodeTag = (n) => {
+    const nm = PL.nodeName(n);
+    const m = /(\d{1,2})\s*$/.exec(nm);
+    if (m) return m[1];
+    const c = [...nm.replace(/^[^\p{L}\p{N}]+/u, '')][0];
+    return c ? c.toLocaleUpperCase(WH.i18n.locale) : '•';
+  };
+  /** Who wins a cell / place: 0 = the router, k = the k-th serving node. -> its display name. */
+  PL.sourceName = (k, list) => { if (!k) return t('planner.tip.routerName'); const n = (list || PL.nodeList())[k - 1]; return n ? PL.nodeName(n) : t('planner.tip.routerName'); };
   /** "Ložnice, Pracovna a Koupelna" */
   PL.listOf = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${t('planner.res.and')} ${names[names.length - 1]}`);
+  /** "AP 2, Mesh 3 nebo Opakovač" */
+  PL.orList = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${t('planner.res.or')} ${names[names.length - 1]}`);
+  /** "AP 2, Mesh 3 nebo Opakovač" up to three names, else "AP 2, Mesh 3 a další 4" (legend rows stay one line) */
+  PL.orShort = (names) => (names.length <= 3 ? PL.orList(names) : PL.namesShort(names));
+  /** "AP 2, Mesh 3" / "AP 2, Mesh 3 a další 4" - a short list for the legend */
+  PL.namesShort = (names, max = 3) => (names.length <= max ? names.join(', ') : t('planner.legend.more', { list: names.slice(0, max - 1).join(', '), n: names.length - (max - 1) }));
   /**
    * Obstacle loss (dB) between a and b on a band - softened like the map, band-dependent wall losses (SPEC 7.1);
    * NaN when the engine has no per-band API yet.
@@ -93,7 +139,8 @@
   function ensureCtx(p) {
     const E = WH.engine;
     if (S.geomDirty || !S.ctx) { S.ctx = E.model.createContext(p); S.geomDirty = false; }
-    const key = [S.ctx.version, p.net.baseline.x, p.net.baseline.y, S.measVer, p.measurements.length, p.goal.device, p.view.calibrate].join('|');
+    // the calibration is pooled over every floor (ENGINE-API S.3): the router's floor and the active floor count too
+    const key = [S.ctx.version, p.net.baseline.x, p.net.baseline.y, p.net.routerFloor, PL.floorId(), S.measVer, p.measurements.length, p.goal.device, p.view.calibrate].join('|');
     if (key !== S.offsKey) {
       S.cal = E.model.calibrateAll(S.ctx, p);
       S.offs = { '2.4': 0, '5': 0, '6': 0 };
@@ -130,11 +177,13 @@
     const E = WH.engine;
     const m = meas || PL.filledMeasurements();
     const device = p.goal.device;
+    // several floors: the speed curves learn from the measurements of EVERY floor (ENGINE-API S.4 projectCurves)
+    const all = PL.multi() ? PL.projectCurves() : null;
     if (!E.model.isAuto(band)) {
       const o = { band, device };
-      return { curve: E.speed.buildCurve(m, o), diag: E.speed.diagnose(m, o) };
+      return { curve: all ? all[E.units.bandKey(band)] || null : E.speed.buildCurve(m, o), diag: E.speed.diagnose(m, o) };
     }
-    const curves = E.speed.buildCurves(m, { device });
+    const curves = all || E.speed.buildCurves(m, { device });
     let diag = null;
     for (const b of E.model.routerBandList(p)) {
       const d = E.speed.diagnose(m, { band: b, device });
@@ -143,6 +192,38 @@
     const any = E.BANDS.some((b) => curves[E.units.bandKey(b)]);
     return { curve: any ? curves : null, diag: diag || { count: 0, distinct: 0, spread: 0, ok: false, needs: 'tests' } };
   };
+  /** The per-band speed curves of the whole building (cached on the calibration key; the floors' measurements change only
+   *  through the active floor, which bumps that key). */
+  PL.projectCurves = () => {
+    const p = PL.P();
+    const ctx = ensureCtx(p);
+    if (S.pcKey !== S.offsKey || !S.pc) {
+      try { S.pc = WH.engine.speed.projectCurves(ctx, p, { offsets: S.offs, device: p.goal.device }) || {}; } catch (e) { PL.report(e, 'planner.projectCurves', { bug: true }); S.pc = {}; }
+      S.pcKey = S.offsKey;
+    }
+    return S.pc;
+  };
+  /** The backhaul curves of the nodes' links (per band: a node links on its backhaul band's own curve when there is one). */
+  PL.backhaulCurves = (meas) => {
+    const E = WH.engine;
+    const p = PL.P();
+    if (PL.multi()) return PL.projectCurves();
+    return E.speed.buildCurves(meas || PL.filledMeasurements(), { device: p.goal.device });
+  };
+  /** Per serving node (trial state order): {id, name, index, floor, mode, onFloor, uplink, backhaul, weakBackhaul} - the
+   *  shape analysis.run returns in `nodes`, for the drag frames (no shares there). */
+  function nodeInfo(ctx, st) {
+    const M = WH.engine.model;
+    const list = st.nodes || [];
+    if (!list.length) return [];
+    let bh = [];
+    try { bh = M.backhaulSignals(ctx, st) || []; } catch (e) { PL.report(e, 'planner.backhaul', { bug: true }); bh = []; }
+    return list.map((n, k) => {
+      const v = Number.isFinite(bh[k]) ? bh[k] : null;
+      return { id: n.id, name: n.name, index: k, floor: n.floor, mode: n.mode, onFloor: !ctx.floor || n.floor === ctx.floor, uplink: n.uplink, backhaul: v,
+        weakBackhaul: !!(M.isWirelessNode(n) && v !== null && v < n.backhaulThreshold), share: null, link: null };
+    });
+  }
 
   /**
    * Drag-frame analysis (cell 8, aa 1; band mode Auto with >= 2 router bands: cell 10, because every band's field is
@@ -173,15 +254,16 @@
     }
     const n = grid.cols * grid.rows;
     if (!S.bufC || S.bufC.length !== n) S.bufC = new Float32Array(n);
-    const node = params.trial.node;
+    // SPEC 14.2: any number of nodes (the engine caches each source's field, so a frame recomputes only what moved)
+    const nodes = params.trial.nodes || [];
     let tr;
-    if (!node && PL.same(params.trial.router, params.today.router)) { S.bufC.set(c.today); tr = { field: S.bufC, nodeWins: null }; }
+    if (!nodes.length && PL.same(params.trial.router, params.today.router)) { S.bufC.set(c.today); tr = { field: S.bufC, nodeWins: null }; }
     else tr = R.fieldEx(ctx, grid, params.trial, S.bufC);
     const q = quickStats(grid, tr.field, thr, target, ex);
-    const backhaul = M.backhaulSignal(ctx, params.trial);
+    const info = nodeInfo(ctx, params.trial);
     return {
       ctx, grid, band, offsets: S.offs, threshold: thr, params, today: c.today, trial: tr.field, diff: R.diff(tr.field, c.today),
-      nodeWins: tr.nodeWins, backhaul, weakBackhaul: !!(node && M.isWirelessNode(node) && backhaul !== null && backhaul < node.backhaulThreshold),
+      nodeWins: tr.nodeWins, nodes: info, backhaul: info.length ? info[0].backhaul : null, weakBackhaul: info.some((x) => x.weakBackhaul),
       targetRooms: target, stats: { today: c.stats, trial: q.stats }, perRoom: { today: c.per, trial: q.per },
       delta: { coverage: q.stats.coverage - c.stats.coverage, mean: q.stats.mean - c.stats.mean },
     };
@@ -262,32 +344,42 @@
       const meas = PL.filledMeasurements();
       const cs = PL.speedCurve(a.band, meas);
       const curve = cs.curve;
-      // SPEC 10: node-served cells go through the node's link (the backhaul band's own curve when there is one)
-      const bh = a.params.trial.node ? E.speed.buildCurve(meas, { band: p.node.backhaulBand, device: p.goal.device }) : null;
-      const sf = E.speed.fieldSpeed(a.ctx, g, a.params.trial, curve, PL.speedLimits(p), a.trial, { nodeWins: a.nodeWins || undefined, backhaulCurve: bh || undefined });
-      sp = { curve, bhCurve: bh, link: sf.link || null, reason: sf.reason, diag: cs.diag, approx: !!sf.approxAny, bands: sf.bands || null };
+      // SPEC 10 / 14.2: a node-served cell goes through the link of the node that wins it (each node's backhaul band's
+      // own curve when there is one; chained wireless hops multiply their factors in the engine)
+      const nodes = a.params.trial.nodes || [];
+      const bhs = nodes.length ? PL.backhaulCurves(meas) : null;
+      const sf = E.speed.fieldSpeed(a.ctx, g, a.params.trial, curve, PL.speedLimits(p), a.trial, { nodeWins: a.nodeWins || undefined, backhaulCurves: bhs || undefined });
+      sp = { curve, bhCurves: bhs, links: sf.links || (sf.link ? [sf.link] : []), link: sf.link || null, reason: sf.reason, diag: cs.diag, approx: !!sf.approxAny, bands: sf.bands || null };
       if (sf.supported) {
         const gl = p.goal;
         sp.ratio = E.speed.ratioField(g, sf, gl.targetDown, gl.targetUp);
         sp.stats = E.speed.stats(g, sf, { roomIds: a.targetRooms, excluded: gl.excluded, targetDown: gl.targetDown, targetUp: gl.targetUp });
-        // where the node's link (3) or its own ceiling (4) is the binding limit: a subtle hatch + a legend line
+        // where a node's link (3) or its own ceiling (4) is the binding limit: a subtle hatch + a legend line naming the
+        // node that is capped on the largest area
         if (sf.limitedBy && sf.source) {
           const path = new Path2D();
           const c = g.cell;
-          let n3 = 0;
-          let n4 = 0;
+          const cnt = new Map();   // winner index -> [n3, n4]
           for (let r = 0; r < g.rows; r++) {
             let s0 = -1;
             for (let k = 0; k <= g.cols; k++) {
               const i = r * g.cols + k;
-              const code = k < g.cols && sf.source[i] === 1 ? sf.limitedBy[i] : 0;
+              const src = k < g.cols ? sf.source[i] : 0;
+              const code = src > 0 ? sf.limitedBy[i] : 0;
               const on = code === 3 || code === 4;
-              if (code === 3) n3++; else if (code === 4) n4++;
+              if (on) { const e = cnt.get(src) || [0, 0]; e[code - 3]++; cnt.set(src, e); }
               if (on && s0 < 0) s0 = k;
               else if (!on && s0 >= 0) { path.rect(s0 * c, r * c, (k - s0) * c, c); s0 = -1; }
             }
           }
-          if (n3 + n4) { S.capHatch = path; sp.capKind = n4 > n3 ? 'device' : 'backhaul'; }
+          let best = null;
+          for (const [k, e] of cnt) if (!best || e[0] + e[1] > best.n) best = { k, n: e[0] + e[1], kind: e[1] > e[0] ? 'device' : 'backhaul' };
+          if (best) {
+            S.capHatch = path;
+            sp.capKind = best.kind;
+            const np = nodes[best.k - 1] || null;
+            sp.capNode = np ? { name: PL.nodeName(np), maxMbps: np.maxMbps, link: sp.links[best.k - 1] || null } : null;
+          }
         }
       }
     }
@@ -307,61 +399,95 @@
     cv.getContext('2d').putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
     S.heat = cv;
     S.heatCell = g.cell;
-    // hatch where the second node wins but its wireless uplink is weak
-    S.hatch = a.weakBackhaul && a.nodeWins && mode !== 'speed' ? cellsPath(g, a.nodeWins) : null;
+    // the node zones (winner index per cell, ENGINE-API S.4): grey hatch where a node with a weak wireless uplink wins,
+    // the "Zdroj signálu" blue hatch where any other node wins; `present` = the nodes that win somewhere (legend names).
+    // Cached per analysis: a layer toggle costs nothing
+    if (S.zoneA !== a) {
+      S.zoneA = a;
+      S.zones = a.nodeWins ? zonePaths(g, a.nodeWins, weakSet(a)) : { weak: null, src: null, present: [] };
+      S.srcEdgesAll = null;
+    }
+    S.hatch = mode !== 'speed' ? S.zones.weak : null;
     // range lines: one dashed iso-line per band the router sends (SPEC 13: net.routerBands) at model.rangeThreshold,
-    // around EVERY active source (SPEC 10.3) - the router and, on the bands it serves, the second node - so the map
-    // says which source covers what (lower resolution while dragging)
+    // around EVERY serving source (SPEC 10.3 / 14.2) - the router and, on the bands they serve, every node (also those on
+    // another floor: their signal reaches this floor through the ceiling) - so the map says which source covers what.
+    // Each source's lines are cached on its own parameters: dragging one marker re-traces only its lines
     S.cont = null;
     // (signal and change views only - the speed legend has no range-line key, like before)
     if (v.ranges && mode !== 'speed') {
       const st = a.params.trial;
       const rb = E.model.routerBandList(p);
-      const key = [a.ctx.version, st.router.x, st.router.y, JSON.stringify(st.node), JSON.stringify(S.offs), p.model.rangeThreshold, S.q, rb.join(',')].join('|');
-      if (key !== S.contKey) {
-        const res = S.q === 'coarse' ? [60, 52] : [120, 104];
-        const base = { router: st.router, node: st.node, offsets: S.offs, threshold: p.model.rangeThreshold, res };
-        S.contAll = { router: {}, node: {} };
-        for (const b of rb) {
-          S.contAll.router[b] = E.raster.contours(a.ctx, { ...base, band: b, source: 'router' });
-          if (st.node && E.model.nodeActive(st.node, b)) S.contAll.node[b] = E.raster.contours(a.ctx, { ...base, band: b, source: 'node' });
+      const res = S.q === 'coarse' ? [60, 52] : [120, 104];
+      const common = [a.ctx.version, JSON.stringify(S.offs), p.model.rangeThreshold, res[0]].join('|');
+      if (S.contCommon !== common) { S.contCommon = common; S.contCache = new Map(); }
+      const base = { ...st, offsets: S.offs, threshold: p.model.rangeThreshold, res };
+      const lines = (b, source, sig) => {
+        const key = `${b}|${source}|${sig}`;
+        let ch = S.contCache.get(key);
+        if (!ch) {
+          try { ch = E.raster.contours(a.ctx, { ...base, band: b, source }); } catch (e) { PL.report(e, 'planner.contours', { bug: true }); ch = []; }
+          if (S.contCache.size > 400) S.contCache.clear();
+          S.contCache.set(key, ch);
         }
-        S.contKey = key;
+        return ch;
+      };
+      const out = { router: {}, nodes: [] };
+      const rsig = `${st.router.x},${st.router.y},${st.router.floor || ''}`;
+      for (const b of rb) out.router[b] = lines(b, 'router', rsig);
+      for (const n of st.nodes || []) {
+        const set = {};
+        const nsig = JSON.stringify([n.pos, n.power, n.bands, n.floor]);
+        let any = false;
+        for (const b of rb) if (E.model.nodeActive(n, b)) { set[b] = lines(b, 'node:' + n.id, nsig); any = true; }
+        if (any) out.nodes.push({ id: n.id, tag: PL.nodeTag(n), name: PL.nodeName(n), here: PL.here(n.floor), pos: n.pos, set });
       }
-      S.cont = S.contAll;
+      S.cont = out;
     }
-    // the layer "Zdroj signálu" (SPEC 10.3): the border between the router's zone and the node's zone + the node's side
-    // (cached per analysis: a layer toggle costs nothing). Signal and change views only, like the range lines: the Speed
-    // view keeps its own cap hatch and its legend never shows a hatch that is not painted
+    // the layer "Zdroj signálu" (SPEC 10.3 / 14.2): the borders between the router's zone and every node's zone + the
+    // nodes' side. Signal and change views only, like the range lines: the Speed view keeps its own cap hatch and its
+    // legend never shows a hatch that is not painted
     S.srcEdges = null;
     S.srcHatch = null;
     if (v.sourceZones !== false && a.nodeWins && mode !== 'speed') {
-      if (S.srcA !== a) {
-        S.srcA = a;
-        S.srcEdgesAll = Array.isArray(a.sourceEdges) ? a.sourceEdges : E.raster.sourceEdges(g, a.nodeWins);
-        S.srcHatchAll = cellsPath(g, a.nodeWins);
-      }
+      if (!S.srcEdgesAll) S.srcEdgesAll = Array.isArray(a.sourceEdges) && S.q !== 'coarse' ? a.sourceEdges : E.raster.sourceEdges(g, a.nodeWins);
       S.srcEdges = S.srcEdgesAll;
-      S.srcHatch = S.srcHatchAll;
+      S.srcHatch = S.zones.src;
     }
     if (!noDraw) { PL.draw(); notify('derive'); }
   }
   PL.derive = derive;
 
-  /** A Path2D of the cells where mask[i] === 1 (runs along rows as rectangles, world px), null when there are none. */
-  function cellsPath(g, mask) {
-    const path = new Path2D();
-    let any = false;
+  /** Winner indices (1 = the first serving node) of the nodes whose wireless uplink is weak. */
+  function weakSet(a) {
+    const out = new Set();
+    const list = a.params.trial.nodes || [];
+    for (const x of a.nodes || []) {
+      if (!x || !x.weakBackhaul) continue;
+      const k = list.findIndex((n) => n.id === x.id);
+      if (k >= 0) out.add(k + 1);
+    }
+    return out;
+  }
+  /** Path2Ds (rows of cell rectangles, world px) of the cells won by a weak-uplink node / by any other node, null when
+   *  there are none; `present` = the winner indices that occur. */
+  function zonePaths(g, wins, weak) {
+    const paths = { weak: new Path2D(), src: new Path2D() };
+    const any = { weak: false, src: false };
+    const seen = new Set();
     const c = g.cell;
-    for (let r = 0; r < g.rows; r++) {
-      let s = -1;
-      for (let k = 0; k <= g.cols; k++) {
-        const on = k < g.cols && mask[r * g.cols + k] === 1;
-        if (on && s < 0) s = k;
-        else if (!on && s >= 0) { path.rect(s * c, r * c, (k - s) * c, c); any = true; s = -1; }
+    for (const kind of ['weak', 'src']) {
+      for (let r = 0; r < g.rows; r++) {
+        let s = -1;
+        for (let k = 0; k <= g.cols; k++) {
+          const w = k < g.cols ? wins[r * g.cols + k] : 0;
+          if (w > 0 && kind === 'weak') seen.add(w);
+          const on = w > 0 && (kind === 'weak' ? weak.has(w) : !weak.has(w));
+          if (on && s < 0) s = k;
+          else if (!on && s >= 0) { paths[kind].rect(s * c, r * c, (k - s) * c, c); any[kind] = true; s = -1; }
+        }
       }
     }
-    return any ? path : null;
+    return { weak: any.weak ? paths.weak : null, src: any.src ? paths.src : null, present: [...seen].sort((x, y) => x - y), weakSet: weak };
   }
 
   let raf = 0;
@@ -645,9 +771,9 @@
         c.fillRect(0, 0, o.w * o.dpr, o.h * o.dpr);
         c.restore();
       }
-      // the layer "Zdroj signálu" (SPEC 10.3), part 1: a light blue hatch on the node's side (unless the weak-uplink
-      // hatch or the Speed view's cap hatch already marks it)
-      if (S.srcEdges && S.srcHatch && !S.hatch && S.mode !== 'speed') {
+      // the layer "Zdroj signálu" (SPEC 10.3), part 1: a light blue hatch on the nodes' side (a node with a weak uplink
+      // keeps the grey weak-uplink hatch instead; the Speed view has its own cap hatch)
+      if (S.srcEdges && S.srcHatch && S.mode !== 'speed') {
         c.save();
         c.clip(S.srcHatch);
         c.setTransform(1, 0, 0, 1, 0, 0);
@@ -660,16 +786,16 @@
         c.lineJoin = 'round';
         c.lineCap = 'round';
         const fam = font();
-        for (const src of ['router', 'node']) {
-          const set = S.cont[src];
-          if (!set) continue;
+        const srcs = [{ set: S.cont.router, node: null }, ...S.cont.nodes.map((n) => ({ set: n.set, node: n }))];
+        const tags = [];
+        for (const { set, node } of srcs) {
           for (const b of WH.engine.BANDS) {
             if (!set[b] || !set[b].length) continue;
             const path = new Path2D();
             for (const ch of set[b]) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
             c.setLineDash([]);
-            // the node's lines sit on a blue backing (--pl-node) instead of the plain halo, so the two sources read apart
-            if (src === 'node') { c.strokeStyle = col('--pl-node'); c.lineWidth = 5.5 * px; c.globalAlpha = 0.55; }
+            // a node's lines sit on a blue backing (--pl-node) instead of the plain halo, so the sources read apart
+            if (node) { c.strokeStyle = col('--pl-node'); c.lineWidth = 5.5 * px; c.globalAlpha = 0.55; }
             else { c.strokeStyle = col('--map-halo'); c.lineWidth = 4 * px; c.globalAlpha = 0.7; }
             c.stroke(path);
             c.globalAlpha = 1;
@@ -677,7 +803,7 @@
             c.strokeStyle = col(PL.BAND_VAR[b]);
             c.lineWidth = 2 * px;
             c.stroke(path);
-            if (src === 'node') { c.setLineDash([]); lineTag(c, set[b], px, fam, p); }
+            if (node) { c.setLineDash([]); lineTag(c, set[b], px, fam, p, node, tags); }
           }
         }
         c.setLineDash([]);
@@ -736,44 +862,48 @@
         c.setLineDash([]);
       }
     }
-    // the second node's link to the router (SPEC 10.3): a dashed line, dotted for a wireless uplink; on screen the
-    // "kabel" / "Wi-Fi" chip is DOM (20-stage place), the PNG export writes it here
-    if (p.node.mode !== 'none' && G.hasRooms && p.node.pos && p.net.router) {
-      const r0 = p.net.router;
-      const q0 = p.node.pos;
-      const wl = PL.nodeWireless(p.node.mode);
-      c.save();
-      c.lineCap = 'round';
-      c.beginPath();
-      c.moveTo(r0.x * W, r0.y * H);
-      c.lineTo(q0.x * W, q0.y * H);
-      c.strokeStyle = col('--map-halo');
-      c.lineWidth = 4.5 * px;
-      c.globalAlpha = 0.8;
-      c.stroke();
-      c.globalAlpha = 1;
-      c.setLineDash((wl ? [0.5, 5] : [7, 4]).map((d) => d * px));
-      c.strokeStyle = col('--pl-node');
-      c.lineWidth = (wl ? 2.4 : 1.8) * px;
-      c.stroke();
-      c.setLineDash([]);
-      if (o.linkText) {
-        c.setTransform(o.dpr, 0, 0, o.dpr, 0, 0);
-        const mx = ((r0.x + q0.x) / 2) * W * s + o.tx;
-        const my = ((r0.y + q0.y) / 2) * H * s + o.ty;
-        const txt = t(wl ? 'planner.mk.linkWifi' : 'planner.mk.linkCable');
-        c.font = `700 11px ${font()}`;
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.lineJoin = 'round';
-        c.lineWidth = 3.5;
+    // every enabled node's uplink (SPEC 10.3 / 14.2): a dashed line to the router or to the node it hangs on, dotted for
+    // a wireless uplink, faded when the other end stands on another floor (it ends at that marker's faded ghost); on
+    // screen the "kabel" / "Wi-Fi" chips are DOM (20-stage place), the PNG export writes them here
+    if (G.hasRooms) {
+      for (const L of PL.uplinks()) {
+        const r0 = L.from;
+        const q0 = L.to;
+        c.save();
+        c.lineCap = 'round';
+        c.globalAlpha = L.far ? 0.5 : 1;
+        c.beginPath();
+        c.moveTo(r0.x * W, r0.y * H);
+        c.lineTo(q0.x * W, q0.y * H);
         c.strokeStyle = col('--map-halo');
-        c.strokeText(txt, mx, my);
-        c.fillStyle = col('--map-label');
-        c.fillText(txt, mx, my);
+        c.lineWidth = 4.5 * px;
+        c.globalAlpha *= 0.8;
+        c.stroke();
+        c.globalAlpha = L.far ? 0.5 : 1;
+        c.setLineDash((L.wireless ? [0.5, 5] : [7, 4]).map((d) => d * px));
+        c.strokeStyle = col('--pl-node');
+        c.lineWidth = (L.wireless ? 2.4 : 1.8) * px;
+        c.stroke();
+        c.setLineDash([]);
+        if (o.linkText) {
+          c.setTransform(o.dpr, 0, 0, o.dpr, 0, 0);
+          const mx = ((r0.x + q0.x) / 2) * W * s + o.tx;
+          const my = ((r0.y + q0.y) / 2) * H * s + o.ty;
+          const txt = t(L.wireless ? 'planner.mk.linkWifi' : 'planner.mk.linkCable');
+          c.globalAlpha = 1;
+          c.font = `700 11px ${font()}`;
+          c.textAlign = 'center';
+          c.textBaseline = 'middle';
+          c.lineJoin = 'round';
+          c.lineWidth = 3.5;
+          c.strokeStyle = col('--map-halo');
+          c.strokeText(txt, mx, my);
+          c.fillStyle = col('--map-label');
+          c.fillText(txt, mx, my);
+        }
+        c.restore();
+        c.setTransform(k, 0, 0, k, o.tx * o.dpr, o.ty * o.dpr);
       }
-      c.restore();
-      c.setTransform(k, 0, 0, k, o.tx * o.dpr, o.ty * o.dpr);
     }
     if ((v.labels || v.values) && G.labels.length) {
       c.setTransform(o.dpr, 0, 0, o.dpr, 0, 0);
@@ -816,27 +946,49 @@
   }
   PL.drawScene = drawScene;
 
-  /** A small "2" on the longest range line of the second node (SPEC 10.3), at a point of it that lies on the floor and
-   *  stands clear of the router disc and of the node's disc + name tag (so it is never taken for a tag of the router). */
-  function lineTag(c, chains, px, fam, p) {
+  /** The uplink lines to draw on the active floor: every enabled node here -> its uplink (router or node), and the
+   *  nodes of other floors whose uplink stands here (their end is the faded ghost). {id, from, to, far, wireless}. */
+  PL.uplinks = () => {
+    const p = PL.P();
+    const out = [];
+    if (!p) return out;
+    const all = PL.allNodes();
+    const posOf = (up) => {
+      if (!up || up === 'router') return p.net.router ? { q: p.net.router, here: PL.routerHere() } : null;
+      const u = all.find((x) => x.node.id === up);
+      return u && u.node.pos ? { q: u.node.pos, here: u.active } : null;
+    };
+    for (const x of all) {
+      const n = x.node;
+      if (!n.enabled || !n.pos) continue;
+      const u = posOf(n.uplink);
+      if (!u || (!x.active && !u.here)) continue;
+      out.push({ id: n.id, from: n.pos, to: u.q, far: !x.active || !u.here, wireless: PL.nodeWireless(n.mode), mode: n.mode });
+    }
+    return out;
+  };
+
+  /** A small tag (the node's number / initial, SPEC 10.3 / 14.2) on the longest range line of a node, at a point of it that
+   *  lies on the floor and stands clear of the router disc, of every node's disc + name tag and of the other tags (so it
+   *  is never taken for a tag of the router). */
+  function lineTag(c, chains, px, fam, p, node, tags) {
     let best = null;
     for (const ch of chains) if (!best || ch.length > best.length) best = ch;
     if (!best || best.length < 4) return;
     const F = WH.engine.project;
     const start = Math.floor(best.length / 2);
-    const r0 = p.net.router;
-    const n0 = p.node.pos;
-    const tagW = (PL.nodeTagW || 48) * px;
+    const r0 = PL.routerHere() ? p.net.router : null;
+    const pills = (p.nodes || []).filter((n) => n.pos).map((n) => ({ q: n.pos, w: ((PL.tagW && PL.tagW.get(n.id)) || 48) * px }));
     const clear = (cand) => {
       const x = cand.x * W;
       const y = cand.y * H;
       if (r0 && Math.hypot(x - r0.x * W, y - r0.y * H) < 60 * px) return false;
-      if (n0) {
-        // the node's pill: the disc + the tag to its right
-        const nx = Math.min(Math.max(x, n0.x * W), n0.x * W + tagW);
-        if (Math.hypot(x - nx, y - n0.y * H) < 60 * px) return false;
+      for (const pl of pills) {
+        // a node's pill: the disc + the tag to its right
+        const nx = Math.min(Math.max(x, pl.q.x * W), pl.q.x * W + pl.w);
+        if (Math.hypot(x - nx, y - pl.q.y * H) < 60 * px) return false;
       }
-      return true;
+      return !tags.some((tg) => Math.hypot(x - tg.x, y - tg.y) < 22 * px);
     };
     let q = null;
     for (let k = 0; k < best.length && !q; k++) { const cand = best[(start + k) % best.length]; if (F.floorMaskAt(p.plan, cand) && clear(cand)) q = cand; }
@@ -844,18 +996,21 @@
     if (!q) return;
     const x = q.x * W;
     const y = q.y * H;
+    tags.push({ x, y });
+    const txt = node.tag;
+    c.font = `800 ${9 * px}px ${fam}`;
+    const r = Math.max(6.5 * px, (c.measureText(txt).width + 5 * px) / 2);
     c.beginPath();
-    c.arc(x, y, 6.5 * px, 0, Math.PI * 2);
+    c.arc(x, y, r, 0, Math.PI * 2);
     c.fillStyle = col('--pl-node');
     c.fill();
     c.lineWidth = 1.5 * px;
     c.strokeStyle = col('--map-marker-ring');
     c.stroke();
     c.fillStyle = col('--pl-node-ink');
-    c.font = `800 ${9 * px}px ${fam}`;
     c.textAlign = 'center';
     c.textBaseline = 'middle';
-    c.fillText('2', x, y + 0.5 * px);
+    c.fillText(txt, x, y + 0.5 * px);
   }
 
   /** Screen rectangles (CSS px) of the DOM markers drawn over the map - router, today's ghost (+ its caption), inlet,
@@ -866,14 +1021,18 @@
     if (!p.plan.rooms.length) return out;
     const sc = (q) => ({ x: q.x * W * s + o.tx, y: q.y * H * s + o.ty });
     const disc = (q, r, capH, right) => { if (!q) return; const c = sc(q); out.push({ l: c.x - r, t: c.y - r, r: c.x + r + (right || 0), b: c.y + r + (capH || 0) }); };
-    disc(p.net.router, 20);
-    if (PL.moved()) disc(p.net.baseline, 17, 18);
-    disc(p.net.optic, 16);
-    if (p.node.mode !== 'none') {
-      disc(p.node.pos, 17, 0, PL.nodeTagW || 48);
-      // the "kabel" / "Wi-Fi" chip in the middle of the link (20-stage place hides it when the two markers are close)
-      const a = sc(p.net.router);
-      const b = sc(p.node.pos);
+    if (PL.routerHere()) {
+      disc(p.net.router, 20);
+      if (PL.moved()) disc(p.net.baseline, 17, 18);
+    }
+    if (PL.opticHere()) disc(p.net.optic, 16);
+    // every node marker here (disc + name tag) and the faded ghosts of the sources on other floors (+ their caption)
+    for (const n of p.nodes || []) if (n.pos) disc(n.pos, 17, 0, (PL.tagW && PL.tagW.get(n.id)) || 48);
+    for (const gq of PL.ghostList ? PL.ghostList() : []) disc(gq.pos, 15, 16);
+    // the "kabel" / "Wi-Fi" chips in the middle of the links (20-stage place hides one when its markers stand close)
+    for (const L of PL.uplinks()) {
+      const a = sc(L.from);
+      const b = sc(L.to);
       if (Math.hypot(a.x - b.x, a.y - b.y) >= 70) { const w = (PL.linkW || 60) / 2; out.push({ l: (a.x + b.x) / 2 - w, t: (a.y + b.y) / 2 - 11, r: (a.x + b.x) / 2 + w, b: (a.y + b.y) / 2 + 11 }); }
     }
     const st = PL.stage;

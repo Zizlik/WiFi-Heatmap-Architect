@@ -229,7 +229,9 @@
    *        fit:{n, wallFactor, byBand?} = use that fit
    * @returns {object} Ctx (opaque; read-only for callers except documented fields: version, roomsVersion, mpp, p, wf, fit)
    */
-  function createContext(project, opts) {
+  function createContext(projectIn, opts) {
+    // SPEC 14.3: the context of one floor (default: the active one) - a view with that floor's content at the top level
+    const project = opts && opts.floor !== undefined && opts.floor !== null && PJ.atFloor ? PJ.atFloor(projectIn, opts.floor) : projectIn;
     const plan = project.plan;
     const mp = project.model;
     const mpp = project.scale.mpp;
@@ -434,6 +436,31 @@
       hv.add(Math.round(fit.n * 1e6));
       hv.add(Math.round(fit.wallFactor * 1e6));
     }
+    // SPEC 14.3: which floor this is and how the other floors stand to it (only with several floors, so the version
+    // of every single-floor context stays what it always was)
+    const floorId = PJ.activeFloorId ? PJ.activeFloorId(project) : null;
+    const floorList = Array.isArray(project.floors) ? project.floors.filter((x) => x && typeof x === 'object') : [];
+    const vert = new Map();
+    let level = 0;
+    for (const fl of floorList) if (fl.id === floorId && isNum(fl.level)) level = fl.level;
+    if (floorList.length > 1) {
+      const hashText = (txt) => {
+        hv.add(txt.length);
+        for (const ch of txt) hv.add(ch.charCodeAt(0));
+      };
+      hv.add(0x0f1);
+      hashText(String(floorId));
+      for (const fl of floorList) {
+        if (fl.id === floorId) continue;
+        const g = PJ.floorGap(project, fl.id, floorId);
+        const ceil = scaled(g.lossDb);
+        vert.set(fl.id, { levels: g.levels, heightM: g.heightM, lossDb: g.lossDb, dz2: g.heightM * g.heightM, ceil, wallW: CROSS_WALL_WEIGHT });
+        hashText(String(fl.id));
+        hv.add(g.levels);
+        hv.px(g.heightM * 1000);
+        hv.px(g.lossDb * 10);
+      }
+    }
 
     const src = {
       version: hv.hex(),
@@ -454,10 +481,66 @@
       lossF,
       wf: fit ? fit.wallFactor : 1,
       fit,
+      floor: floorId,
+      level,
+      vert,
+      routerFloor: project.net && typeof project.net.routerFloor === 'string' ? project.net.routerFloor : null,
     };
     const ctx = bandView(src, 1);
     VIEWS.set(p, [null, ctx, null]);
+    SIBLINGS.set(p, { project: projectIn, opts: opts || {}, map: new Map() });
     return ctx;
+  }
+
+  // the contexts of the other floors of a context's project (SPEC 14.3), created on demand and kept with the context
+  const SIBLINGS = new WeakMap();
+  /** Walls of the floor a signal arrives on count half along the horizontal path when it comes through a ceiling. */
+  const CROSS_WALL_WEIGHT = 0.5;
+
+  /**
+   * The context of another floor of the same project (same fit option), cached on `ctx`; `ctx` itself for its own floor
+   * or when the project has no such floor. Returned at 5 GHz like createContext().
+   * @param {object} ctx
+   * @param {string|null} floorId
+   * @returns {object}
+   */
+  function floorContext(ctx, floorId) {
+    if (!ctx || !ctx.p) return ctx;
+    const base = (VIEWS.get(ctx.p) || [])[1] || ctx;
+    if (floorId === undefined || floorId === null || floorId === ctx.floor) return base;
+    const sib = SIBLINGS.get(ctx.p);
+    if (!sib || !ctx.vert || !ctx.vert.has(floorId)) return base;
+    let c = sib.map.get(floorId);
+    if (!c) {
+      c = createContext(sib.project, { ...sib.opts, floor: floorId });
+      sib.map.set(floorId, c);
+    }
+    return c;
+  }
+
+  /**
+   * How a source on floor `fid` stands to the context's floor: null = the same floor (or unknown), else
+   * {levels, heightM, lossDb (5 GHz ref), dz2 (m²), ceil:[2.4, 5, 6 GHz dB], wallW}.
+   */
+  function vertOf(ctx, fid) {
+    if (fid === undefined || fid === null || !ctx || fid === ctx.floor || !ctx.vert) return null;
+    return ctx.vert.get(fid) || null;
+  }
+
+  /** A router / baseline point with its floor: one without a `floor` key is on the context's router floor. */
+  function asRouter(ctx, pt) {
+    if (!pt || pt.floor !== undefined || !ctx || ctx.routerFloor === null || ctx.routerFloor === undefined) return pt;
+    return { x: pt.x, y: pt.y, floor: ctx.routerFloor };
+  }
+
+  /**
+   * 3-D distance in metres between a source (`from`, possibly on another floor: from.floor) and a place on the
+   * context's floor.
+   */
+  function distance3(ctx, from, to) {
+    const dh = Math.hypot((to.x - from.x) * W, (to.y - from.y) * H) * ctx.mpp;
+    const V = vertOf(ctx, from && from.floor);
+    return V ? Math.sqrt(dh * dh + V.dz2) : dh;
   }
 
   // the band views of a context, keyed by its parameter object `p` (one per createContext, shared by its band views; a
@@ -543,6 +626,10 @@
       lossF: src.lossF,
       wf: src.wf,
       fit: src.fit,
+      floor: src.floor,
+      level: src.level,
+      vert: src.vert,
+      routerFloor: src.routerFloor,
       band: BAND_OF[k],
       wl: src.lossW[k],
       dl: src.lossD[k],
@@ -853,7 +940,10 @@
     const rx = bx - ax;
     const ry = by - ay;
     const rl2 = rx * rx + ry * ry;
-    if (rl2 < 1e-6) return 0;
+    if (rl2 < 1e-6) {
+      const V0 = vertOf(ctx, a.floor);
+      return V0 ? V0.levels : 0;
+    }
     const rl = Math.sqrt(rl2);
     const minX = Math.min(ax, bx);
     const maxX = Math.max(ax, bx);
@@ -883,7 +973,9 @@
       if (s - last >= MERGE_NEAR) count++;
       last = s;
     }
-    return count;
+    // SPEC 14.3: from another floor every ceiling crossed counts as one more obstacle
+    const V = vertOf(ctx, a.floor);
+    return V ? count + V.levels : count;
   }
 
   /** Room id at a px point using the exact polygons (last room wins, like raster.grid); 0 = outside every room. */
@@ -940,8 +1032,18 @@
    * the context createContext() returns).
    */
   function obstacleLoss(ctx, a, b, band) {
-    return traceLoss(band === undefined ? ctx : forBand(ctx, band), a.x * W, a.y * H, b.x * W, b.y * H);
+    const c = band === undefined ? ctx : forBand(ctx, band);
+    const L = traceLoss(c, a.x * W, a.y * H, b.x * W, b.y * H);
+    // SPEC 14.3: from another floor (a.floor) the walls of this floor count half, plus the ceilings crossed
+    const V = vertOf(c, a.floor);
+    return V ? V.wallW * L + V.ceil[bandIndexOf(c)] * c.wf : L;
   }
+
+  /** 0 / 1 / 2 of the band view of a context (5 GHz for an unknown band). */
+  const bandIndexOf = (c) => {
+    const k = bandIndex(c.band);
+    return k < 0 ? 1 : k;
+  };
 
   /**
    * Uncalibrated, unclamped signal in dBm.
@@ -957,8 +1059,15 @@
     const ay = from.y * H;
     const bx = to.x * W;
     const by = to.y * H;
-    const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
     const extra = opts && isNum(opts.nodePower) ? opts.nodePower : 0;
+    const V = vertOf(c, from.floor);
+    if (V) {
+      // SPEC 14.3: a source on another floor - 3-D distance, the ceilings crossed, this floor's walls half
+      const dh = Math.hypot(bx - ax, by - ay) * c.mpp;
+      const dm = Math.sqrt(dh * dh + V.dz2);
+      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * traceLoss(c, ax, ay, bx, by) + V.ceil[bandIndexOf(c)] * c.wf) + extra;
+    }
+    const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
     return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - traceLoss(c, ax, ay, bx, by) + extra;
   }
 
@@ -990,7 +1099,9 @@
    */
   function softObstacleLoss(ctx, a, b, soften, band) {
     const c = band === undefined ? ctx : forBand(ctx, band);
-    return softLossPx(c, a.x * W, a.y * H, b.x * W, b.y * H, softenOf(soften) / c.mpp);
+    const L = softLossPx(c, a.x * W, a.y * H, b.x * W, b.y * H, softenOf(soften) / c.mpp);
+    const V = vertOf(c, a.floor);
+    return V ? V.wallW * L + V.ceil[bandIndexOf(c)] * c.wf : L;
   }
 
   /** rawSignal with the softened obstacle loss (uncalibrated, unclamped). */
@@ -1002,8 +1113,13 @@
     const ay = from.y * H;
     const bx = to.x * W;
     const by = to.y * H;
-    const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
-    return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - softLossPx(c, ax, ay, bx, by, s / c.mpp);
+    const dh = Math.hypot(bx - ax, by - ay) * c.mpp;
+    const V = vertOf(c, from.floor);
+    if (V) {
+      const dm = Math.sqrt(dh * dh + V.dz2);
+      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * softLossPx(c, ax, ay, bx, by, s / c.mpp) + V.ceil[bandIndexOf(c)] * c.wf);
+    }
+    return bandBase(c, band) - 10 * c.p.n * Math.log10(dh < 1 ? 1 : dh) - softLossPx(c, ax, ay, bx, by, s / c.mpp);
   }
 
   /**
@@ -1025,9 +1141,9 @@
     return isNum(v) ? v : 0;
   }
 
-  /** Is the second node transmitting on this band? `node` as built by nodeParams(). */
+  /** Is this node transmitting on this band? `node` as built by nodeList() / nodeParams() (switched off: never). */
   function nodeActive(node, band) {
-    return !!(node && node.mode !== 'none' && node.pos && node.bands && node.bands[units.bandKey(band)]);
+    return !!(node && node.mode !== 'none' && node.enabled !== false && node.pos && node.bands && node.bands[units.bandKey(band)]);
   }
 
   /** True for scenarios with a wireless uplink (mesh over Wi-Fi, repeater). */
@@ -1095,49 +1211,130 @@
     return units.normBandMode(isObj(v) ? (v.band !== undefined ? v.band : v.targetBand) : v) === 'auto';
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // nodes (SPEC 14.2): any number of access points / mesh nodes / repeaters, each on its floor, with an uplink chain
+  // ---------------------------------------------------------------------------------------------------------------
+
+  const EMPTY = Object.freeze([]);
+  const NODE_KIND_LIST = ['ap_cable', 'mesh_cable', 'mesh_wifi', 'repeater'];
+
   /**
-   * Node description for field params from a project, or null when no second node is configured.
-   * maxMbps = the node's throughput ceiling the user entered (SPEC 10), null when unknown.
-   * @returns {{mode:string,pos:{x:number,y:number},power:number,bands:object,backhaulBand:number,backhaulThreshold:number,
-   *            maxMbps:number|null}|null}
+   * Every node that can serve, as field params, in building order (floors by level, then each floor's list; the order of
+   * the raster's winner indices): enabled, a known mode, a position, and an uplink chain that reaches the router through
+   * enabled nodes (a node behind a switched-off node has no internet and is left out).
+   * @param {object} project
+   * @returns {Array<{id:string, name:string, index:number, floor:string|null, mode:string, pos:{x:number,y:number,floor:string|null},
+   *   power:number, bands:object, backhaulBand:number, backhaulThreshold:number, maxMbps:number|null, uplink:string,
+   *   uplinkIndex:number}>} uplinkIndex = -1 for the router, else the index of the uplink node in this list
+   */
+  function nodeList(project) {
+    if (!project || typeof project !== 'object') return [];
+    let entries;
+    if (Array.isArray(project.nodes) || Array.isArray(project.floors)) entries = PJ.allNodes(project);
+    else if (isObj(project.node) && NODE_KIND_LIST.includes(project.node.mode)) entries = [{ node: { ...project.node, id: 'node-1', name: '', uplink: 'router', enabled: true }, floor: null }];
+    else entries = [];
+    const usable = (e) => e.node.enabled !== false && NODE_KIND_LIST.includes(e.node.mode) && e.node.pos && isNum(e.node.pos.x) && isNum(e.node.pos.y);
+    const byId = new Map();
+    for (const e of entries) if (!byId.has(e.node.id)) byId.set(e.node.id, e);
+    // does the chain reach the router through usable nodes? (cycles and missing nodes: no)
+    const ok = new Map();
+    const reaches = (e) => {
+      const seen = new Set();
+      let cur = e;
+      for (;;) {
+        if (ok.has(cur.node.id)) return ok.get(cur.node.id);
+        if (!usable(cur) || seen.has(cur.node.id)) return false;
+        seen.add(cur.node.id);
+        const up = cur.node.uplink;
+        if (up === undefined || up === null || up === 'router') return true;
+        const next = byId.get(up);
+        if (!next) return false;
+        cur = next;
+      }
+    };
+    for (const e of entries) ok.set(e.node.id, reaches(e));
+    const list = entries.filter((e) => ok.get(e.node.id));
+    const index = new Map(list.map((e, i) => [e.node.id, i]));
+    return list.map((e, i) => {
+      const n = e.node;
+      const up = n.uplink && n.uplink !== 'router' && index.has(n.uplink) ? n.uplink : 'router';
+      return {
+        id: n.id,
+        name: typeof n.name === 'string' ? n.name : '',
+        index: i,
+        floor: e.floor === undefined ? null : e.floor,
+        mode: n.mode,
+        pos: { x: n.pos.x, y: n.pos.y, floor: e.floor === undefined ? null : e.floor },
+        power: isNum(n.power) ? n.power : 0,
+        bands: { ...(isObj(n.bands) ? n.bands : {}) },
+        backhaulBand: n.backhaulBand,
+        backhaulThreshold: n.backhaulThreshold,
+        maxMbps: isNum(n.maxMbps) && n.maxMbps > 0 ? n.maxMbps : null,
+        uplink: up,
+        uplinkIndex: up === 'router' ? -1 : index.get(up),
+      };
+    });
+  }
+
+  /**
+   * The first serving node (compat with the single-node API), or null.
+   * @returns {object|null} see nodeList
    */
   function nodeParams(project) {
-    const n = project && project.node;
-    if (!n || n.mode === 'none' || !n.pos) return null;
-    return {
-      mode: n.mode,
-      pos: { x: n.pos.x, y: n.pos.y },
-      power: n.power,
-      bands: { ...n.bands },
-      backhaulBand: n.backhaulBand,
-      backhaulThreshold: n.backhaulThreshold,
-      maxMbps: isNum(n.maxMbps) && n.maxMbps > 0 ? n.maxMbps : null,
-    };
+    return nodeList(project)[0] || null;
+  }
+
+  /**
+   * The nodes of a state / params object (SPEC 14.2): state.nodes. A caller that sets the legacy single `node` itself
+   * (an own enumerable key, e.g. {...state, node: X} or {...state, node: null}) gets exactly that one (or none) - the
+   * `node` fieldParams() puts into a state is a non-enumerable mirror of nodes[0], so a spread never carries it.
+   */
+  function stateNodes(state) {
+    if (!state || typeof state !== 'object') return EMPTY;
+    if (Object.prototype.propertyIsEnumerable.call(state, 'node')) return state.node && state.node.mode !== 'none' && state.node.pos ? [state.node] : EMPTY;
+    return Array.isArray(state.nodes) ? state.nodes : EMPTY;
+  }
+
+  /** Index (in `nodes`) of the uplink node of `nd`, -1 for the router. */
+  function uplinkIndexOf(nodes, nd) {
+    if (Number.isInteger(nd.uplinkIndex) && nd.uplinkIndex >= 0 && nd.uplinkIndex < nodes.length && nodes[nd.uplinkIndex] !== nd) return nd.uplinkIndex;
+    if (nd.uplink && nd.uplink !== 'router') {
+      const k = nodes.findIndex((x) => x && x.id === nd.uplink && x !== nd);
+      if (k >= 0) return k;
+    }
+    return -1;
   }
 
   /**
    * Field/combined-signal parameters ("state") for the model, built from a project.
-   * which = 'trial' (router at net.router + the second node) or 'today' (router at net.baseline, no node: the
+   * which = 'trial' (router at net.router + every serving node) or 'today' (router at net.baseline, no node: the
    * measurements were taken in that situation).
    * @param {object} project
    * @param {'trial'|'today'} [which='trial']
    * @param {{band?:number|'auto', offsets?:object, soften?:number}} [opts] band default view.band; offsets from
    *        offsets(); default all 0. soften (metres) is copied into the state only when given (the default SOFTEN
    *        applies everywhere otherwise)
-   * @returns {{band:number|'auto', router:{x,y}, node:object|null, offsets:object, baseline:{x,y}, soften?:number,
-   *            bands?:number[], steer?:{six:number, five:number}}} bands / steer only in the band mode 'auto' (SPEC 13)
+   * @returns {{band:number|'auto', router:{x,y,floor?}, baseline:{x,y,floor?}, nodes:object[], node:object|null,
+   *            offsets:object, soften?:number, bands?:number[], steer?:{six:number, five:number}}} router / baseline carry
+   *            net.routerFloor (SPEC 14.3); nodes = nodeList() ([] for 'today'), node = nodes[0] (compat); bands / steer
+   *            only in the band mode 'auto' (SPEC 13)
    */
   function fieldParams(project, which, opts) {
     const o = opts || {};
     const today = which === 'today';
     const band = units.normBandMode(o.band) || units.normBandMode(project.view && project.view.band) || 5;
+    const rf = project.net && typeof project.net.routerFloor === 'string' ? project.net.routerFloor : undefined;
+    const withFloor = (q) => (rf === undefined ? { ...q } : { x: q.x, y: q.y, floor: rf });
+    const nodes = today ? [] : nodeList(project);
     const st = {
       band,
-      router: today ? { ...project.net.baseline } : { ...project.net.router },
-      node: today ? null : nodeParams(project),
+      router: withFloor(today ? project.net.baseline : project.net.router),
+      nodes,
       offsets: o.offsets || { '2.4': 0, '5': 0, '6': 0 },
-      baseline: { ...project.net.baseline },
+      baseline: withFloor(project.net.baseline),
     };
+    // compat: the first node as the old single `node` - non-enumerable, so {...state, node: X} stays a legacy override
+    Object.defineProperty(st, 'node', { value: nodes[0] || null, enumerable: false, writable: true, configurable: true });
     if (band === 'auto') {
       // band mode Auto (SPEC 13): every place on the band a steering client would use there
       st.bands = routerBandList(project);
@@ -1148,66 +1345,96 @@
   }
 
   /**
-   * Strongest signal at p from the router and (when enabled for this band) the second node - softened like the heat
-   * map (state.soften, default SOFTEN; 0 = exact rays).
+   * Router and every node serving `band` at p, softened like the heat map: {router, nodes:(dBm|null)[], best, winner}
+   * (winner 0 = router, k = nodes[k-1]; the router wins ties).
+   */
+  function sourcesAt(ctx, p, band, state) {
+    const off = offsetFor(state.offsets, band);
+    const router = softSignal(ctx, asRouter(ctx, state.router), p, band, off, state.soften);
+    const nodes = stateNodes(state);
+    const per = new Array(nodes.length).fill(null);
+    let best = router;
+    let winner = 0;
+    let strongest = -1;
+    for (let k = 0; k < nodes.length; k++) {
+      const nd = nodes[k];
+      if (!nodeActive(nd, band)) continue;
+      const v = softSignal(ctx, nd.pos, p, band, off + (nd.power || 0), state.soften);
+      per[k] = v;
+      if (strongest < 0 || v > per[strongest]) strongest = k;
+      if (v > best) {
+        best = v;
+        winner = k + 1;
+      }
+    }
+    return { router, nodes: per, best, winner, strongest };
+  }
+
+  /**
+   * Strongest signal at p from the router and every node serving this band (SPEC 14.2) - softened like the heat
+   * map (state.soften, default SOFTEN; 0 = exact rays). A node on another floor comes through the ceiling (SPEC 14.3).
    * @param {object} ctx
    * @param {{x,y}} p normalized
    * @param {number} band
-   * @param {{router:{x,y}, node?:object|null, offsets?:object, soften?:number}} state as produced by fieldParams()
+   * @param {object} state as produced by fieldParams()
    */
   function combinedSignal(ctx, p, band, state) {
     if (units.normBandMode(band) === 'auto') return steeredSignal(ctx, p, { ...state, band: 'auto' }).signal;
-    const off = offsetFor(state.offsets, band);
-    let s = softSignal(ctx, state.router, p, band, off, state.soften);
-    if (nodeActive(state.node, band)) {
-      const sn = softSignal(ctx, state.node.pos, p, band, off + (state.node.power || 0), state.soften);
-      if (sn > s) s = sn;
-    }
-    return s;
+    return sourcesAt(ctx, p, band, state).best;
   }
 
   /**
-   * Signal of the wireless uplink router -> node on the node's backhaul band (what the heat map of the router alone
-   * shows at the node, softened with state.soften), or null without a node. Compare with node.backhaulThreshold.
+   * Signal of a node's wireless uplink (SPEC 14.2): from its uplink - the router, or the uplink node (whose power is
+   * added) - to the node, on the node's backhaul band, traced on the node's floor (SPEC 14.3), softened, calibrated.
+   * Compare with node.backhaulThreshold. null without such a node.
+   * @param {object} ctx
+   * @param {object} state fieldParams() result
+   * @param {number} [index=0] index into state.nodes
    */
-  function backhaulSignal(ctx, state) {
-    if (!state || !state.node || state.node.mode === 'none' || !state.node.pos) return null;
-    const bb = state.node.backhaulBand || 5;
-    return softSignal(ctx, state.router, state.node.pos, bb, offsetFor(state.offsets, bb), state.soften);
+  function backhaulSignal(ctx, state, index) {
+    const nodes = stateNodes(state);
+    const k = Number.isInteger(index) ? index : 0;
+    const nd = nodes[k];
+    if (!nd || nd.mode === 'none' || !nd.pos || !state.router) return null;
+    const bb = nd.backhaulBand || 5;
+    const ui = uplinkIndexOf(nodes, nd);
+    const src = ui >= 0 ? nodes[ui].pos : asRouter(ctx, state.router);
+    const extra = ui >= 0 ? nodes[ui].power || 0 : 0;
+    const c = nd.pos.floor !== undefined && nd.pos.floor !== null && nd.pos.floor !== ctx.floor ? floorContext(ctx, nd.pos.floor) : ctx;
+    return softSignal(c, src, { x: nd.pos.x, y: nd.pos.y }, bb, offsetFor(state.offsets, bb) + extra, state.soften);
+  }
+
+  /** backhaulSignal() of every node of the state (same order). */
+  function backhaulSignals(ctx, state) {
+    return stateNodes(state).map((_, k) => backhaulSignal(ctx, state, k));
   }
 
   /**
-   * The signal a band-steering client gets at p (SPEC 13): the combined signal (router + node where it serves that
+   * The signal a band-steering client gets at p (SPEC 13): the combined signal (router + every node serving that
    * band, softened, calibrated) of every band the router sends, and the band the steering rule picks there. A state
    * with one band gives that band.
    * @param {object} ctx
    * @param {{x,y}} p normalized
    * @param {object} state fieldParams() result
    * @returns {{band:2.4|5|6|null, signal:number|null, byBand:{'2.4':number|null,'5':number|null,'6':number|null},
-   *            nodeWins:boolean}}
+   *            nodeWins:boolean, winner:number}} winner (SPEC 14.2) = 0 router / k = state.nodes[k-1] on the picked band
    */
   function steeredSignal(ctx, p, state) {
     const auto = isAuto(state);
     const one = units.normBand(state && state.band);
     const bands = auto ? routerBandList(state.bands) : one === null ? [] : [one];
     const byBand = { '2.4': null, '5': null, '6': null };
-    const wins = { '2.4': false, '5': false, '6': false };
+    const wins = { '2.4': 0, '5': 0, '6': 0 };
     for (const b of bands) {
       const k = units.bandKey(b);
-      const off = offsetFor(state.offsets, b);
-      let s = softSignal(ctx, state.router, p, b, off, state.soften);
-      if (nodeActive(state.node, b)) {
-        const sn = softSignal(ctx, state.node.pos, p, b, off + (state.node.power || 0), state.soften);
-        if (sn > s) {
-          s = sn;
-          wins[k] = true;
-        }
-      }
-      byBand[k] = s;
+      const r = sourcesAt(ctx, p, b, state);
+      byBand[k] = r.best;
+      wins[k] = r.winner;
     }
     const band = auto ? steerBand(byBand, bands, state.steer) : bands.length ? bands[0] : null;
     const k = band === null ? null : units.bandKey(band);
-    return { band, signal: k === null ? null : byBand[k], byBand, nodeWins: k !== null && wins[k] };
+    const winner = k === null ? 0 : wins[k];
+    return { band, signal: k === null ? null : byBand[k], byBand, nodeWins: winner > 0, winner };
   }
 
   /**
@@ -1215,12 +1442,14 @@
    * number matches the colour under the pointer.
    * @param {object} ctx
    * @param {{x,y}} p normalized
-   * @param {object} state fieldParams() result (needs band, router, node, offsets, baseline; optional soften)
-   * @returns {{band:number, router:number, node:number|null, combined:number, baseline:number|null,
-   *            bestSource:'router'|'node', backhaul:number|null, weakBackhaul:boolean, byBand?:object,
-   *            baselineBand?:number|null, steered?:true}}
-   *          band = the band of the numbers; router = trial router only; node = second node only (null when off for
-   *          this band); combined = max of both; baseline = today's router alone (null when state.baseline missing).
+   * @param {object} state fieldParams() result (needs band, router, nodes / node, offsets, baseline; optional soften)
+   * @returns {{band:number, router:number, node:number|null, nodes:(number|null)[], nodeIndex:number, nodeId:string|null,
+   *            winner:number, combined:number, baseline:number|null, bestSource:'router'|'node', backhaul:number|null,
+   *            weakBackhaul:boolean, byBand?:object, baselineBand?:number|null, steered?:true}}
+   *          band = the band of the numbers; router = trial router only; nodes = every node alone (null: off for this
+   *          band); node / nodeIndex / nodeId = the strongest node (null / -1 / null without one); winner = 0 router,
+   *          k = state.nodes[k-1]; combined = the strongest of all; baseline = today's router alone (null when
+   *          state.baseline missing); backhaul / weakBackhaul = of the strongest node.
    *          Band mode 'auto' (SPEC 13): band = the band a steering client uses at p in the trial, byBand = the trial's
    *          combined signal per band, baseline / baselineBand = what a steering client gets there today.
    */
@@ -1235,7 +1464,7 @@
       d.baselineBand = null;
       d.baseline = null;
       if (state.baseline) {
-        const t = steeredSignal(ctx, p, { band: 'auto', bands: state.bands, steer: state.steer, router: state.baseline, node: null, offsets: state.offsets, soften: state.soften });
+        const t = steeredSignal(ctx, p, { band: 'auto', bands: state.bands, steer: state.steer, router: state.baseline, nodes: [], node: null, offsets: state.offsets, soften: state.soften });
         d.baseline = t.signal;
         d.baselineBand = t.band;
       }
@@ -1248,22 +1477,27 @@
   function detailOn(ctx, p, state, band) {
     const off = offsetFor(state.offsets, band);
     const sf = state.soften;
-    const router = softSignal(ctx, state.router, p, band, off, sf);
-    let node = null;
-    if (nodeActive(state.node, band)) node = softSignal(ctx, state.node.pos, p, band, off + (state.node.power || 0), sf);
-    const combined = node !== null && node > router ? node : router;
-    const baseline = state.baseline ? softSignal(ctx, state.baseline, p, band, off, sf) : null;
-    const backhaul = backhaulSignal(ctx, state);
-    const nodeWins = node !== null && node > router;
+    const r = sourcesAt(ctx, p, band, state);
+    const nodes = stateNodes(state);
+    const baseline = state.baseline ? softSignal(ctx, asRouter(ctx, state.baseline), p, band, off, sf) : null;
+    const k = r.strongest;
+    const nd = k >= 0 ? nodes[k] : null;
+    const backhaul = nd ? backhaulSignal(ctx, state, k) : nodes.length ? backhaulSignal(ctx, state, 0) : null;
+    const winNode = r.winner > 0 ? nodes[r.winner - 1] : null;
+    const winBackhaul = winNode ? (r.winner - 1 === k ? backhaul : backhaulSignal(ctx, state, r.winner - 1)) : null;
     return {
       band: units.normBand(band),
-      router,
-      node,
-      combined,
+      router: r.router,
+      node: k >= 0 ? r.nodes[k] : null,
+      nodes: r.nodes,
+      nodeIndex: k,
+      nodeId: nd ? nd.id || null : null,
+      winner: r.winner,
+      combined: r.best,
       baseline,
-      bestSource: nodeWins ? 'node' : 'router',
+      bestSource: r.winner > 0 ? 'node' : 'router',
       backhaul,
-      weakBackhaul: nodeWins && isWirelessNode(state.node) && backhaul !== null && backhaul < state.node.backhaulThreshold,
+      weakBackhaul: !!(winNode && isWirelessNode(winNode) && winBackhaul !== null && winBackhaul < winNode.backhaulThreshold),
     };
   }
 
@@ -1406,27 +1640,43 @@
    *          suspicious: |offset| > 20 dB (wrong band, scale or walls - tell the user); fitted/outliers only with a fit
    */
   function calibrate(ctx, measurements, band, opts) {
+    return calibrateGroups([{ ctx, list: measurements }], band, opts);
+  }
+
+  /**
+   * calibrate() over measurement groups that live on different floors (SPEC 14.3): [{ctx (that floor's context), list,
+   * floor?}] - every point is predicted on its own floor (the router on its floor), ONE offset for all of them (the
+   * router's strength). used[i].floor tells the floor when a group carries one.
+   */
+  function calibrateGroups(groups, band, opts) {
     const o = opts || {};
     const b = units.normBand(band);
     // odd data (null entries, NaN positions) never throws: such points simply do not calibrate
-    const all = (Array.isArray(measurements) ? measurements : []).filter((m) => m && typeof m === 'object' && units.normBand(m.band) === b && isNum(m.value) && isNum(m.x) && isNum(m.y));
+    const all = [];
+    for (const g of groups) {
+      for (const m of Array.isArray(g.list) ? g.list : []) {
+        if (m && typeof m === 'object' && units.normBand(m.band) === b && isNum(m.value) && isNum(m.x) && isNum(m.y)) all.push({ m, c: g.ctx, floor: g.floor });
+      }
+    }
     let list = all;
     let fallback = false;
     if (o.device) {
       const key = profileKey(o.device);
-      const own = all.filter((m) => profileKey(m.device) === key);
+      const own = all.filter((e) => profileKey(e.m.device) === key);
       if (own.length) list = own;
       else if (all.length) fallback = true;
     }
+    const ctx = groups.length ? groups[0].ctx : null;
     const fit = ctx && ctx.fit;
     if (!list.length || !o.baseline) {
       const stored = fit && b !== null ? fit.offsets[units.bandKey(b)] : null;
       if (isNum(stored)) return { offset: stored, rms: 0, n: 0, fallback: false, suspicious: Math.abs(stored) > 20, used: [], fitted: true, outliers: [] };
       return { offset: 0, rms: 0, n: 0, fallback: false, suspicious: false, used: [] };
     }
-    const used = list.map((m) => {
-      const predicted = softRawSignal(ctx, o.baseline, m, b, o.soften);
+    const used = list.map(({ m, c, floor }) => {
+      const predicted = softRawSignal(c, asRouter(c, o.baseline), m, b, o.soften);
       const u = { id: m.id, x: m.x, y: m.y, measured: m.value, predicted, residual: m.value - predicted };
+      if (floor !== undefined) u.floor = floor;
       if (m.bandInferred === true) u.inferred = true;
       return u;
     });
@@ -1468,9 +1718,43 @@
   const INFERRED_WEIGHT = 0.5;
   const unknownBand = (m) => isObj(m) && (m.band === null || units.normBandMode(m.band) === 'auto');
 
+  /** The project as seen from the context's floor (SPEC 14.3): its measurements / plan at the top level. */
+  function viewFor(ctx, project) {
+    return ctx && ctx.floor !== null && ctx.floor !== undefined && PJ.atFloor ? PJ.atFloor(project, ctx.floor) : project;
+  }
+
   /**
-   * The band a steering client most likely used at p TODAY (router at net.baseline, no second node): the steering
-   * rule on the (calibrated, softened) signals of the router's bands there.
+   * The measurement groups of every floor (SPEC 14.3) for pooled calibration: [{ctx, list, floor}], one per floor with
+   * measurements (the context's own floor first); one group without floors. resolve = infer unknown bands (each on
+   * its own floor) with the offsets known() returns.
+   */
+  function floorGroups(ctx, project, soften, resolve, known) {
+    const many = Array.isArray(project.floors) && project.floors.filter(isObj).length > 1 && ctx && ctx.floor !== null && ctx.floor !== undefined;
+    const one = (c, pf, floor) => {
+      const list = Array.isArray(pf.measurements) ? pf.measurements : [];
+      const out = { ctx: c, list: resolve && list.some(unknownBand) ? resolveOn(c, pf, { offsets: known ? known() : null, soften }) : list };
+      if (floor !== undefined) out.floor = floor;
+      return out;
+    };
+    if (!many) return [one(ctx, viewFor(ctx, project))];
+    const ids = [ctx.floor].concat(
+      project.floors
+        .filter(isObj)
+        .map((f) => f.id)
+        .filter((id) => id !== ctx.floor),
+    );
+    const groups = [];
+    for (const id of ids) {
+      const pf = PJ.atFloor(project, id);
+      if (!Array.isArray(pf.measurements) || !pf.measurements.length) continue;
+      groups.push(one(floorContext(ctx, id), pf, id));
+    }
+    return groups.length ? groups : [one(ctx, viewFor(ctx, project), ctx.floor)];
+  }
+
+  /**
+   * The band a steering client most likely used at p TODAY (router at net.baseline - on its floor -, no node): the
+   * steering rule on the (calibrated, softened) signals of the router's bands there. p lies on the context's floor.
    * @param {object} ctx
    * @param {object} project
    * @param {{x,y}} p
@@ -1482,23 +1766,37 @@
     const bl = project && project.net && project.net.baseline;
     if (!ctx || !bl || !isNum(bl.x) || !isNum(bl.y) || !p || !isNum(p.x) || !isNum(p.y)) return { band: null, signals: { '2.4': null, '5': null, '6': null } };
     const offsets = o.offsets || knownOffsets(ctx, project, o.soften);
-    const st = steeredSignal(ctx, { x: p.x, y: p.y }, { band: 'auto', bands: routerBandList(project), steer: steerOf(project), router: bl, node: null, offsets, soften: o.soften });
+    const st = steeredSignal(ctx, { x: p.x, y: p.y }, { band: 'auto', bands: routerBandList(project), steer: steerOf(project), router: asRouter(ctx, bl), nodes: [], node: null, offsets, soften: o.soften });
     return { band: st.band, signals: st.byBand };
   }
 
-  /** Calibration offsets of the measurements whose band is known (the basis of the band guess). */
+  /** Calibration offsets of the measurements whose band is known, pooled over every floor (the basis of the band guess). */
   function knownOffsets(ctx, project, soften) {
     const out = { '2.4': 0, '5': 0, '6': 0 };
     const device = project.goal ? project.goal.device : undefined;
     const baseline = project.net ? project.net.baseline : undefined;
-    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, project.measurements, b, { device, baseline, soften }).offset;
+    const groups = floorGroups(ctx, project, soften, false);
+    for (const b of E.BANDS) out[units.bandKey(b)] = calibrateGroups(groups, b, { device, baseline, soften }).offset;
     return out;
   }
 
+  /** resolveBands() of the measurements of the project (view) pf on the context of its floor. */
+  function resolveOn(ctx, pf, o) {
+    const list = Array.isArray(pf.measurements) ? pf.measurements : [];
+    if (!list.some(unknownBand)) return list.slice();
+    let offsets = o.offsets || null;
+    return list.map((m) => {
+      if (!unknownBand(m) || !isNum(m.x) || !isNum(m.y)) return m;
+      if (!offsets) offsets = knownOffsets(ctx, pf, o.soften);
+      const r = inferBand(ctx, pf, m, { offsets, soften: o.soften });
+      return r.band === null ? m : { ...m, band: r.band, bandInferred: true };
+    });
+  }
+
   /**
-   * project.measurements with every unknown band (null) inferred (SPEC 13): such a point becomes a copy
-   * {...m, band, bandInferred:true}; every other entry is the same object. Same order and length. Points that cannot
-   * be inferred (no position / baseline) stay as they are.
+   * The measurements of the context's floor (SPEC 14.3) with every unknown band (null) inferred (SPEC 13): such a point
+   * becomes a copy {...m, band, bandInferred:true}; every other entry is the same object. Same order and length. Points
+   * that cannot be inferred (no position / baseline) stay as they are.
    * @param {object} ctx
    * @param {object} project
    * @param {{offsets?:object, soften?:number}} [opts] offsets default: the calibration of the known-band points
@@ -1506,20 +1804,13 @@
    * @returns {Array<object>}
    */
   function resolveBands(ctx, project, opts) {
-    const o = opts || {};
-    const list = project && Array.isArray(project.measurements) ? project.measurements : [];
-    if (!list.some(unknownBand)) return list.slice();
-    let offsets = o.offsets || null;
-    return list.map((m) => {
-      if (!unknownBand(m) || !isNum(m.x) || !isNum(m.y)) return m;
-      if (!offsets) offsets = knownOffsets(ctx, project, o.soften);
-      const r = inferBand(ctx, project, m, { offsets, soften: o.soften });
-      return r.band === null ? m : { ...m, band: r.band, bandInferred: true };
-    });
+    if (!project || !Array.isArray(project.measurements)) return [];
+    return resolveOn(ctx, viewFor(ctx, project), opts || {});
   }
 
   /**
-   * calibrate() for the three bands using the project's measurements, baseline and goal.device.
+   * calibrate() for the three bands using the measurements of EVERY floor (SPEC 14.3: each predicted on its own floor,
+   * one offset per band = the router's strength), net.baseline and goal.device.
    * @param {object} ctx
    * @param {object} project
    * @param {{soften?:number}} [opts] soften in metres (default SOFTEN) - use the same value as for the fields
@@ -1531,14 +1822,16 @@
     const device = project.goal ? project.goal.device : undefined;
     const baseline = project.net ? project.net.baseline : undefined;
     // points without a known band take part on their inferred band, with a lower weight (SPEC 13)
-    const list = Array.isArray(project.measurements) && project.measurements.some(unknownBand) ? resolveBands(ctx, project, { soften }) : project.measurements;
-    for (const b of E.BANDS) out[units.bandKey(b)] = calibrate(ctx, list, b, { device, baseline, soften });
+    let known = null;
+    const knownOnce = () => known || (known = knownOffsets(ctx, project, soften));
+    const groups = floorGroups(ctx, project, soften, true, knownOnce);
+    for (const b of E.BANDS) out[units.bandKey(b)] = calibrateGroups(groups, b, { device, baseline, soften });
     return out;
   }
 
   /**
-   * Calibration offsets {'2.4':dB,'5':dB,'6':dB} to hand to field()/combinedSignal(). All zero when the user switched
-   * calibration off (project.view.calibrate === false).
+   * Calibration offsets {'2.4':dB,'5':dB,'6':dB} to hand to field()/combinedSignal() - the same on every floor (SPEC
+   * 14.3). All zero when the user switched calibration off (project.view.calibrate === false).
    * @param {object} ctx
    * @param {object} project
    * @param {{soften?:number}} [opts] as calibrateAll
@@ -1578,6 +1871,16 @@
     nodeActive,
     isWirelessNode,
     nodeParams,
+    nodeList,
+    stateNodes,
+    uplinkIndexOf,
+    backhaulSignals,
+    floorContext,
+    distance3,
+    asRouter,
+    vertOf,
+    calibrateGroups,
+    CROSS_WALL_WEIGHT,
     fieldParams,
     combinedSignal,
     steeredSignal,

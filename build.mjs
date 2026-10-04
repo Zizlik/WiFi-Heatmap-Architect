@@ -40,7 +40,7 @@
  *   - literal i18n keys used in JS exist in both languages (warning only: keys may be built dynamically)
  *   - the two Deep dark token blocks in 00-tokens.css are identical and the OLED block declares the same properties
  *   - template has no duplicate ids and contains the DOM contract ids
- *   - built files are <= 2 MB (readable, unminified code on purpose: this is a local app opened from disk, so a
+ *   - built files are <= 2.5 MB (readable, unminified code on purpose: this is a local app opened from disk, so a
  *     minifier would buy nothing but harder debugging)
  */
 import fs from 'node:fs';
@@ -54,7 +54,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(ROOT, 'src');
 const TEMPLATE = path.join(SRC, 'template.html');
 const PWA_SRC = path.join(SRC, 'pwa');
-const SIZE_LIMIT = 2 * 1024 * 1024; // 2 MB per built file (SPEC 0.10, raised from 1.5 MB in stage 7); no minifier by design
+const SIZE_LIMIT = 2.5 * 1024 * 1024; // 2.5 MB per built file (SPEC 0.10, raised from 2 MB in stage 9); no minifier by design
 
 const args = new Set(process.argv.slice(2));
 const CHECK = args.has('--check');

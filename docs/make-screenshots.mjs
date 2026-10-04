@@ -3,7 +3,7 @@
  * Captures the README screenshots from the real UI, using the built-in DEMO flat only (never a private floor plan).
  *
  *   npm install --no-save puppeteer-core      (once; package.json stays dependency-free)
- *   node build.mjs && node docs/make-screenshots.mjs [--lang=en|cs] [--out=docs] [--only=wifi,ap,editor,guide,phone,dark]
+ *   node build.mjs && node docs/make-screenshots.mjs [--lang=en|cs] [--out=docs] [--only=wifi,ap,editor,guide,phone,dark,floors,scale]
  *
  * Writes (next to this script unless --out is given):
  *   screenshot-wifi.png    1440x900  Wi-Fi mode, the ROUTER ONLY (no second access point), every layer on: heat map in
@@ -23,6 +23,13 @@
  *   screenshot-guide.png   1440x900  the "First measurement" guide: the suggested spots on the map, nothing measured yet
  *   screenshot-dark.png    1440x900  the same Wi-Fi scene as screenshot-wifi.png (router only) in the Deep dark theme:
  *                                    Signal view with the predicted change at every measured spot
+ *   screenshot-floors.png  1440x900  the built-in two-storey demo house (SPEC 14.3), its upper floor: the floor switch on
+ *                                    the map, the Wi-Fi mesh node on the landing with its Wi-Fi link to the router, which
+ *                                    stands downstairs (a faded "on another floor" ghost), the "Signal source" layer, and
+ *                                    the Result card of the floor with the "Whole house" total
+ *   screenshot-scale.png   1440x900  Floor-plan mode, the "Scale" card (SPEC 14.1): the demo flat as if its scale were not
+ *                                    verified yet - "Do you know the floor area?" with the area typed in and the live
+ *                                    preview of what every room becomes
  *
  * The measured spots are made up for the picture: the model's own prediction at each spot +-2 dB, with plausible speed
  * tests; no network name, BSSID or MAC address appears anywhere.
@@ -144,10 +151,12 @@ const showcase = (page, { node = false, move = false } = {}) => page.evaluate(as
     if (node) {
       const bed = roomBy(1);
       const lp = E.geom.labelPoint(bed.points);
-      p.node.mode = 'ap_cable';
-      p.node.pos = E.project.nearestFloor(p.plan, WH.planner.insidePoint({ x: lp.x - 0.9 / (W * mpp), y: lp.y - 0.6 / (H * mpp) }, 0.5));
+      // SPEC 14.2: project.nodes - one wired access point ("AP 2", the engine's default name)
+      const n = E.project.newNode(p, { mode: 'ap_cable', lang: WH.i18n.lang });
+      n.pos = E.project.nearestFloor(p.plan, WH.planner.insidePoint({ x: lp.x - 0.9 / (W * mpp), y: lp.y - 0.6 / (H * mpp) }, 0.5));
+      p.nodes.push(n);
     }
-  }, ['measurements', 'view', 'node']);
+  }, ['measurements', 'view', 'nodes']);
   if (move) {
     // the optimiser's answer (deterministic): the router leaves the hall, the dots show "−61 → −48 (+13)"
     const p = WH.store.project;
@@ -155,7 +164,7 @@ const showcase = (page, { node = false, move = false } = {}) => page.evaluate(as
     const grid = E.raster.grid(c2, { cell: 4 });
     const r = await E.optimize.find(c2, grid, {
       band: p.view.band, bands: E.model.routerBandList(p), steer: E.model.steerOf(p), goalRoom: null, allowedRoom: null,
-      threshold: p.model.threshold, excluded: p.goal.excluded, router: { ...p.net.router }, node: null, offsets: { '2.4': 0, 5: 0, 6: 0 },
+      threshold: p.model.threshold, excluded: p.goal.excluded, router: { ...p.net.router }, nodes: [], offsets: { '2.4': 0, 5: 0, 6: 0 },
     });
     WH.store.commit('Showcase', (q) => { q.net.router = { x: Math.round(r.pos.x * 1e6) / 1e6, y: Math.round(r.pos.y * 1e6) / 1e6 }; }, ['net']);
   }
@@ -208,7 +217,7 @@ try {
     // "Signal source" layer with one simple border (bedroom, bathroom and WC are AP 2's)
     const { page, problems } = await openDemo(browser, { width: 1440, height: 900 });
     await showcase(page, { node: true, move: true });
-    const on = await page.evaluate(() => { const S = WH.planner.S; const v = WH.store.project.view; return v.sourceZones && v.ranges && WH.store.project.node.mode === 'ap_cable' && !!(S.cont && S.cont.node && Object.keys(S.cont.node).length); });
+    const on = await page.evaluate(() => { const S = WH.planner.S; const v = WH.store.project.view; return v.sourceZones && v.ranges && WH.store.project.nodes.length === 1 && WH.store.project.nodes[0].mode === 'ap_cable' && !!(S.cont && S.cont.nodes && S.cont.nodes.length); });
     await sleep(1500);
     if (!on) throw new Error('ap shot: the second access point with its range lines and the source layer is not on');
     await shot(page, 'screenshot-ap.png');
@@ -254,10 +263,64 @@ try {
     // Deep dark, the Signal view of the router-only scene: the moved router's predicted change at every spot ("−61 → −48 (+13)")
     const { page, problems } = await openDemo(browser, { width: 1440, height: 900, theme: 'dark' });
     await showcase(page, { move: true });
-    const on = await page.evaluate(() => { const v = WH.store.project.view; return v.layer === 'signal' && v.points && v.whatif && WH.store.project.node.mode === 'none' && WH.planner.wi.active(); });
+    const on = await page.evaluate(() => { const v = WH.store.project.view; return v.layer === 'signal' && v.points && v.whatif && !WH.store.project.nodes.length && WH.planner.wi.active(); });
     if (!on) throw new Error('dark shot: the Signal view with the predicted change at the points (router only) is not on');
     await sleep(1500);
     await shot(page, 'screenshot-dark.png');
+    allProblems.push(...problems);
+    await page.close();
+  }
+  if (want('floors')) {
+    // the built-in two-storey house (SPEC 14.3): its upper floor with the mesh node, the router downstairs as a ghost,
+    // the floor switch on the map and the Result card with "Celý dům"
+    const { page, problems } = await openDemo(browser, { width: 1440, height: 900 });
+    const ok = await page.evaluate((lang) => {
+      const E = WH.engine.project;
+      WH.store.replace(E.create({ template: 'house2', lang }), 'file.demo');
+      const p = WH.store.project;
+      WH.store.update((pr) => { Object.assign(pr.view, { layer: 'signal', ranges: false, sourceZones: true, values: false, labels: true, walls: true, furniture: true }); }, ['view'], { quiet: true });
+      WH.store.update((pr) => E.switchFloor(pr, 'floor-2'), ['plan', 'nodes', 'measurements', 'goal', 'floors', 'view'], { quiet: true });
+      return p.floors.length === 2 && E.activeFloorId(WH.store.project) === 'floor-2' && WH.store.project.nodes.length === 1;
+    }, LANG);
+    if (!ok) throw new Error('floors shot: the two-storey demo house is not on its upper floor');
+    await sleep(1800);   // the "Whole house" total is computed once the pointer rests
+    await page.evaluate(() => {
+      // the Result card's title just under the sidebar's sticky action bar
+      const c = document.querySelector('[data-card="pl-result"]');
+      if (!c) return;
+      c.scrollIntoView({ block: 'start' });
+      const bar = document.querySelector('.pl-actions');
+      let el = c.parentElement;
+      while (el && el.scrollHeight <= el.clientHeight + 1) el = el.parentElement;
+      if (el && bar) el.scrollTop -= bar.getBoundingClientRect().height + 12;
+    });
+    await sleep(600);
+    await shot(page, 'screenshot-floors.png');
+    allProblems.push(...problems);
+    await page.close();
+  }
+  if (want('scale')) {
+    // the editor's "Měřítko" card (SPEC 14.1) asking for the flat's area, the area typed in, every room's new size
+    // previewed - the demo flat with its scale marked "not verified" for the picture
+    const { page, problems } = await openDemo(browser, { width: 1440, height: 900 });
+    const area = await page.evaluate(() => {
+      WH.store.update((pr) => { pr.scale = { ...pr.scale, verified: false, method: 'default', ref: null }; }, ['scale'], { quiet: true });
+      WH.views.go('editor');
+      return Math.round(WH.engine.project.planArea(WH.store.project).areaM2);
+    });
+    await sleep(900);
+    const input = await page.$('.ed-scale-card .ed-scale-ask input');
+    if (!input) throw new Error('scale shot: the "Do you know the floor area?" field is missing');
+    await input.click();
+    await page.keyboard.type(String(area));
+    await sleep(500);
+    await clean(page);
+    await page.mouse.move(2, 2);
+    await page.evaluate(() => { const i = document.querySelector('.ed-scale-card .ed-scale-ask input'); if (i) i.focus(); });
+    await sleep(300);
+    const dest = path.join(OUT, 'screenshot-scale.png');
+    await page.screenshot({ path: dest, type: 'png' });
+    console.log(`wrote ${path.relative(process.cwd(), dest)}`);
     allProblems.push(...problems);
     await page.close();
   }

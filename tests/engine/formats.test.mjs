@@ -62,7 +62,9 @@ test('serialize: JSON with the legacy keys first and the v3 extras', () => {
   assert.deepEqual(data.original, p.net.baseline);
   assert.deepEqual(data.optic, p.net.optic);
   assert.ok(data.width >= 6 && data.width <= 25);
-  assert.deepEqual(Object.keys(data.project), ['name', 'scale', 'net', 'node', 'model', 'goal', 'measurements', 'view']);
+  // SPEC 14: node = the legacy single node of older builds (nodes[0]), nodes + floors = the new data
+  assert.deepEqual(Object.keys(data.project), ['name', 'scale', 'net', 'node', 'nodes', 'model', 'goal', 'measurements', 'view', 'floors']);
+  assert.deepEqual(Object.keys(data.project.node).sort(), ['backhaulBand', 'backhaulThreshold', 'bands', 'maxMbps', 'mode', 'pos', 'power']);
   assert.equal(data.project.plan, undefined, 'the plan is stored once');
   assert.deepEqual(data.plan, p.plan);
   // background can be left out (e.g. for the agent export)

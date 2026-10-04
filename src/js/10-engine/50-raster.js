@@ -173,48 +173,70 @@
   // field
   // ---------------------------------------------------------------------------------------------------------------
 
+  /**
+   * The sources of a field at one band (SPEC 14.2 / 14.3): the router first, then every node of the params that
+   * serves the band. {x, y (px), off (dB: offset + the node's power), V (model.vertOf: null = this floor), ceil (dB of
+   * the ceilings crossed at this band x wallFactor), wallW (weight of this floor's walls), win (0 router, k = nodes[k-1]),
+   * floor}.
+   */
+  function sourcesFor(ctx, params, band) {
+    const off = model.offsetFor(params.offsets, band);
+    const bi = model.bandIndex(band);
+    const mk = (pt, o, win) => {
+      const V = model.vertOf(ctx, pt.floor);
+      return { x: pt.x * W, y: pt.y * H, off: o, V, ceil: V ? V.ceil[bi] * ctx.wf : 0, wallW: V ? V.wallW : 1, win, floor: pt.floor === undefined ? null : pt.floor };
+    };
+    const out = [mk(model.asRouter(ctx, params.router), off, 0)];
+    const nodes = model.stateNodes(params);
+    for (let k = 0; k < nodes.length; k++) {
+      const nd = nodes[k];
+      if (model.nodeActive(nd, band)) out.push(mk(nd.pos, off + (nd.power || 0), k + 1));
+    }
+    return out;
+  }
+
   /** Everything needed to evaluate the signal at a px point for one set of field params. */
   function prepare(ctx, params) {
     const band = units.normBand(params.band !== undefined ? params.band : params.targetBand);
     if (band === null || !params.router) throw new RangeError('raster.field: band and router are required');
-    const off = model.offsetFor(params.offsets, band);
-    const node = model.nodeActive(params.node, band) ? params.node : null;
     return {
       band,
-      rx: params.router.x * W,
-      ry: params.router.y * H,
-      off,
       base: model.bandBase(ctx, band),
       k: 10 * ctx.p.n,
       mpp: ctx.mpp,
-      node,
-      nx: node ? node.pos.x * W : 0,
-      ny: node ? node.pos.y * H : 0,
-      noff: node ? off + (node.power || 0) : 0,
-      win: false,
+      src: sourcesFor(ctx, params, band),
+      win: 0,
     };
   }
 
-  /** Signal (dBm, clamped) at one px point; sets P.win when the node is the stronger source. */
-  function evalPx(ctx, P, x, y) {
-    let dx = x - P.rx;
-    let dy = y - P.ry;
+  /** Signal (dBm, clamped) of one source at one px point, exact rays. */
+  function evalSource(ctx, P, S, x, y) {
+    const dx = x - S.x;
+    const dy = y - S.y;
     let dm = Math.sqrt(dx * dx + dy * dy) * P.mpp;
-    let s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, P.rx, P.ry, x, y) + P.off;
-    s = s < -110 ? -110 : s > -20 ? -20 : s;
-    P.win = false;
-    if (P.node) {
-      dx = x - P.nx;
-      dy = y - P.ny;
-      dm = Math.sqrt(dx * dx + dy * dy) * P.mpp;
-      let s2 = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, P.nx, P.ny, x, y) + P.noff;
-      s2 = s2 < -110 ? -110 : s2 > -20 ? -20 : s2;
-      if (s2 > s) {
-        s = s2;
-        P.win = true;
+    let L = model.traceLoss(ctx, S.x, S.y, x, y);
+    if (S.V) {
+      dm = Math.sqrt(dm * dm + S.V.dz2);
+      L = S.wallW * L + S.ceil;
+    }
+    const s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - L + S.off;
+    return s < -110 ? -110 : s > -20 ? -20 : s;
+  }
+
+  /** Signal (dBm, clamped) at one px point: the strongest source; P.win = its winner index (the router wins ties). */
+  function evalPx(ctx, P, x, y) {
+    const src = P.src;
+    let best = evalSource(ctx, P, src[0], x, y);
+    let win = 0;
+    for (let k = 1; k < src.length; k++) {
+      const v = evalSource(ctx, P, src[k], x, y);
+      if (v > best) {
+        best = v;
+        win = src[k].win;
       }
     }
-    return s;
+    P.win = win;
+    return best;
   }
 
   function fieldPlain(ctx, g, params, reuse) {
@@ -222,7 +244,7 @@
     const n = g.cols * g.rows;
     const out = reuse && reuse.length === n ? reuse : new Float32Array(n);
     out.fill(NaN);
-    const nodeWins = P.node ? new Uint8Array(n) : null;
+    const nodeWins = P.src.length > 1 ? new Uint8Array(n) : null;
     const idx = g.idx;
     const cols = g.cols;
     const colPx = g.colPx;
@@ -231,7 +253,7 @@
       const i = idx[m];
       const r = (i / cols) | 0;
       out[i] = evalPx(ctx, P, colPx[i - r * cols], rowPx[r]);
-      if (P.win) nodeWins[i] = 1;
+      if (nodeWins) nodeWins[i] = P.win;
     }
     return { field: out, nodeWins };
   }
@@ -244,7 +266,8 @@
    * room by more than AA_EDGE_DB (wedge and shadow edges, wall steps, steep decay near the router) are re-evaluated as
    * the average of aa x aa sub-samples (only sub-samples that lie in the same room). Smooth regions keep their centre
    * sample, which equals the sub-sample average there, so the result is the same as supersampling every cell at a
-   * fraction of the cost (about 1.3x a plain field instead of aa^2 x).
+   * fraction of the cost (about 1.3x a plain field instead of aa^2 x). The winner of a refined cell is the source that
+   * wins most of its sub-samples (ties: the later source).
    */
   function fieldAA(ctx, g, params, reuse, aa) {
     const base = fieldPlain(ctx, g, params, reuse);
@@ -265,6 +288,9 @@
     }
     const fine = grid(ctx, { cell: g.cell / aa });
     const P = prepare(ctx, params);
+    const votes = new Int32Array(256);
+    let maxWin = 0;
+    for (const S of P.src) if (S.win > maxWin) maxWin = S.win;
     for (let m = 0; m < idx.length; m++) {
       const i = idx[m];
       if (!flag[i]) continue;
@@ -273,7 +299,7 @@
       const id = g.room[i];
       let sum = 0;
       let cnt = 0;
-      let wins = 0;
+      if (nodeWins) votes.fill(0, 0, maxWin + 1);
       for (let a = 0; a < aa; a++) {
         const fr = r * aa + a;
         if (fr >= fine.rows) break;
@@ -283,12 +309,16 @@
           if (fine.room[fr * fine.cols + fc] !== id) continue;
           sum += evalPx(ctx, P, fine.colPx[fc], fine.rowPx[fr]);
           cnt++;
-          if (P.win) wins++;
+          if (nodeWins) votes[P.win]++;
         }
       }
       if (!cnt) continue; // sliver of a room: keep the centre sample
       out[i] = sum / cnt;
-      if (nodeWins) nodeWins[i] = wins * 2 >= cnt ? 1 : 0;
+      if (nodeWins) {
+        let w = 0;
+        for (let k = 1; k <= maxWin; k++) if (votes[k] > 0 && votes[k] >= votes[w]) w = k;
+        nodeWins[i] = w;
+      }
     }
     return { field: out, nodeWins };
   }
@@ -581,58 +611,107 @@
   }
 
   let softA = new Float32Array(0);
-  let softB = new Float32Array(0);
+
+  // Per-source softened fields (SPEC 14.2: up to 8 nodes). A node's field does not change while the router - or another
+  // node - is dragged, so it is computed once per (geometry / parameters, cell, aa, sigma, band, position, floor,
+  // offset + power) and kept here; a drag frame recomputes only the source that moved. LRU, bounded by entries and by
+  // the cells kept (cell 4 fields are 64 k cells, cell 8 16 k).
+  const SRC_CACHE_MAX = 48;
+  const SRC_CACHE_CELLS = 2.5e6;
+  const srcCache = new Map();
+  let srcCells = 0;
+
+  function srcCacheKey(ctx, g, P, S, aa, radii) {
+    return [ctx.version, ctx.floor === undefined ? '' : ctx.floor, g.cell, g.count, aa, radii.join(','), P.band, P.base, P.k, S.x, S.y, S.floor === null ? '' : S.floor, S.off].join('|');
+  }
+
+  /** Drop every cached per-source field (raster.clearCache). */
+  function clearCache() {
+    srcCache.clear();
+    srcCells = 0;
+  }
+
+  /**
+   * One source's softened signal (dBm, clamped) on every floor cell, written into dst: the obstacle loss of every cell
+   * blurred (masked box-Gaussian), then free space - loss + offset. A source on another floor (S.V): 3-D distance, this
+   * floor's walls weighted by S.wallW (blurred like every loss), the ceilings crossed (S.ceil) added after the blur.
+   */
+  function sourceInto(ctx, g, P, S, aa, radii, plan, dst) {
+    const n = g.cols * g.rows;
+    if (softA.length < n) softA = new Float32Array(n);
+    lossField(ctx, g, S.x, S.y, softA, aa, plan);
+    blurRuns(plan, softA, radii);
+    const idx = g.idx;
+    const cols = g.cols;
+    const colPx = g.colPx;
+    const rowPx = g.rowPx;
+    const dz2 = S.V ? S.V.dz2 : 0;
+    const ww = S.wallW;
+    const ceil = S.ceil;
+    for (let m = 0; m < idx.length; m++) {
+      const i = idx[m];
+      const r = (i / cols) | 0;
+      const dx = colPx[i - r * cols] - S.x;
+      const dy = rowPx[r] - S.y;
+      const dh = Math.sqrt(dx * dx + dy * dy) * P.mpp;
+      const dm = dz2 ? Math.sqrt(dh * dh + dz2) : dh;
+      let s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - (ww * softA[i] + ceil) + S.off;
+      s = s < -110 ? -110 : s > -20 ? -20 : s;
+      dst[i] = s;
+    }
+  }
+
+  /** sourceInto() through the per-source cache: the cached Float32Array (read-only). */
+  function sourceCached(ctx, g, P, S, aa, radii, plan) {
+    const key = srcCacheKey(ctx, g, P, S, aa, radii);
+    const hit = srcCache.get(key);
+    if (hit && hit.length === g.cols * g.rows) {
+      srcCache.delete(key);
+      srcCache.set(key, hit);
+      return hit;
+    }
+    const f = new Float32Array(g.cols * g.rows);
+    sourceInto(ctx, g, P, S, aa, radii, plan, f);
+    srcCache.set(key, f);
+    srcCells += f.length;
+    while (srcCache.size > SRC_CACHE_MAX || (srcCells > SRC_CACHE_CELLS && srcCache.size > 1)) {
+      const k0 = srcCache.keys().next().value;
+      srcCells -= srcCache.get(k0).length;
+      srcCache.delete(k0);
+    }
+    return f;
+  }
 
   /**
    * Softened field: per source, the obstacle loss of every cell is blurred (masked box-Gaussian, sigma in cells), then
-   * signal = free space - blurred loss + offset (+ node power), clamped. With a second node both sources are softened
-   * separately and the stronger one wins per cell; nodeWins is decided on the softened values (so the hatch matches
-   * the colours and pointSignalDetail().bestSource).
+   * signal = free space - blurred loss + offset (+ node power), clamped. Every source is softened separately and the
+   * strongest one wins per cell (the router wins ties); nodeWins (the winner index: 0 router, k = nodes[k-1]) is decided
+   * on the softened values, so it matches the colours and pointSignalDetail().winner. The router's field is computed
+   * straight into the output (it moves on drag frames); the nodes' fields come from the per-source cache.
    */
   function fieldSoft(ctx, g, params, reuse, aa, radii) {
     const P = prepare(ctx, params);
     const n = g.cols * g.rows;
     const out = reuse && reuse.length === n ? reuse : new Float32Array(n);
     out.fill(NaN);
-    const nodeWins = P.node ? new Uint8Array(n) : null;
+    const nodeWins = P.src.length > 1 ? new Uint8Array(n) : null;
     if (!g.count) return { field: out, nodeWins };
     const plan = blurPlan(ctx, g);
     // scratch buffers are only indexed below n, so the largest grid's buffers serve every cell size (no reallocation
     // when the planner alternates between cell 8 drag frames, cell 4 settled frames and the contour grid)
-    if (softA.length < n) softA = new Float32Array(n);
-    lossField(ctx, g, P.rx, P.ry, softA, aa, plan);
-    blurRuns(plan, softA, radii);
-    if (P.node) {
-      if (softB.length < n) softB = new Float32Array(n);
-      lossField(ctx, g, P.nx, P.ny, softB, aa, plan);
-      blurRuns(plan, softB, radii);
-    }
+    sourceInto(ctx, g, P, P.src[0], aa, radii, plan, out);
     const idx = g.idx;
-    const cols = g.cols;
-    const colPx = g.colPx;
-    const rowPx = g.rowPx;
-    for (let m = 0; m < idx.length; m++) {
-      const i = idx[m];
-      const r = (i / cols) | 0;
-      const x = colPx[i - r * cols];
-      const y = rowPx[r];
-      let dx = x - P.rx;
-      let dy = y - P.ry;
-      let dm = Math.sqrt(dx * dx + dy * dy) * P.mpp;
-      let s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - softA[i] + P.off;
-      s = s < -110 ? -110 : s > -20 ? -20 : s;
-      if (P.node) {
-        dx = x - P.nx;
-        dy = y - P.ny;
-        dm = Math.sqrt(dx * dx + dy * dy) * P.mpp;
-        let s2 = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - softB[i] + P.noff;
-        s2 = s2 < -110 ? -110 : s2 > -20 ? -20 : s2;
-        if (s2 > s) {
-          s = s2;
-          nodeWins[i] = 1;
+    for (let s = 1; s < P.src.length; s++) {
+      const S = P.src[s];
+      const f = sourceCached(ctx, g, P, S, aa, radii, plan);
+      const w = S.win;
+      for (let m = 0; m < idx.length; m++) {
+        const i = idx[m];
+        if (f[i] > out[i]) {
+          out[i] = f[i];
+          nodeWins[i] = w;
         }
       }
-      out[i] = s;
     }
     return { field: out, nodeWins };
   }
@@ -729,7 +808,7 @@
       if (k < 0) continue;
       out[i] = per[k].f[i];
       bandIdx[i] = k;
-      if (nodeWins && per[k].wins && per[k].wins[i]) nodeWins[i] = 1;
+      if (nodeWins && per[k].wins && per[k].wins[i]) nodeWins[i] = per[k].wins[i];
     }
     return { field: out, nodeWins, bands: bandIdx };
   }
@@ -740,19 +819,20 @@
   // (the same buffer refilled by other code) is never used: the positions must match. In the band mode Auto (SPEC 13)
   // the band of every cell is remembered the same way (the key then also holds the bands, thresholds and offsets).
   const winsOf = new WeakMap();
+  const flr = (q) => (q && q.floor !== undefined && q.floor !== null ? q.floor : '');
   const srcKey = (params) => {
-    const n = params.node;
+    const nodes = model.stateNodes(params);
+    const r = params.router;
     if (model.isAuto(params)) {
       const bands = model.routerBandList(params.bands);
       const st = model.steerOf(params.steer);
-      const on = !!(n && n.mode !== 'none' && n.pos);
-      const nodeBands = on ? bands.map((b) => (model.nodeActive(n, b) ? 1 : 0)).join('') : '';
       const offs = bands.map((b) => model.offsetFor(params.offsets, b)).join(',');
-      return ['auto', bands.join(','), st.six, st.five, offs, params.router.x, params.router.y, on ? n.pos.x : '', on ? n.pos.y : '', on ? n.power || 0 : '', nodeBands].join('|');
+      const np = nodes.map((nd) => [bands.map((b) => (model.nodeActive(nd, b) ? 1 : 0)).join(''), nd.pos ? nd.pos.x : '', nd.pos ? nd.pos.y : '', flr(nd.pos), nd.power || 0].join(':')).join(';');
+      return ['auto', bands.join(','), st.six, st.five, offs, r.x, r.y, flr(r), np].join('|');
     }
     const b = units.normBand(params.band !== undefined ? params.band : params.targetBand);
-    const on = model.nodeActive(n, b);
-    return [b, params.router.x, params.router.y, on ? n.pos.x : '', on ? n.pos.y : '', on ? n.power || 0 : ''].join('|');
+    const np = nodes.map((nd) => (model.nodeActive(nd, b) ? [nd.pos.x, nd.pos.y, flr(nd.pos), nd.power || 0].join(':') : '-')).join(';');
+    return [b, r.x, r.y, flr(r), np].join('|');
   };
   function remember(res, params) {
     try {
@@ -905,23 +985,43 @@
   function sourceEdges(g, wins, opts) {
     if (!g || !wins || wins.length !== g.cols * g.rows) return [];
     const iters = opts && opts.smooth !== undefined ? clamp(Math.floor(Number(opts.smooth)) || 0, 0, 4) : 2;
-    const rank = new Float32Array(wins.length).fill(NaN);
-    let any0 = false;
-    let any1 = false;
+    // the winners present (SPEC 14.2: 0 = router, k = node k); one source everywhere -> no border
+    const present = new Set();
+    for (let m = 0; m < g.idx.length; m++) present.add(wins[g.idx[m]]);
+    if (present.size < 2) return [];
+    const out = [];
+    const cols = g.cols;
+    // the box of every node's zone (+ 3 cells: the lattice extends 2 cells beyond the floor)
+    const box = new Map();
     for (let m = 0; m < g.idx.length; m++) {
       const i = g.idx[m];
-      if (wins[i]) {
-        rank[i] = 1;
-        any1 = true;
-      } else {
-        rank[i] = 0;
-        any0 = true;
+      const k = wins[i];
+      if (!k) continue;
+      const r = (i / cols) | 0;
+      const c = i - r * cols;
+      const b = box.get(k);
+      if (!b) box.set(k, { c0: c, c1: c, r0: r, r1: r });
+      else {
+        if (c < b.c0) b.c0 = c;
+        if (c > b.c1) b.c1 = c;
+        if (r < b.r0) b.r0 = r;
+        if (r > b.r1) b.r1 = r;
       }
     }
-    if (!any0 || !any1) return [];
-    const lat = latticeFromField(g, rank, 0.5);
-    const out = [];
-    for (const ch of march(lat)) out.push(iters ? chaikin(thinChain(ch, 0.5 * lat.spacing), iters) : ch);
+    const rank = new Float32Array(wins.length);
+    // the outline of every node's zone (a border between two nodes is the outline of both - drawn on the same line)
+    for (const k of [...present].filter((v) => v > 0).sort((a, b) => a - b)) {
+      const b = box.get(k);
+      const bx = { c0: Math.max(0, b.c0 - 3), c1: Math.min(cols - 1, b.c1 + 3), r0: Math.max(0, b.r0 - 3), r1: Math.min(g.rows - 1, b.r1 + 3) };
+      for (let r = bx.r0; r <= bx.r1; r++) {
+        for (let c = bx.c0; c <= bx.c1; c++) {
+          const i = r * cols + c;
+          rank[i] = g.room[i] ? (wins[i] === k ? 1 : 0) : NaN;
+        }
+      }
+      const lat = latticeFromField(g, rank, 0.5, bx);
+      for (const ch of march(lat)) out.push(iters ? chaikin(thinChain(ch, 0.5 * lat.spacing), iters) : ch);
+    }
     return out;
   }
 
@@ -935,26 +1035,35 @@
    *   wins (`router` = the rest); perRoom = the node's share of EVERY room with floor cells (0..100)
    */
   function sourceShare(g, wins, roomIds, excluded) {
-    const out = { node: 0, router: 100, perRoom: new Map() };
+    const out = { node: 0, router: 100, perRoom: new Map(), bySource: [100], perRoomBySource: new Map() };
     if (!g || !g.roomCells) return out;
     const ok = !!(wins && wins.length === g.cols * g.rows);
+    let K = 0;
+    if (ok) for (let m = 0; m < g.idx.length; m++) if (wins[g.idx[m]] > K) K = wins[g.idx[m]];
     const sel = new Set(selectRooms(g, roomIds, excluded));
     let total = 0;
-    let node = 0;
+    const tot = new Float64Array(K + 1);
     for (const id of g.roomIds) {
       const cells = g.roomCells.get(id);
-      let n = 0;
-      if (ok) for (let k = 0; k < cells.length; k++) if (wins[cells[k]]) n++;
-      out.perRoom.set(id, cells.length ? (100 * n) / cells.length : 0);
+      const cnt = new Float64Array(K + 1);
+      if (ok) for (let k = 0; k < cells.length; k++) cnt[wins[cells[k]]]++;
+      else cnt[0] = cells.length;
+      const len = cells.length;
+      out.perRoom.set(id, len ? (100 * (len - cnt[0])) / len : 0);
+      out.perRoomBySource.set(
+        id,
+        Array.from(cnt, (c) => (len ? (100 * c) / len : 0)),
+      );
       if (sel.has(id)) {
-        total += cells.length;
-        node += n;
+        total += len;
+        for (let k = 0; k <= K; k++) tot[k] += cnt[k];
       }
     }
     if (total) {
-      out.node = (100 * node) / total;
-      out.router = 100 - out.node;
-    }
+      out.bySource = Array.from(tot, (c) => (100 * c) / total);
+      out.router = out.bySource[0];
+      out.node = 100 - out.router;
+    } else out.bySource = Array.from(tot, (c, k) => (k ? 0 : 100));
     return out;
   }
 
@@ -1129,6 +1238,39 @@
   function stats(g, f, roomIds, threshold, excluded) {
     const ids = selectRooms(g, roomIds, excluded);
     const n = gatherInto(g, f, ids);
+    return summarize(scratch, n, threshold);
+  }
+
+  /**
+   * stats() over several grids at once (SPEC 14.3: "Celý dům" - the floors of a building pooled; every cell has the same
+   * area on every floor of one building, so this is simply the pool of all their cells).
+   * @param {Array<{grid:object, field:Float32Array, roomIds?:number[]|number|null, excluded?:number[]}>} parts
+   * @param {number} threshold
+   * @returns {{coverage:number, mean:number, median:number, p10:number, n:number}}
+   */
+  function statsMany(parts, threshold) {
+    const list = (Array.isArray(parts) ? parts : []).filter((q) => q && q.grid && q.grid.roomCells && q.field);
+    let total = 0;
+    const sel = list.map((q) => selectRooms(q.grid, q.roomIds, q.excluded));
+    list.forEach((q, k) => {
+      for (const id of sel[k]) {
+        const c = q.grid.roomCells.get(id);
+        if (c) total += c.length;
+      }
+    });
+    if (scratch.length < total) scratch = new Float32Array(Math.max(total, scratch.length * 2));
+    let n = 0;
+    list.forEach((q, k) => {
+      const f = q.field;
+      for (const id of sel[k]) {
+        const c = q.grid.roomCells.get(id);
+        if (!c) continue;
+        for (let i = 0; i < c.length; i++) {
+          const v = f[c[i]];
+          if (v === v) scratch[n++] = v; // skips NaN
+        }
+      }
+    });
     return summarize(scratch, n, threshold);
   }
 
@@ -1372,11 +1514,22 @@
    * except two rings of cells around it that get the mean of their valid neighbours, so the lines reach the room
    * outlines (they end up to ~2 cells outside them: clip to the rooms when drawing).
    */
-  function latticeFromField(g, f, threshold) {
-    const cols = g.cols;
-    const rows = g.rows;
+  function latticeFromField(g, f, threshold, box) {
+    // box (SPEC 14.2, many node zones): only the cells c0..c1 x r0..r1 of the grid - the lattice of a small zone costs
+    // what the zone covers, not the whole grid
+    const c0 = box ? box.c0 : 0;
+    const r0 = box ? box.r0 : 0;
+    const cols = box ? box.c1 - c0 + 1 : g.cols;
+    const rows = box ? box.r1 - r0 + 1 : g.rows;
     let v = new Float32Array(cols * rows);
-    for (let i = 0; i < v.length; i++) v[i] = g.room[i] ? f[i] - threshold : NaN;
+    if (box) {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const i = (r0 + r) * g.cols + c0 + c;
+          v[r * cols + c] = g.room[i] ? f[i] - threshold : NaN;
+        }
+      }
+    } else for (let i = 0; i < v.length; i++) v[i] = g.room[i] ? f[i] - threshold : NaN;
     for (let ring = 0; ring < 2; ring++) {
       const src = v;
       v = src.slice();
@@ -1405,8 +1558,8 @@
     }
     const X = new Float64Array(cols);
     const Y = new Float64Array(rows);
-    for (let c = 0; c < cols; c++) X[c] = g.colPx[c] / W;
-    for (let r = 0; r < rows; r++) Y[r] = g.rowPx[r] / H;
+    for (let c = 0; c < cols; c++) X[c] = g.colPx[c0 + c] / W;
+    for (let r = 0; r < rows; r++) Y[r] = g.rowPx[r0 + r] / H;
     return { nx: cols - 1, ny: rows - 1, v, X, Y, spacing: g.cell };
   }
 
@@ -1414,28 +1567,16 @@
   function latticeExact(ctx, band, opts, nx, ny) {
     ctx = model.forBand(ctx, band);
     const off = isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band);
-    const base = model.bandBase(ctx, band);
-    const k = 10 * ctx.p.n;
-    const rx = opts.router.x * W;
-    const ry = opts.router.y * H;
-    const node = model.nodeActive(opts.node, band) ? opts.node : null;
-    const sx = node ? node.pos.x * W : 0;
-    const sy = node ? node.pos.y * H : 0;
-    const noff = node ? off + (node.power || 0) : 0;
+    const offsets = { '2.4': 0, '5': 0, '6': 0 };
+    offsets[units.bandKey(band)] = off;
+    const P = prepare(ctx, { band, router: opts.router, nodes: model.stateNodes(opts), offsets });
     const stride = nx + 1;
     const v = new Float32Array(stride * (ny + 1));
     for (let j = 0; j <= ny; j++) {
       const y = (j / ny) * H;
       for (let i = 0; i <= nx; i++) {
         const x = (i / nx) * W;
-        let dm = Math.hypot(x - rx, y - ry) * ctx.mpp;
-        let s = clamp(base - k * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, rx, ry, x, y) + off, -110, -20);
-        if (node) {
-          dm = Math.hypot(x - sx, y - sy) * ctx.mpp;
-          const s2 = clamp(base - k * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctx, sx, sy, x, y) + noff, -110, -20);
-          if (s2 > s) s = s2;
-        }
-        v[j * stride + i] = s - opts.threshold;
+        v[j * stride + i] = evalPx(ctx, P, x, y) - opts.threshold;
       }
     }
     const X = new Float64Array(nx + 1);
@@ -1615,22 +1756,23 @@
    * source has nothing to draw (no node, or none of the requested bands is served).
    */
   function sourceOpts(opts, source) {
-    if (source === 'router') return { ...opts, node: null };
-    const node = opts.node;
-    if (!node || node.mode === 'none' || !node.pos || !node.bands) return null;
+    if (source === 'router') return { ...opts, node: null, nodes: [] };
+    const list = model.stateNodes(opts);
+    const node = source === 'node' ? list[0] : list.find((nd) => nd && 'node:' + nd.id === source);
+    if (!node || node.mode === 'none' || node.enabled === false || !node.pos || !node.bands) return null;
     const power = isNum(node.power) ? node.power : 0;
     if (model.isAuto(opts)) {
       const bands = model.routerBandList(opts.bands).filter((b) => model.nodeActive(node, b));
       if (!bands.length) return null;
       const offsets = { '2.4': 0, '5': 0, '6': 0 };
       for (const b of bands) offsets[units.bandKey(b)] = model.offsetFor(opts.offsets, b) + power;
-      return { ...opts, router: node.pos, node: null, bands, offsets, offset: undefined };
+      return { ...opts, router: node.pos, node: null, nodes: [], bands, offsets, offset: undefined };
     }
     const band = units.normBand(opts.band !== undefined ? opts.band : opts.targetBand);
-    if (band === null) return { ...opts, node: null }; // contours() throws the RangeError
+    if (band === null) return { ...opts, node: null, nodes: [] }; // contours() throws the RangeError
     if (!model.nodeActive(node, band)) return null;
     const off = (isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band)) + power;
-    return { ...opts, router: node.pos, node: null, offset: off };
+    return { ...opts, router: node.pos, node: null, nodes: [], offset: off };
   }
 
   /**
@@ -1656,7 +1798,8 @@
    * @returns {Array<Array<{x:number,y:number}>>} chains of normalized points; a closed loop repeats its first point at the end
    */
   function contours(ctx, opts) {
-    if ((opts.source === 'router' || opts.source === 'node') && !(opts.grid && opts.field)) {
+    const src = typeof opts.source === 'string' ? opts.source : '';
+    if ((src === 'router' || src === 'node' || src.indexOf('node:') === 0) && !(opts.grid && opts.field)) {
       const o = sourceOpts(opts, opts.source);
       if (!o) return [];
       opts = o;
@@ -1677,12 +1820,12 @@
         let params;
         if (auto) {
           // band mode Auto (SPEC 13): the steered field, every band with its own offset
-          params = { band: 'auto', bands: opts.bands, steer: opts.steer, router: opts.router, node: opts.node || null, offsets: opts.offsets, soften, aa: 1 };
+          params = { band: 'auto', bands: opts.bands, steer: opts.steer, router: opts.router, nodes: model.stateNodes(opts), offsets: opts.offsets, soften, aa: 1 };
         } else {
           const off = isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band);
           const offsets = { '2.4': 0, '5': 0, '6': 0 };
           offsets[units.bandKey(band)] = off;
-          params = { band, router: opts.router, node: opts.node || null, offsets, soften, aa: 1 };
+          params = { band, router: opts.router, nodes: model.stateNodes(opts), offsets, soften, aa: 1 };
         }
         lat = latticeFromField(g, field(ctx, g, params), opts.threshold);
       } else lat = auto ? latticeExactAuto(ctx, opts, nx, ny) : latticeExact(ctx, band, opts, nx, ny);
@@ -1709,12 +1852,15 @@
     diff,
     smooth,
     stats,
+    statsMany,
     perRoom,
     sample,
     colorize,
     signalColor,
     contours,
     chaikin,
+    clearCache,
+    sourcesFor,
     blurPlan,
     boxRadii,
     STOPS,

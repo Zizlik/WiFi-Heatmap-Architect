@@ -1,7 +1,10 @@
 /* WiFi Heatmap Architect - engine.project: data model, validation, file formats, floor helpers.
  *
  * Project (v3), see SPEC section 3.1:
- *   { v:3, name, plan:{rooms,walls,doors,furniture,background}, scale:{mpp}, net, node, model, goal, measurements, view }
+ *   { v:3, name, plan:{rooms,walls,doors,furniture,background}, scale:{mpp,verified,method,ref}, net, nodes, model, goal,
+ *     measurements, view, floors }
+ * SPEC 14: the ACTIVE floor's plan / nodes / measurements / goal.room / goal.excluded are the top level; every other floor
+ * keeps its own inside floors[] (the active entry holds null there) - use the floor helpers (switchFloor, floorOf, atFloor ...).
  * All coordinates are normalized {x,y} over the fixed 1080 x 942 canvas.
  *
  * File formats:
@@ -75,6 +78,27 @@
   const WIDTHS = Object.freeze([20, 40, 80, 160, 320]);
   /** At most this many Wi-Fi 7 multi-link (MLO) links are kept per measurement. */
   const MAX_LINKS = 4;
+  // ---- SPEC 14: many nodes, floors, verified scale --------------------------------------------------------------
+  /** At most this many access points / mesh nodes / repeaters in the whole building (besides the router). */
+  const MAX_NODES = 8;
+  /** Node kinds (SPEC 14.2); NODE_MODES keeps 'none' for older code that still asks "is there a node?". */
+  const NODE_KINDS = Object.freeze(['ap_cable', 'mesh_cable', 'mesh_wifi', 'repeater']);
+  /** Default bands of a new / migrated node. */
+  const NODE_BANDS_DEFAULT = Object.freeze({ '2.4': true, '5': true, '6': false });
+  /** Floors: at most 9 (keyboard Alt+1..9), levels -3 (basements) .. 20, 0 = the ground floor. */
+  const MAX_FLOORS = 9;
+  const LEVEL_MIN = -3;
+  const LEVEL_MAX = 20;
+  /** Ceiling (the slab above a floor) presets in dB at 5 GHz (the band factors apply like for walls). */
+  const CEILING_MATERIALS = Object.freeze({ concrete: 15, reinforced_concrete: 20, wood: 8 });
+  const CEILING_KEYS = Object.freeze([...Object.keys(CEILING_MATERIALS), 'custom']);
+  const CEILING_DEFAULT = Object.freeze({ material: 'concrete', lossDb: 15, heightM: 2.7 });
+  /** How a scale was obtained (SPEC 14.1). */
+  const SCALE_METHODS = Object.freeze(['two-points', 'area', 'width', 'import', 'default']);
+  /** Sanity limits of SPEC 14.1 (m² / m): a flat of 15..400 m², rooms of 1.5..80 m², doors 0.6..1.6 m wide. */
+  const SCALE_LIMITS = Object.freeze({ areaMin: 15, areaMax: 400, roomMin: 1.5, roomMax: 80, doorMin: 0.6, doorMax: 1.6 });
+  const MPP_MIN = 0.0005;
+  const MPP_MAX = 0.2;
   const LAYERS = Object.freeze(['signal', 'speed', 'diff']);
   const PALETTES = Object.freeze(['default', 'cb']);
   const ROOM_COLORS = Object.freeze(['#8eadd2', '#deb879', '#9e9ccb', '#97bbad', '#d79a9a', '#a8c686', '#c8a2c8', '#e6c27a']);
@@ -377,7 +401,7 @@
   /** Default slices of a project that do not depend on the plan. Fresh objects on every call. */
   function defaults(lang) {
     return {
-      scale: { mpp: 0.012 },
+      scale: { mpp: 0.012, verified: false, method: 'default', ref: null },
       net: {
         router: { x: 0.5, y: 0.5 },
         baseline: { x: 0.5, y: 0.5 },
@@ -391,15 +415,8 @@
         cableLength: null,
         routerBands: { ...ROUTER_BANDS_DEFAULT },
       },
-      node: {
-        mode: 'none',
-        pos: { x: 0.4, y: 0.4 },
-        bands: { '2.4': true, '5': true, '6': false },
-        power: 0,
-        backhaulBand: 5,
-        backhaulThreshold: -67,
-        maxMbps: null,
-      },
+      // access points / mesh nodes / repeaters of the active floor (SPEC 14.2; replaces the single `node`)
+      nodes: [],
       model: { nearSignal: -40, n: 2.2, wallLoss: 8, threshold: -67, rangeThreshold: -60, bandPower: { '2.4': 0, '5': 0, '6': 0 }, steer: { ...STEER_DEFAULT } },
       goal: {
         room: 'all',
@@ -419,7 +436,8 @@
 
   /**
    * New project from a template.
-   * @param {{template?:'demo'|'blank', lang?:'cs'|'en'}} [opts]
+   * @param {{template?:'demo'|'house2'|'blank', lang?:'cs'|'en'}} [opts] 'house2' = the two-storey house (SPEC 14.3);
+   *        an unknown template gives the demo flat
    * @returns {object} sanitized Project
    */
   function create(opts) {
@@ -430,6 +448,7 @@
       return sanitize({ v: SCHEMA_VERSION, name: t('engine.project.name', lang), plan: { rooms: [], walls: [], doors: [], furniture: [], background: null }, ...d }, { lang });
     }
     if (!E.demo || typeof E.demo.build !== 'function') throw fail('err.project.invalid');
+    if (o.template === 'house2' && typeof E.demo.buildHouse2 === 'function') return sanitize(E.demo.buildHouse2(lang), { lang });
     return sanitize(E.demo.build(lang), { lang });
   }
 
@@ -438,51 +457,16 @@
   // ---------------------------------------------------------------------------------------------------------------
 
   /**
-   * Validate + normalize anything that looks like a plan/project. See sanitize().
-   * @returns {{project:object, warnings:string[], svgBackground:string|null}}
-   *   svgBackground: a legacy `data:image/svg+xml;base64,...` background that sanitize cannot keep (the IO layer must
-   *   rasterize it to PNG and put it into project.plan.background), else null.
+   * Validate + normalize one floor plan {rooms, walls, doors, furniture, background}. Ids are unique within the plan.
+   * @param {object} planRaw
+   * @param {{strict:boolean, lang:string, warn:(msg:string)=>void}} o
+   * @returns {{plan:object, roomIds:Set<number>, svgBackground:string|null}}
    */
-  function sanitizeDetailed(raw, opts) {
-    const o = opts || {};
-    const strict = o.strict !== false;
-    const lang = E.text.lang(o.lang);
-    const warnings = [];
-    const warn = (msg) => warnings.push(msg);
-
-    let src = raw;
-    if (typeof src === 'string') {
-      try {
-        src = JSON.parse(src);
-      } catch (e) {
-        throw fail('err.plan.invalid');
-      }
-    }
-    if (!isObj(src)) throw fail('err.plan.invalid');
-    if (src.format !== undefined && src.format !== 'wifi-floor-v2') throw fail('err.plan.format');
-
-    // ---- locate the plan and the settings in the different payload shapes -------------------------------------
-    let planRaw = null;
-    let legacy = {}; // {width,router,original,optic}
-    let slices = {}; // v3 slices: scale, net, node, model, goal, measurements, view, name
-    if (isObj(src.plan)) {
-      planRaw = src.plan;
-      legacy = src;
-      slices = isObj(src.project) ? src.project : src;
-    } else if (isObj(src.appliedPlan) || isObj(src.ed)) {
-      // legacy localStorage 'wifi-floor-v5' = {ed, appliedPlan}
-      planRaw = isObj(src.appliedPlan) ? src.appliedPlan : src.ed;
-      legacy = isObj(planRaw.importedSettings) ? planRaw.importedSettings : {};
-    } else if (Array.isArray(src.rooms)) {
-      // bare plan (old demo USER_PLAN / VECTORS shape)
-      planRaw = src;
-      legacy = isObj(src.importedSettings) ? src.importedSettings : src;
-    } else {
-      throw fail('err.plan.invalid');
-    }
-    if (!Array.isArray(planRaw.rooms)) throw fail('err.plan.invalid');
-
-    // ---- plan ---------------------------------------------------------------------------------------------------
+  function cleanPlan(planRaw, o) {
+    const strict = o.strict;
+    const lang = o.lang;
+    const warn = o.warn;
+    if (!isObj(planRaw) || !Array.isArray(planRaw.rooms)) throw fail('err.plan.invalid');
     const plan = { rooms: [], walls: [], doors: [], furniture: [], background: null };
     const used = new Set();
     const pt = (p) => {
@@ -631,119 +615,16 @@
       if (BG_RE.test(bg)) plan.background = bg;
       else if (SVG_BG_RE.test(bg)) svgBackground = bg;
     }
+    return { plan, roomIds, svgBackground };
+  }
 
-    // ---- settings -----------------------------------------------------------------------------------------------
-    const d = defaults(lang);
-    const rb = roomsBBox(plan);
-
-    // scale
-    let mpp;
-    if (isObj(slices.scale) && isNum(slices.scale.mpp) && slices.scale.mpp > 0) mpp = clamp(slices.scale.mpp, 0.0005, 0.2);
-    else {
-      const wm = isNum(legacy.width) && legacy.width >= 6 && legacy.width <= 25 ? legacy.width : 12;
-      mpp = deriveMpp(plan, wm);
-    }
-    mpp = Number(mpp.toPrecision(10));
-
-    // net
-    const sn = isObj(slices.net) ? slices.net : {};
-    const floorCentre = rb ? geom.labelPoint(plan.rooms[0].points) : { x: 0.5, y: 0.5 };
-    const snap = (p) => (plan.rooms.length ? nearestFloor(plan, p) : p);
-    const routerRaw = softPoint(sn.router) || softPoint(legacy.router) || floorCentre;
-    const baselineRaw = softPoint(sn.baseline) || softPoint(legacy.original) || routerRaw;
-    const router = roundPt(snap(routerRaw));
-    const baseline = roundPt(snap(baselineRaw));
-    const optic = softPoint(sn.optic) || softPoint(legacy.optic) || (rb ? { x: round(clamp(rb.minX + 0.02, 0, 1)), y: round((rb.minY + rb.maxY) / 2) } : d.net.optic);
-    const net = {
-      router,
-      baseline,
-      optic,
-      wanDown: numOrNull(sn.wanDown, 0, 10000),
-      wanUp: numOrNull(sn.wanUp, 0, 10000),
-      wanPort: WAN_RATES.includes(sn.wanPort) ? sn.wanPort : null,
-      ontPort: WAN_RATES.includes(sn.ontPort) ? sn.ontPort : null,
-      wanLink: WAN_RATES.includes(sn.wanLink) ? sn.wanLink : null,
-      cableCategory: CABLE_CATEGORIES.includes(sn.cableCategory) ? sn.cableCategory : 'unknown',
-      cableLength: isNum(sn.cableLength) && sn.cableLength >= 0.1 && sn.cableLength <= 500 ? round(sn.cableLength) : null,
-      // the bands the router sends (SPEC 13); every flag on its own, all off = not a router -> the default
-      routerBands: cleanRouterBands(sn.routerBands),
-    };
-
-    // node
-    const sd = isObj(slices.node) ? slices.node : {};
-    const sb = isObj(sd.bands) ? sd.bands : {};
-    const bands = {
-      '2.4': typeof sb['2.4'] === 'boolean' ? sb['2.4'] : d.node.bands['2.4'],
-      '5': typeof sb['5'] === 'boolean' ? sb['5'] : d.node.bands['5'],
-      '6': typeof sb['6'] === 'boolean' ? sb['6'] : d.node.bands['6'],
-    };
-    let backhaulBand = units.normBand(sd.backhaulBand) || 5;
-    if (!bands[String(backhaulBand)]) {
-      const first = E.BANDS.find((b) => bands[String(b)]);
-      if (first) backhaulBand = first;
-    }
-    const nodeMode = NODE_MODES.includes(sd.mode) ? sd.mode : 'none';
-    let nodePos = softPoint(sd.pos);
-    if (!nodePos) nodePos = farthestRoomCentre(plan, router) || d.node.pos;
-    const node = {
-      mode: nodeMode,
-      pos: roundPt(snap(nodePos)),
-      bands,
-      power: num(sd.power, -10, 6, 0),
-      backhaulBand,
-      backhaulThreshold: num(sd.backhaulThreshold, -80, -55, -67),
-      // the node's real throughput ceiling in Mb/s entered by the user (SPEC 10: "Kolik zvládne"), null = unknown
-      // (0 / negative = "no ceiling" as well); whole Mb/s, 10..10000
-      maxMbps: isNum(sd.maxMbps) && sd.maxMbps > 0 ? Math.round(clamp(sd.maxMbps, NODE_MBPS_MIN, NODE_MBPS_MAX)) : null,
-    };
-
-    // model
-    const sm = isObj(slices.model) ? slices.model : {};
-    const sbp = isObj(sm.bandPower) ? sm.bandPower : {};
-    const model = {
-      nearSignal: num(sm.nearSignal, -55, -25, -40),
-      n: num(sm.n, 1.6, 4, 2.2),
-      wallLoss: num(sm.wallLoss, 0, 20, 8),
-      threshold: num(sm.threshold, -75, -55, -67),
-      rangeThreshold: num(sm.rangeThreshold, -80, -45, -60),
-      // per-band transmit power difference in dB (SPEC 7.1), added to that band's signal
-      bandPower: {
-        '2.4': num(sbp['2.4'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
-        '5': num(sbp['5'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
-        '6': num(sbp['6'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
-      },
-      // band-steering thresholds (SPEC 13): a client uses 6 GHz from `six` dBm, else 5 GHz from `five`, else 2.4 GHz
-      steer: {
-        six: num(isObj(sm.steer) ? sm.steer.six : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.six),
-        five: num(isObj(sm.steer) ? sm.steer.five : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.five),
-      },
-    };
-    // calibration fit of the "first measurement" wizard (SPEC 9; only when present, older files keep their shape)
-    const fit = cleanFit(sm.fit);
-    if (fit) model.fit = fit;
-
-    // goal
-    const sg = isObj(slices.goal) ? slices.goal : {};
-    const hasRoom = (id) => Number.isInteger(id) && roomIds.has(id);
-    const excluded = [];
-    if (Array.isArray(sg.excluded)) {
-      for (const id of sg.excluded.slice(0, MAX_ITEMS)) if (hasRoom(id) && !excluded.includes(id)) excluded.push(id);
-    }
-    const goal = {
-      room: hasRoom(sg.room) ? sg.room : 'all',
-      allowedRoom: hasRoom(sg.allowedRoom) ? sg.allowedRoom : 'any',
-      excluded,
-      mode: sg.mode === 'speed' ? 'speed' : 'signal',
-      targetDown: num(sg.targetDown, 1, 10000, 50),
-      targetUp: num(sg.targetUp, 1, 10000, 50),
-      reserve: num(sg.reserve, 0, 80, 30),
-      device: cleanText(sg.device, 50) || d.goal.device,
-    };
-
-    // measurements
+  /**
+   * One measurement list (SPEC 3.1 / 6.2 / 8 / 13). `mids` = the ids already used in the building (kept unique across
+   * floors); `device` = goal.device (default of a measurement without one).
+   */
+  function cleanMeasurements(rawList, device, lang, mids) {
     const measurements = [];
-    const mids = new Set();
-    const rawMeas = Array.isArray(slices.measurements) ? slices.measurements.slice(0, MAX_MEASUREMENTS) : [];
+    const rawMeas = Array.isArray(rawList) ? rawList.slice(0, MAX_MEASUREMENTS) : [];
     for (const m of rawMeas) {
       if (!isObj(m)) continue;
       // a measurement far off the map is dropped (clamping it to the edge would invent a position)
@@ -771,7 +652,7 @@
         name: cleanText(m.name, 50) || t('engine.name.measurement', lang, { n: measurements.length + 1 }),
         download,
         upload,
-        device: cleanText(m.device, 50) || goal.device,
+        device: cleanText(m.device, 50) || device,
         t: isNum(m.t) && m.t >= 0 ? Math.floor(m.t) : 0,
       };
       // optional extras of the built-in speed test (only present when known, so older records keep their shape)
@@ -787,9 +668,326 @@
       if (info) rec.deviceInfo = info;
       measurements.push(rec);
     }
+    return measurements;
+  }
 
-    // view
+  /** Node bands {'2.4','5','6'} (missing flags = `def`) and a backhaul band the node serves (SPEC 10 / 14.2). */
+  function cleanNodeBands(sb, def, backhaulRaw) {
+    const src = isObj(sb) ? sb : {};
+    const bands = {
+      '2.4': typeof src['2.4'] === 'boolean' ? src['2.4'] : def['2.4'],
+      '5': typeof src['5'] === 'boolean' ? src['5'] : def['5'],
+      '6': typeof src['6'] === 'boolean' ? src['6'] : def['6'],
+    };
+    let backhaulBand = units.normBand(backhaulRaw) || 5;
+    if (!bands[String(backhaulBand)]) {
+      const first = E.BANDS.find((b) => bands[String(b)]);
+      if (first) backhaulBand = first;
+    }
+    return { bands, backhaulBand };
+  }
+
+  /** The node's real throughput ceiling in whole Mb/s (SPEC 10 "Kolik zvládne"); null = unknown (also 0 / negative). */
+  const nodeMbps = (v) => (isNum(v) && v > 0 ? Math.round(clamp(v, NODE_MBPS_MIN, NODE_MBPS_MAX)) : null);
+
+  /**
+   * One node of SPEC 14.2 ({id, name, mode, pos, bands, power, backhaulBand, backhaulThreshold, maxMbps, uplink,
+   * enabled}); null when the mode is not an AP / mesh / repeater kind. `snap` puts the position onto its floor; `fallbackPos`
+   * is used when the raw position is missing. Ids / uplinks are resolved by the caller (building wide).
+   */
+  function cleanNode(raw, snap, fallbackPos, lang) {
+    if (!isObj(raw) || !NODE_KINDS.includes(raw.mode)) return null;
+    const { bands, backhaulBand } = cleanNodeBands(raw.bands, NODE_BANDS_DEFAULT, raw.backhaulBand);
+    const pos = softPoint(raw.pos) || fallbackPos || { x: 0.4, y: 0.4 };
+    return {
+      id: typeof raw.id === 'string' || typeof raw.id === 'number' ? cleanText(String(raw.id), 40) : '',
+      name: cleanText(raw.name, 50),
+      mode: raw.mode,
+      pos: roundPt(snap(pos)),
+      bands,
+      power: num(raw.power, -10, 6, 0),
+      backhaulBand,
+      backhaulThreshold: num(raw.backhaulThreshold, -80, -55, -67),
+      maxMbps: nodeMbps(raw.maxMbps),
+      uplink: typeof raw.uplink === 'string' || typeof raw.uplink === 'number' ? cleanText(String(raw.uplink), 40) || 'router' : 'router',
+      enabled: raw.enabled !== false,
+    };
+  }
+
+  /** Floor.ceiling = {material, lossDb (5 GHz reference), heightM}; a preset with another number becomes 'custom'. */
+  function cleanCeiling(raw) {
+    const c = isObj(raw) ? raw : {};
+    let material = typeof c.material === 'string' && CEILING_KEYS.includes(c.material) ? c.material : null;
+    let lossDb = isNum(c.lossDb) ? round(clamp(c.lossDb, 0, 40), 2) : null;
+    if (lossDb === null) lossDb = material && material !== 'custom' ? CEILING_MATERIALS[material] : CEILING_DEFAULT.lossDb;
+    if (!material) material = lossDb === CEILING_DEFAULT.lossDb ? CEILING_DEFAULT.material : 'custom';
+    else if (material !== 'custom' && lossDb !== CEILING_MATERIALS[material]) material = 'custom';
+    return { material, lossDb, heightM: num(c.heightM, 2, 6, CEILING_DEFAULT.heightM) };
+  }
+
+  /**
+   * project.scale (SPEC 14.1): {mpp, verified, method, ref}. A scale is verified only when the file says so AND carried
+   * its own mpp; without a method an older file's scale is 'import' (it had an mpp or the old app's width) or 'default'.
+   */
+  function cleanScale(ss, mpp, hasMpp, fromFile) {
+    const s = isObj(ss) ? ss : {};
+    const method = SCALE_METHODS.includes(s.method) ? s.method : fromFile ? 'import' : 'default';
+    return { mpp, verified: hasMpp && s.verified === true, method, ref: cleanScaleRef(method, s.ref) };
+  }
+
+  /** The reference a verified scale was derived from: two points + metres, an area (+ room), a width; else null. */
+  function cleanScaleRef(method, r) {
+    if (!isObj(r)) return null;
+    if (method === 'two-points') {
+      const a = softPoint(r.a);
+      const b = softPoint(r.b);
+      return a && b && isNum(r.metres) && r.metres > 0 ? { a, b, metres: round(clamp(r.metres, 0.01, 1000), 4) } : null;
+    }
+    if (method === 'area') {
+      if (!isNum(r.areaM2) || r.areaM2 <= 0) return null;
+      const out = { areaM2: round(clamp(r.areaM2, 0.1, 100000), 3) };
+      if (Number.isInteger(r.roomId) && r.roomId >= 1 && r.roomId <= MAX_ITEMS) out.roomId = r.roomId;
+      return out;
+    }
+    if (method === 'width') return isNum(r.metres) && r.metres > 0 ? { metres: round(clamp(r.metres, 0.1, 1000), 4) } : null;
+    return null;
+  }
+
+  /**
+   * Validate + normalize anything that looks like a plan/project. See sanitize().
+   * @returns {{project:object, warnings:string[], svgBackground:string|null}}
+   *   svgBackground: a legacy `data:image/svg+xml;base64,...` background that sanitize cannot keep (the IO layer must
+   *   rasterize it to PNG and put it into project.plan.background), else null.
+   */
+  function sanitizeDetailed(raw, opts) {
+    const o = opts || {};
+    const strict = o.strict !== false;
+    const lang = E.text.lang(o.lang);
+    const warnings = [];
+    const warn = (msg) => warnings.push(msg);
+
+    let src = raw;
+    if (typeof src === 'string') {
+      try {
+        src = JSON.parse(src);
+      } catch (e) {
+        throw fail('err.plan.invalid');
+      }
+    }
+    if (!isObj(src)) throw fail('err.plan.invalid');
+    if (src.format !== undefined && src.format !== 'wifi-floor-v2') throw fail('err.plan.format');
+
+    // ---- locate the plan and the settings in the different payload shapes -------------------------------------
+    let planRaw = null;
+    let legacy = {}; // {width,router,original,optic}
+    let slices = {}; // v3 slices: scale, net, nodes (node), model, goal, measurements, view, floors, name
+    if (isObj(src.plan)) {
+      planRaw = src.plan;
+      legacy = src;
+      slices = isObj(src.project) ? src.project : src;
+    } else if (isObj(src.appliedPlan) || isObj(src.ed)) {
+      // legacy localStorage 'wifi-floor-v5' = {ed, appliedPlan}
+      planRaw = isObj(src.appliedPlan) ? src.appliedPlan : src.ed;
+      legacy = isObj(planRaw.importedSettings) ? planRaw.importedSettings : {};
+    } else if (Array.isArray(src.rooms)) {
+      // bare plan (old demo USER_PLAN / VECTORS shape)
+      planRaw = src;
+      legacy = isObj(src.importedSettings) ? src.importedSettings : src;
+    } else {
+      throw fail('err.plan.invalid');
+    }
+    if (!Array.isArray(planRaw.rooms)) throw fail('err.plan.invalid');
+
+    // ---- plan of the active floor (the top level of every file) -------------------------------------------------
+    const planOpts = { strict, lang, warn };
+    const main = cleanPlan(planRaw, planOpts);
+    const svgBackground = main.svgBackground;
+    const d = defaults(lang);
     const sv = isObj(slices.view) ? slices.view : {};
+
+    // ---- floors (SPEC 14.3): the active floor's content is the top level; the others carry their own -------------
+    const floorsRaw = Array.isArray(slices.floors) ? slices.floors.filter(isObj).slice(0, MAX_FLOORS * 2) : [];
+    const idText = (v) => (typeof v === 'string' || typeof v === 'number' ? cleanText(String(v), 40) : '');
+    const viewFloor = idText(sv.floor);
+    let activeRaw = null;
+    if (floorsRaw.length) activeRaw = (viewFloor && floorsRaw.find((f) => idText(f.id) === viewFloor)) || floorsRaw.find((f) => !isObj(f.plan)) || floorsRaw[0];
+    const rawNodesActive = Array.isArray(slices.nodes) ? slices.nodes : isObj(slices.node) && NODE_KINDS.includes(slices.node.mode) ? [{ ...slices.node, id: 'node-1', uplink: 'router', enabled: true }] : [];
+    const fids = new Set();
+    let entries = [];
+    (floorsRaw.length ? floorsRaw : [{}]).forEach((f, i) => {
+      const active = floorsRaw.length ? f === activeRaw : true;
+      let content;
+      if (active) content = { plan: main.plan, roomIds: main.roomIds, rawMeas: slices.measurements, rawNodes: rawNodesActive, rawGoal: isObj(slices.goal) ? slices.goal : {} };
+      else {
+        if (!isObj(f.plan)) {
+          if (strict) throw fail('err.plan.invalid');
+          return warn('floor without a plan dropped');
+        }
+        let r;
+        try {
+          r = cleanPlan(f.plan, planOpts);
+        } catch (e) {
+          if (strict) throw e;
+          return warn('floor dropped (plan)');
+        }
+        if (r.svgBackground) warn('svg background of another floor dropped');
+        content = { plan: r.plan, roomIds: r.roomIds, rawMeas: f.measurements, rawNodes: Array.isArray(f.nodes) ? f.nodes : [], rawGoal: isObj(f.goal) ? f.goal : {} };
+      }
+      let id = idText(f.id);
+      if (!id || fids.has(id)) id = freeId('floor', fids);
+      fids.add(id);
+      entries.push({ id, rawName: f.name, rawLevel: f.level, order: i, active, ceiling: cleanCeiling(f.ceiling), ...content });
+    });
+    // levels: integers, unique (a repeated level moves up to the next free one), sorted from the lowest floor
+    entries.forEach((e, i) => {
+      e.level = Number.isInteger(e.rawLevel) ? clamp(e.rawLevel, LEVEL_MIN, LEVEL_MAX) : i;
+    });
+    entries.sort((a, b) => a.level - b.level || a.order - b.order);
+    for (let i = 1; i < entries.length; i++) if (entries[i].level <= entries[i - 1].level) entries[i].level = entries[i - 1].level + 1;
+    if (entries.length > MAX_FLOORS || entries.some((e) => e.level > LEVEL_MAX)) {
+      warn('floors truncated');
+      const keep = entries.filter((e) => e.level <= LEVEL_MAX || e.active);
+      entries = keep.filter((e, i) => e.active || keep.slice(0, i).filter((x) => !x.active).length < MAX_FLOORS - 1);
+    }
+    for (const e of entries) e.name = cleanText(e.rawName, 50) || floorName(e.level, lang);
+    const floorById = new Map(entries.map((e) => [e.id, e]));
+    const activeE = entries.find((e) => e.active);
+    const snapOn = (e, p) => (e.plan.rooms.length ? nearestFloor(e.plan, p) : p);
+
+    // ---- scale ----------------------------------------------------------------------------------------------------
+    // one scale for the whole building (SPEC 14.3); SPEC 14.1: older files are not verified - 'import' when the file
+    // carried a scale (mpp or the old app's width), the user confirms it once
+    const ss = isObj(slices.scale) ? slices.scale : {};
+    const hasMpp = isNum(ss.mpp) && ss.mpp > 0;
+    const legacyWidth = isNum(legacy.width) && legacy.width >= 6 && legacy.width <= 25;
+    let mpp;
+    if (hasMpp) mpp = clamp(ss.mpp, MPP_MIN, MPP_MAX);
+    else mpp = deriveMpp(activeE.plan, legacyWidth ? legacy.width : 12);
+    mpp = Number(mpp.toPrecision(10));
+    const scale = cleanScale(ss, mpp, hasMpp, hasMpp || legacyWidth);
+
+    // ---- net (the router lives on net.routerFloor, the inlet on net.opticFloor) -----------------------------------
+    const sn = isObj(slices.net) ? slices.net : {};
+    const rf = floorById.get(idText(sn.routerFloor)) || activeE;
+    const of = floorById.get(idText(sn.opticFloor)) || rf;
+    const rbb = roomsBBox(rf.plan);
+    const floorCentre = rbb ? geom.labelPoint(rf.plan.rooms[0].points) : { x: 0.5, y: 0.5 };
+    const routerRaw = softPoint(sn.router) || softPoint(legacy.router) || floorCentre;
+    const baselineRaw = softPoint(sn.baseline) || softPoint(legacy.original) || routerRaw;
+    const router = roundPt(snapOn(rf, routerRaw));
+    const baseline = roundPt(snapOn(rf, baselineRaw));
+    const obb = roomsBBox(of.plan);
+    const optic = softPoint(sn.optic) || softPoint(legacy.optic) || (obb ? { x: round(clamp(obb.minX + 0.02, 0, 1)), y: round((obb.minY + obb.maxY) / 2) } : d.net.optic);
+    const net = {
+      router,
+      baseline,
+      optic,
+      wanDown: numOrNull(sn.wanDown, 0, 10000),
+      wanUp: numOrNull(sn.wanUp, 0, 10000),
+      wanPort: WAN_RATES.includes(sn.wanPort) ? sn.wanPort : null,
+      ontPort: WAN_RATES.includes(sn.ontPort) ? sn.ontPort : null,
+      wanLink: WAN_RATES.includes(sn.wanLink) ? sn.wanLink : null,
+      cableCategory: CABLE_CATEGORIES.includes(sn.cableCategory) ? sn.cableCategory : 'unknown',
+      cableLength: isNum(sn.cableLength) && sn.cableLength >= 0.1 && sn.cableLength <= 500 ? round(sn.cableLength) : null,
+      // the bands the router sends (SPEC 13); every flag on its own, all off = not a router -> the default
+      routerBands: cleanRouterBands(sn.routerBands),
+      routerFloor: rf.id,
+      opticFloor: of.id,
+    };
+
+    // ---- nodes (SPEC 14.2): <= MAX_NODES in the building, ids unique, uplinks valid and acyclic -------------------
+    const nids = new Set();
+    let nodeCount = 0;
+    for (const e of entries) {
+      e.nodes = [];
+      for (const rn of Array.isArray(e.rawNodes) ? e.rawNodes : []) {
+        const fallback = farthestRoomCentre(e.plan, e === rf ? router : { x: 0.5, y: 0.5 });
+        const nd = cleanNode(rn, (p) => snapOn(e, p), fallback, lang);
+        if (!nd) continue;
+        if (nodeCount >= MAX_NODES) {
+          warn('nodes truncated');
+          break;
+        }
+        if (!nd.id || nids.has(nd.id) || nd.id === 'router') nd.id = freeId('node', nids);
+        nids.add(nd.id);
+        e.nodes.push(nd);
+        nodeCount++;
+      }
+    }
+    const allNodesList = entries.flatMap((e) => e.nodes);
+    const nodeIndex = new Map(allNodesList.map((nd) => [nd.id, nd]));
+    for (const nd of allNodesList) if (nd.uplink !== 'router' && (!nodeIndex.has(nd.uplink) || nd.uplink === nd.id)) nd.uplink = 'router';
+    for (const nd of allNodesList) {
+      // a cycle (A -> B -> A) is cut where it closes: that node uplinks to the router
+      const seen = new Set([nd.id]);
+      let cur = nd;
+      while (cur.uplink !== 'router') {
+        const next = nodeIndex.get(cur.uplink);
+        if (seen.has(next.id)) {
+          cur.uplink = 'router';
+          break;
+        }
+        seen.add(next.id);
+        cur = next;
+      }
+    }
+    const usedNames = new Set();
+    for (const nd of allNodesList) {
+      if (!nd.name) nd.name = freeNodeName(usedNames, lang);
+      usedNames.add(nd.name);
+    }
+
+    // ---- model ----------------------------------------------------------------------------------------------------
+    const sm = isObj(slices.model) ? slices.model : {};
+    const sbp = isObj(sm.bandPower) ? sm.bandPower : {};
+    const model = {
+      nearSignal: num(sm.nearSignal, -55, -25, -40),
+      n: num(sm.n, 1.6, 4, 2.2),
+      wallLoss: num(sm.wallLoss, 0, 20, 8),
+      threshold: num(sm.threshold, -75, -55, -67),
+      rangeThreshold: num(sm.rangeThreshold, -80, -45, -60),
+      // per-band transmit power difference in dB (SPEC 7.1), added to that band's signal
+      bandPower: {
+        '2.4': num(sbp['2.4'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
+        '5': num(sbp['5'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
+        '6': num(sbp['6'], BAND_POWER_MIN, BAND_POWER_MAX, 0),
+      },
+      // band-steering thresholds (SPEC 13): a client uses 6 GHz from `six` dBm, else 5 GHz from `five`, else 2.4 GHz
+      steer: {
+        six: num(isObj(sm.steer) ? sm.steer.six : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.six),
+        five: num(isObj(sm.steer) ? sm.steer.five : undefined, STEER_MIN, STEER_MAX, STEER_DEFAULT.five),
+      },
+    };
+    // calibration fit of the "first measurement" wizard (SPEC 9; only when present, older files keep their shape)
+    const fit = cleanFit(sm.fit);
+    if (fit) model.fit = fit;
+
+    // ---- goal: room / excluded belong to each floor's plan, allowedRoom to the router floor's ----------------------
+    const sg = isObj(slices.goal) ? slices.goal : {};
+    const roomGoal = (rawGoal, ids) => {
+      const has = (id) => Number.isInteger(id) && ids.has(id);
+      const excluded = [];
+      if (Array.isArray(rawGoal.excluded)) for (const id of rawGoal.excluded.slice(0, MAX_ITEMS)) if (has(id) && !excluded.includes(id)) excluded.push(id);
+      return { room: has(rawGoal.room) ? rawGoal.room : 'all', excluded };
+    };
+    for (const e of entries) e.goal = roomGoal(e.rawGoal, e.roomIds);
+    const goal = {
+      room: activeE.goal.room,
+      allowedRoom: Number.isInteger(sg.allowedRoom) && rf.roomIds.has(sg.allowedRoom) ? sg.allowedRoom : 'any',
+      excluded: activeE.goal.excluded,
+      mode: sg.mode === 'speed' ? 'speed' : 'signal',
+      targetDown: num(sg.targetDown, 1, 10000, 50),
+      targetUp: num(sg.targetUp, 1, 10000, 50),
+      reserve: num(sg.reserve, 0, 80, 30),
+      device: cleanText(sg.device, 50) || d.goal.device,
+    };
+
+    // ---- measurements (ids unique in the whole building; the active floor's keep theirs first) --------------------
+    const mids = new Set();
+    activeE.meas = cleanMeasurements(activeE.rawMeas, goal.device, lang, mids);
+    for (const e of entries) if (!e.active) e.meas = cleanMeasurements(e.rawMeas, goal.device, lang, mids);
+
+    // ---- view -----------------------------------------------------------------------------------------------------
     const bool = (v, def) => (typeof v === 'boolean' ? v : def);
     const bandsOn = E.BANDS.filter((b) => net.routerBands[units.bandKey(b)]);
     const view = {
@@ -808,19 +1006,31 @@
       sourceZones: bool(sv.sourceZones, true),
       calibrate: bool(sv.calibrate, true),
       palette: PALETTES.includes(sv.palette) ? sv.palette : 'default',
+      // the active floor (SPEC 14.3)
+      floor: activeE.id,
     };
 
     const project = {
       v: SCHEMA_VERSION,
       name: cleanText(slices.name, 80) || cleanText(src.name, 80) || t('engine.project.name', lang),
-      plan,
-      scale: { mpp },
+      plan: activeE.plan,
+      scale,
       net,
-      node,
+      nodes: activeE.nodes,
       model,
       goal,
-      measurements,
+      measurements: activeE.meas,
       view,
+      floors: entries.map((e) => ({
+        id: e.id,
+        name: e.name,
+        level: e.level,
+        ceiling: e.ceiling,
+        plan: e.active ? null : e.plan,
+        nodes: e.active ? null : e.nodes,
+        measurements: e.active ? null : e.meas,
+        goal: e.active ? null : e.goal,
+      })),
     };
     return { project, warnings, svgBackground };
   }
@@ -837,13 +1047,20 @@
     return out['2.4'] || out['5'] || out['6'] ? out : { ...ROUTER_BANDS_DEFAULT };
   }
 
-  /** Visual centre of the room whose centre is farthest from `from` - a sensible default for a second access point. */
-  function farthestRoomCentre(plan, from) {
+  /**
+   * Visual centre of the room whose centre is farthest from `from` (and `others`) - a sensible default for a node;
+   * rooms in `skipIds` (a balcony that does not count) only when there is nothing else.
+   */
+  function farthestRoomCentre(plan, from, others, skipIds) {
     let best = null;
     let bestD = -1;
-    for (const r of plan.rooms) {
+    const skip = new Set(Array.isArray(skipIds) ? skipIds : []);
+    const rooms = plan.rooms.some((r) => !skip.has(r.roomId)) ? plan.rooms.filter((r) => !skip.has(r.roomId)) : plan.rooms;
+    const avoid = [from].concat(Array.isArray(others) ? others : []).filter((q) => q && isNum(q.x) && isNum(q.y));
+    for (const r of rooms) {
       const c = geom.labelPoint(r.points);
-      const d = geom.dist(c, from);
+      // nothing to keep away from: the biggest room
+      const d = avoid.length ? Math.min(...avoid.map((q) => geom.dist(c, q))) : geom.polygonArea(r.points);
       if (d > bestD) {
         bestD = d;
         best = c;
@@ -892,11 +1109,27 @@
    */
   function writable(project) {
     if (!isObj(project) || !isObj(project.plan)) throw fail('err.plan.invalid');
-    for (const k of ['rooms', 'furniture']) {
-      const list = project.plan[k];
-      if (Array.isArray(list)) for (const o of list) if (isObj(o) && !geom.validatePolygon(o.points)) throw fail('err.plan.polygon');
+    // every floor's outlines (SPEC 14.3): the active floor's at the top level, the others inside project.floors
+    const plans = [project.plan].concat(Array.isArray(project.floors) ? project.floors.map((f) => isObj(f) && isObj(f.plan) && f.plan) : []);
+    for (const plan of plans) {
+      if (!plan) continue;
+      for (const k of ['rooms', 'furniture']) {
+        const list = plan[k];
+        if (Array.isArray(list)) for (const o of list) if (isObj(o) && !geom.validatePolygon(o.points)) throw fail('err.plan.polygon');
+      }
     }
     return sanitize(project, { strict: false });
+  }
+
+  /**
+   * The single `node` of older app versions (stage 7 - 3.2 read `project.node`): the active floor's first node in the old
+   * shape, mode 'none' when there is none or it is switched off.
+   */
+  function legacyNode(project) {
+    const n = Array.isArray(project.nodes) && project.nodes.length ? project.nodes[0] : null;
+    if (n) return { mode: n.enabled === false ? 'none' : n.mode, pos: n.pos, bands: n.bands, power: n.power, backhaulBand: n.backhaulBand, backhaulThreshold: n.backhaulThreshold, maxMbps: n.maxMbps };
+    const pos = (project.plan.rooms.length && farthestRoomCentre(project.plan, project.net.router)) || { x: 0.4, y: 0.4 };
+    return { mode: 'none', pos: roundPt(project.plan.rooms.length ? nearestFloor(project.plan, pos) : pos), bands: { ...NODE_BANDS_DEFAULT }, power: 0, backhaulBand: 5, backhaulThreshold: -67, maxMbps: null };
   }
 
   /**
@@ -913,6 +1146,7 @@
 
   function payloadJson(project, withBg) {
     const plan = withBg ? project.plan : { ...project.plan, background: null };
+    const floors = withBg ? project.floors : project.floors.map((f) => (f.plan ? { ...f, plan: { ...f.plan, background: null } } : f));
     const payload = {
       format: 'wifi-floor-v2',
       plan,
@@ -926,11 +1160,14 @@
         name: project.name,
         scale: project.scale,
         net: project.net,
-        node: project.node,
+        // older builds of this app (stage 7 .. 3.2) read the single node; this one reads nodes + floors (SPEC 14)
+        node: legacyNode(project),
+        nodes: project.nodes,
         model: project.model,
         goal: project.goal,
         measurements: project.measurements,
         view: project.view,
+        floors,
       },
     };
     return JSON.stringify(payload, replacer);
@@ -1002,9 +1239,13 @@
           `<text x="${x}" y="${f2(p.y * H + 5)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="700" fill="${dashed ? fill : '#ffffff'}">${esc(label)}</text>`
         );
       };
-      if (geom.dist(project.net.baseline, project.net.router) > 2) s += marker(project.net.baseline, '#c2410c', t('engine.svg.todayLetter', lang), true);
-      s += marker(project.net.router, '#dc2626', 'R', false);
-      s += marker(project.net.optic, '#2563eb', 'I', false);
+      // the picture shows the active floor: the router / inlet only when they are on it (SPEC 14.3)
+      const here = project.view.floor;
+      if (project.net.routerFloor === here) {
+        if (geom.dist(project.net.baseline, project.net.router) > 2) s += marker(project.net.baseline, '#c2410c', t('engine.svg.todayLetter', lang), true);
+        s += marker(project.net.router, '#dc2626', 'R', false);
+      }
+      if (project.net.opticFloor === here) s += marker(project.net.optic, '#2563eb', 'I', false);
     }
     // scale bar: 1 m
     const px1m = 1 / project.scale.mpp;
@@ -1232,11 +1473,617 @@
     return out;
   }
 
-  /** Deep copy of a project; the (large) background data URL is shared by reference. */
+  // ---------------------------------------------------------------------------------------------------------------
+  // floors (SPEC 14.3). The ACTIVE floor's plan / nodes / measurements / goal.room / goal.excluded are the top level of
+  // the project; every other floor keeps its own inside its `floors[]` entry, the active entry holds null there.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  const floorsOf = (p) => (isObj(p) && Array.isArray(p.floors) ? p.floors.filter(isObj) : []);
+  const byLevel = (a, b) => (isNum(a.level) ? a.level : 0) - (isNum(b.level) ? b.level : 0);
+
+  /** English ordinal: 1st, 2nd, 3rd, 4th, 11th, 21st ... */
+  function ordinal(n) {
+    const t10 = n % 100;
+    const suf = t10 >= 11 && t10 <= 13 ? 'th' : n % 10 === 1 ? 'st' : n % 10 === 2 ? 'nd' : n % 10 === 3 ? 'rd' : 'th';
+    return `${n}${suf}`;
+  }
+
+  /**
+   * Default name of a floor at a level: 'Přízemí', '1. patro', '2. patro', 'Suterén', '2. suterén' /
+   * 'Ground floor', '1st floor', '2nd floor', 'Basement', 'Basement 2'.
+   */
+  function floorName(level, lang) {
+    const l = Number.isInteger(level) ? level : 0;
+    const lg = E.text.lang(lang);
+    if (l === 0) return t('engine.floor.ground', lg);
+    if (l > 0) return t('engine.floor.upper', lg, { n: lg === 'en' ? ordinal(l) : l });
+    if (l === -1) return t('engine.floor.basement', lg);
+    return t('engine.floor.basementN', lg, { n: -l });
+  }
+
+  /**
+   * The id of the active floor: the floors[] entry whose content is the top level (plan null), else view.floor, else the
+   * first floor; null for a project without floors (a hand-made object - it then behaves as one floor).
+   * @param {object} p
+   * @returns {string|null}
+   */
+  function activeFloorId(p) {
+    const list = floorsOf(p);
+    if (!list.length) return null;
+    const hole = list.find((f) => f.plan === null || f.plan === undefined);
+    if (hole) return hole.id;
+    const v = isObj(p.view) ? p.view.floor : undefined;
+    return list.some((f) => f.id === v) ? v : list[0].id;
+  }
+
+  /** {room, excluded} of the top level. */
+  const topGoal = (p) => {
+    const g = isObj(p.goal) ? p.goal : {};
+    return { room: g.room !== undefined ? g.room : 'all', excluded: arr(g.excluded) };
+  };
+
+  /**
+   * Everything of one floor, wherever it is stored (the top level for the active floor). Read-only.
+   * @param {object} p project
+   * @param {string} [id] floor id (default: the active floor)
+   * @returns {{id:string|null, name:string, level:number, ceiling:object, index:number, active:boolean, plan:object,
+   *   nodes:object[], measurements:object[], goal:{room:'all'|number, excluded:number[]}}|null} null for an unknown id
+   */
+  function floorOf(p, id) {
+    if (!isObj(p) || !isObj(p.plan)) return null;
+    const list = floorsOf(p);
+    const act = activeFloorId(p);
+    const want = id === undefined || id === null ? act : id;
+    if (!list.length) {
+      if (want !== act) return null;
+      return { id: null, name: '', level: 0, ceiling: { ...CEILING_DEFAULT }, index: 0, active: true, plan: p.plan, nodes: arr(p.nodes), measurements: arr(p.measurements), goal: topGoal(p) };
+    }
+    const index = list.findIndex((f) => f.id === want);
+    if (index < 0) return null;
+    const f = list[index];
+    const active = f.id === act;
+    const fg = isObj(f.goal) ? f.goal : {};
+    return {
+      id: f.id,
+      name: f.name,
+      level: f.level,
+      ceiling: isObj(f.ceiling) ? f.ceiling : { ...CEILING_DEFAULT },
+      index,
+      active,
+      plan: active ? p.plan : isObj(f.plan) ? f.plan : { rooms: [], walls: [], doors: [], furniture: [], background: null },
+      nodes: active ? arr(p.nodes) : arr(f.nodes),
+      measurements: active ? arr(p.measurements) : arr(f.measurements),
+      goal: active ? topGoal(p) : { room: fg.room !== undefined ? fg.room : 'all', excluded: arr(fg.excluded) },
+    };
+  }
+
+  /**
+   * A shallow, read-only VIEW of the project with floor `id` active (its content at the top level, the real active
+   * floor's content moved into its floors[] entry). The project itself for the active / an unknown floor. Pass it to
+   * any single-floor function (createContext, analysis.run, speed.homeSummary, ...). Never mutate it.
+   * @param {object} p
+   * @param {string} id
+   * @returns {object}
+   */
+  function atFloor(p, id) {
+    const act = activeFloorId(p);
+    if (act === null || id === undefined || id === null || id === act) return p;
+    const target = floorOf(p, id);
+    if (!target) return p;
+    const g = isObj(p.goal) ? p.goal : {};
+    const tg = topGoal(p);
+    const floors = p.floors.map((f) => {
+      if (!isObj(f)) return f;
+      if (f.id === act) return { ...f, plan: p.plan, nodes: arr(p.nodes), measurements: arr(p.measurements), goal: tg };
+      if (f.id === id) return { ...f, plan: null, nodes: null, measurements: null, goal: null };
+      return f;
+    });
+    return {
+      ...p,
+      plan: target.plan,
+      nodes: target.nodes,
+      measurements: target.measurements,
+      goal: { ...g, room: target.goal.room, excluded: target.goal.excluded },
+      floors,
+      view: { ...(isObj(p.view) ? p.view : {}), floor: id },
+    };
+  }
+
+  /**
+   * Make floor `id` the active one - MUTATES the project (call inside a store mutator): the content moves between the
+   * top level and the floors[] entries, view.floor follows. Undo-safe: the active floor is always the entry with null
+   * content, so a snapshot restore of plan / nodes / measurements / goal / floors stays consistent.
+   * @returns {boolean} true when `id` is (now) the active floor
+   */
+  function switchFloor(p, id) {
+    const act = activeFloorId(p);
+    if (act === null) return false;
+    if (id === act) {
+      if (isObj(p.view)) p.view.floor = id;
+      return true;
+    }
+    const list = floorsOf(p);
+    const A = list.find((f) => f.id === act);
+    const B = list.find((f) => f.id === id);
+    if (!A || !B) return false;
+    const g = isObj(p.goal) ? p.goal : (p.goal = {});
+    A.plan = p.plan;
+    A.nodes = arr(p.nodes);
+    A.measurements = arr(p.measurements);
+    A.goal = topGoal(p);
+    const bg = isObj(B.goal) ? B.goal : {};
+    p.plan = isObj(B.plan) ? B.plan : { rooms: [], walls: [], doors: [], furniture: [], background: null };
+    p.nodes = arr(B.nodes);
+    p.measurements = arr(B.measurements);
+    g.room = bg.room !== undefined ? bg.room : 'all';
+    g.excluded = arr(bg.excluded);
+    B.plan = null;
+    B.nodes = null;
+    B.measurements = null;
+    B.goal = null;
+    if (!isObj(p.view)) p.view = {};
+    p.view.floor = id;
+    return true;
+  }
+
+  /** A deep copy of a plan without its tracing image (for "Duplikovat půdorys do nového patra"). */
+  function copyPlan(plan) {
+    const c = JSON.parse(JSON.stringify({ ...plan, background: null }));
+    for (const k of ['rooms', 'walls', 'doors', 'furniture']) c[k] = arr(c[k]);
+    c.background = null;
+    return c;
+  }
+
+  /**
+   * Add a floor - MUTATES the project. Does not switch to it.
+   * @param {object} p
+   * @param {{name?:string, level?:number, above?:boolean, copyFrom?:string, lang?:'cs'|'en'}} [opts] level default = above
+   *        the highest floor (below the lowest with above:false); a taken level -> the next free one in that direction;
+   *        copyFrom = a floor id whose plan (rooms, walls, doors, furniture, excluded rooms) is copied
+   * @returns {string|null} the new floor's id, null when MAX_FLOORS is reached or no level is free
+   */
+  function addFloor(p, opts) {
+    const o = opts || {};
+    const list = floorsOf(p);
+    if (!list.length || list.length >= MAX_FLOORS || !Array.isArray(p.floors)) return null;
+    const lang = E.text.lang(o.lang);
+    const taken = new Set(list.map((f) => f.level));
+    const up = o.above !== false;
+    let level = Number.isInteger(o.level) ? clamp(o.level, LEVEL_MIN, LEVEL_MAX) : up ? Math.max(...taken) + 1 : Math.min(...taken) - 1;
+    while (taken.has(level)) level += up ? 1 : -1;
+    if (level > LEVEL_MAX || level < LEVEL_MIN) {
+      level = null;
+      for (let d = 0; d <= LEVEL_MAX - LEVEL_MIN && level === null; d++) {
+        for (const cand of [Math.max(...taken) + 1 - d, Math.min(...taken) - 1 + d]) if (cand >= LEVEL_MIN && cand <= LEVEL_MAX && !taken.has(cand)) level = cand;
+      }
+      if (level === null) return null;
+    }
+    const src = o.copyFrom !== undefined ? floorOf(p, o.copyFrom) : null;
+    const near = list.slice().sort((a, b) => Math.abs(a.level - level) - Math.abs(b.level - level) || a.level - b.level)[0];
+    const ids = new Set(list.map((f) => f.id));
+    const id = freeId('floor', ids);
+    p.floors.push({
+      id,
+      name: cleanText(o.name, 50) || floorName(level, lang),
+      level,
+      ceiling: cleanCeiling(src ? src.ceiling : near.ceiling),
+      plan: src ? copyPlan(src.plan) : { rooms: [], walls: [], doors: [], furniture: [], background: null },
+      nodes: [],
+      measurements: [],
+      goal: { room: 'all', excluded: src ? src.goal.excluded.slice() : [] },
+    });
+    p.floors.sort(byLevel);
+    return id;
+  }
+
+  /** "Duplikovat půdorys do nového patra": addFloor above the highest floor with a copy of floor `id`'s plan. MUTATES. */
+  function duplicateFloor(p, id, opts) {
+    if (!floorOf(p, id)) return null;
+    return addFloor(p, { ...(opts || {}), copyFrom: id, above: true, level: undefined });
+  }
+
+  /** The visual centre of the first room of a plan (a marker that must go somewhere), else the canvas centre. */
+  const planCentre = (plan) => (plan && plan.rooms && plan.rooms.length ? geom.labelPoint(plan.rooms[0].points) : { x: 0.5, y: 0.5 });
+  const snapTo = (plan, q) => roundPt(plan && plan.rooms && plan.rooms.length ? nearestFloor(plan, q && isNum(q.x) && isNum(q.y) ? q : planCentre(plan)) : q && isNum(q.x) && isNum(q.y) ? q : planCentre(plan));
+
+  /**
+   * Remove a floor - MUTATES the project. Never the last one. The active floor -> the nearest other floor becomes
+   * active first; the router / inlet on it move to the active floor (same place, snapped onto its rooms); nodes that
+   * uplinked to its nodes uplink to the router.
+   * @returns {boolean}
+   */
+  function removeFloor(p, id) {
+    const list = floorsOf(p);
+    const f = list.find((x) => x.id === id);
+    if (!f || list.length < 2) return false;
+    if (activeFloorId(p) === id) {
+      const other = list.filter((x) => x.id !== id).sort((a, b) => Math.abs(a.level - f.level) - Math.abs(b.level - f.level) || a.level - b.level)[0];
+      switchFloor(p, other.id);
+    }
+    const gone = new Set(arr(f.nodes).map((n) => n && n.id));
+    p.floors.splice(p.floors.indexOf(f), 1);
+    const act = activeFloorId(p);
+    const net = isObj(p.net) ? p.net : null;
+    if (net && net.routerFloor === id) {
+      net.routerFloor = act;
+      net.router = snapTo(p.plan, net.router);
+      net.baseline = snapTo(p.plan, net.baseline);
+      if (isObj(p.goal)) p.goal.allowedRoom = 'any';
+    }
+    if (net && net.opticFloor === id) net.opticFloor = net.routerFloor || act;
+    for (const e of allNodes(p)) if (gone.has(e.node.uplink)) e.node.uplink = 'router';
+    return true;
+  }
+
+  /**
+   * Reorder: swap the level of floor `id` with the next floor up (dir +1) or down (-1) - MUTATES. Floors still named by
+   * default ("Přízemí", "1. patro" ...) take the default name of their new level.
+   * @returns {boolean}
+   */
+  function moveFloor(p, id, dir) {
+    const list = floorsOf(p).slice().sort(byLevel);
+    const i = list.findIndex((f) => f.id === id);
+    const j = i + (dir > 0 ? 1 : -1);
+    if (i < 0 || !dir || j < 0 || j >= list.length) return false;
+    const a = list[i];
+    const b = list[j];
+    const rename = (f, from, to) => {
+      for (const lg of ['cs', 'en']) if (f.name === floorName(from, lg)) f.name = floorName(to, lg);
+    };
+    const la = a.level;
+    const lb = b.level;
+    rename(a, la, lb);
+    rename(b, lb, la);
+    a.level = lb;
+    b.level = la;
+    p.floors.sort(byLevel);
+    return true;
+  }
+
+  /** Rename a floor - MUTATES. An empty name gives the default name of its level. */
+  function renameFloor(p, id, name) {
+    const f = floorsOf(p).find((x) => x.id === id);
+    if (!f) return false;
+    f.name = cleanText(name, 50) || floorName(f.level);
+    return true;
+  }
+
+  /**
+   * Change a floor's ceiling - MUTATES. {material, lossDb, heightM}: a preset material without lossDb takes its default
+   * (concrete 15, reinforced 20, wood 8 dB), a number that differs from the preset makes it 'custom'.
+   */
+  function setCeiling(p, id, c) {
+    const f = floorsOf(p).find((x) => x.id === id);
+    if (!f || !isObj(c)) return false;
+    const cur = cleanCeiling(f.ceiling);
+    const material = c.material !== undefined ? c.material : cur.material;
+    let lossDb = c.lossDb;
+    if (lossDb === undefined) lossDb = c.material !== undefined && CEILING_MATERIALS[c.material] !== undefined ? CEILING_MATERIALS[c.material] : cur.lossDb;
+    f.ceiling = cleanCeiling({ material, lossDb, heightM: c.heightM !== undefined ? c.heightM : cur.heightM });
+    return true;
+  }
+
+  /**
+   * The slabs between two floors: levels = |level difference|, heightM = the sum of the storey heights crossed,
+   * lossDb = the sum of their ceiling losses (5 GHz reference). A level without a floor (a gap) counts with the defaults.
+   * @returns {{levels:number, heightM:number, lossDb:number}}
+   */
+  function floorGap(p, fromId, toId) {
+    const list = floorsOf(p);
+    const fa = list.find((f) => f.id === fromId);
+    const fb = list.find((f) => f.id === toId);
+    if (!fa || !fb || fa === fb) return { levels: 0, heightM: 0, lossDb: 0 };
+    const lo = Math.min(fa.level, fb.level);
+    const hi = Math.max(fa.level, fb.level);
+    let heightM = 0;
+    let lossDb = 0;
+    for (let L = lo; L < hi; L++) {
+      const f = list.find((x) => x.level === L);
+      const c = f && isObj(f.ceiling) ? f.ceiling : CEILING_DEFAULT;
+      heightM += isNum(c.heightM) ? c.heightM : CEILING_DEFAULT.heightM;
+      lossDb += isNum(c.lossDb) ? c.lossDb : CEILING_DEFAULT.lossDb;
+    }
+    return { levels: hi - lo, heightM, lossDb };
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // nodes (SPEC 14.2)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /** The first free name 'AP n' (n >= 2: the router is the first access point). */
+  function freeNodeName(used, lang) {
+    for (let n = 2; ; n++) {
+      const name = t('engine.node.name', lang, { n });
+      if (!used.has(name)) return name;
+    }
+  }
+
+  /**
+   * Every node of the building in building order (floors by level, then each floor's list) - the order of the winner
+   * indices of the raster and of model.nodeList.
+   * @returns {Array<{node:object, floor:string|null, floorName:string, active:boolean, index:number}>}
+   */
+  function allNodes(p) {
+    const out = [];
+    if (!isObj(p)) return out;
+    const list = floorsOf(p);
+    if (!list.length) {
+      for (const n of arr(p.nodes)) if (isObj(n)) out.push({ node: n, floor: null, floorName: '', active: true, index: out.length });
+      return out;
+    }
+    const act = activeFloorId(p);
+    for (const f of list.slice().sort(byLevel)) {
+      const active = f.id === act;
+      for (const n of active ? arr(p.nodes) : arr(f.nodes)) if (isObj(n)) out.push({ node: n, floor: f.id, floorName: f.name, active, index: out.length });
+    }
+    return out;
+  }
+
+  /** {node, floor} of a node id anywhere in the building, or null. */
+  function nodeById(p, id) {
+    const e = allNodes(p).find((x) => x.node.id === id);
+    return e ? { node: e.node, floor: e.floor } : null;
+  }
+
+  /**
+   * A complete new node, NOT added (push it into project.nodes, or use addNode for another floor).
+   * @param {object} p
+   * @param {{mode?:string, pos?:{x,y}, floor?:string, uplink?:string, lang?:'cs'|'en'}} [opts] mode default 'ap_cable';
+   *        pos default = the visual centre of the room farthest from the router and the other nodes on that floor
+   *        (floor default = the active floor); bands = the router's bands
+   * @returns {object|null} Node, null when the building already has MAX_NODES nodes
+   */
+  function newNode(p, opts) {
+    const o = opts || {};
+    if (!isObj(p) || !isObj(p.plan)) return null;
+    const lang = E.text.lang(o.lang);
+    const all = allNodes(p);
+    if (all.length >= MAX_NODES) return null;
+    const ids = new Set(all.map((e) => e.node.id));
+    const F = (o.floor !== undefined && floorOf(p, o.floor)) || floorOf(p);
+    const plan = F.plan;
+    const net = isObj(p.net) ? p.net : {};
+    const routerHere = F.id === null || !net.routerFloor || net.routerFloor === F.id ? net.router : null;
+    const others = all.filter((e) => e.floor === F.id).map((e) => e.node.pos);
+    // not in a room that does not count (a balcony): the farthest of the others
+    const pos = softPoint(o.pos) || (plan.rooms.length && farthestRoomCentre(plan, routerHere, others, F.goal.excluded)) || { x: 0.5, y: 0.5 };
+    const { bands, backhaulBand } = cleanNodeBands(cleanRouterBands(net.routerBands), NODE_BANDS_DEFAULT, 5);
+    return {
+      id: freeId('node', ids),
+      name: freeNodeName(new Set(all.map((e) => e.node.name)), lang),
+      mode: NODE_KINDS.includes(o.mode) ? o.mode : 'ap_cable',
+      pos: snapTo(plan, pos),
+      bands,
+      power: 0,
+      backhaulBand,
+      backhaulThreshold: -67,
+      maxMbps: null,
+      uplink: typeof o.uplink === 'string' && ids.has(o.uplink) ? o.uplink : 'router',
+      enabled: true,
+    };
+  }
+
+  /** The node list of a floor as stored (the top level for the active floor), created when missing. */
+  function nodeListOf(p, floorId) {
+    const act = activeFloorId(p);
+    if (act === null || floorId === act || floorId === null || floorId === undefined) {
+      if (!Array.isArray(p.nodes)) p.nodes = [];
+      return p.nodes;
+    }
+    const f = floorsOf(p).find((x) => x.id === floorId);
+    if (!f) return null;
+    if (!Array.isArray(f.nodes)) f.nodes = [];
+    return f.nodes;
+  }
+
+  /**
+   * Add a node (newNode's result) to a floor - MUTATES. `floorId` default = the active floor. false when the building
+   * is full (MAX_NODES), the id is taken or the floor unknown.
+   */
+  function addNode(p, node, floorId) {
+    if (!isObj(node) || !node.id) return false;
+    const all = allNodes(p);
+    if (all.length >= MAX_NODES || all.some((e) => e.node.id === node.id)) return false;
+    const list = nodeListOf(p, floorId);
+    if (!list) return false;
+    list.push(node);
+    return true;
+  }
+
+  /** Remove a node - MUTATES; the nodes that uplinked to it take over its uplink. */
+  function removeNode(p, id) {
+    const e = allNodes(p).find((x) => x.node.id === id);
+    if (!e) return false;
+    const list = nodeListOf(p, e.floor);
+    list.splice(list.indexOf(e.node), 1);
+    for (const o of allNodes(p)) if (o.node.uplink === id) o.node.uplink = e.node.uplink && e.node.uplink !== o.node.id ? e.node.uplink : 'router';
+    return true;
+  }
+
+  /** Move a node to another floor - MUTATES; the position (default: where it is) is snapped onto that floor's rooms. */
+  function moveNodeToFloor(p, id, floorId, pos) {
+    const e = allNodes(p).find((x) => x.node.id === id);
+    const F = floorOf(p, floorId);
+    if (!e || !F) return false;
+    if (e.floor !== F.id) {
+      const from = nodeListOf(p, e.floor);
+      from.splice(from.indexOf(e.node), 1);
+      nodeListOf(p, F.id).push(e.node);
+    }
+    e.node.pos = snapTo(F.plan, softPoint(pos) || e.node.pos);
+    return true;
+  }
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // scale (SPEC 14.1)
+  // ---------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Floor area of a plan in m². `src` = a plan (then pass mpp) or a project (its active plan, scale.mpp, goal.excluded).
+   * @param {object} src
+   * @param {number} [mpp]
+   * @param {{excluded?:number[]}} [opts] rooms that do not count (balcony; default for a project: goal.excluded)
+   * @returns {{areaM2:number, allM2:number, rooms:Array<{roomId:number, name:string, areaM2:number, excluded:boolean}>,
+   *   largest:object|null, smallest:object|null}} areaM2 = counted rooms, allM2 = every room; largest / smallest of the
+   *   counted rooms
+   */
+  function planArea(src, mpp, opts) {
+    const o = opts || {};
+    let plan = src;
+    let m = mpp;
+    let excluded = o.excluded;
+    if (isObj(src) && isObj(src.plan)) {
+      plan = src.plan;
+      if (!isNum(m)) m = isObj(src.scale) ? src.scale.mpp : undefined;
+      if (excluded === undefined) excluded = isObj(src.goal) ? src.goal.excluded : undefined;
+    }
+    const ex = new Set(arr(excluded));
+    const rooms = [];
+    let areaM2 = 0;
+    let allM2 = 0;
+    const k = isNum(m) && m > 0 ? m * m : 0;
+    for (const r of isObj(plan) ? arr(plan.rooms) : []) {
+      if (!isObj(r) || !Array.isArray(r.points) || r.points.length < 3) continue;
+      const a = geom.polygonAreaPx(r.points) * k;
+      if (!Number.isFinite(a)) continue;
+      const isEx = ex.has(r.roomId);
+      rooms.push({ roomId: r.roomId, name: r.name, areaM2: a, excluded: isEx });
+      allM2 += a;
+      if (!isEx) areaM2 += a;
+    }
+    const counted = rooms.filter((r) => !r.excluded);
+    const pick = (better) => (counted.length ? counted.reduce((b, r) => (better(r.areaM2, b.areaM2) ? r : b)) : null);
+    return { areaM2, allM2, rooms, largest: pick((a, b) => a > b), smallest: pick((a, b) => a < b) };
+  }
+
+  /** planArea of every floor (each with its own excluded rooms) and their sum. */
+  function buildingArea(p) {
+    const mpp = isObj(p) && isObj(p.scale) ? p.scale.mpp : undefined;
+    const list = floorsOf(p);
+    const ids = list.length ? list.slice().sort(byLevel).map((f) => f.id) : [null];
+    const floors = [];
+    let areaM2 = 0;
+    let allM2 = 0;
+    for (const id of ids) {
+      const F = floorOf(p, id);
+      if (!F) continue;
+      const a = planArea(F.plan, mpp, { excluded: F.goal.excluded });
+      floors.push({ id: F.id, name: F.name, level: F.level, areaM2: a.areaM2, allM2: a.allM2 });
+      areaM2 += a.areaM2;
+      allM2 += a.allM2;
+    }
+    return { areaM2, allM2, floors };
+  }
+
+  const okMpp = (v) => (isNum(v) && v >= MPP_MIN && v <= MPP_MAX ? Number(v.toPrecision(10)) : null);
+
+  /**
+   * The mpp at which the counted rooms of a plan (or the one room `roomId`) have `areaM2` m² - "Plocha bytu v m²",
+   * "Tahle místnost má 14 m²". Uniform scaling: the proportions never change.
+   * @param {object} plan
+   * @param {number} areaM2
+   * @param {{excluded?:number[], roomId?:number}} [opts]
+   * @returns {number|null} null without rooms, for an area <= 0 or an mpp outside 0.0005..0.2
+   */
+  function scaleFromArea(plan, areaM2, opts) {
+    const o = opts || {};
+    if (!isNum(areaM2) || areaM2 <= 0 || !isObj(plan)) return null;
+    const ex = new Set(arr(o.excluded));
+    let px = 0;
+    for (const r of arr(plan.rooms)) {
+      if (!isObj(r) || !Array.isArray(r.points) || r.points.length < 3) continue;
+      if (o.roomId !== undefined && o.roomId !== null ? r.roomId !== o.roomId : ex.has(r.roomId)) continue;
+      const a = geom.polygonAreaPx(r.points);
+      if (Number.isFinite(a)) px += a;
+    }
+    return px > 0 ? okMpp(Math.sqrt(areaM2 / px)) : null;
+  }
+
+  /** The mpp at which two normalized points are `metres` apart (two points / one wall); null when unusable. */
+  function scaleFromLength(a, b, metres) {
+    if (!softPoint(a) || !softPoint(b) || !isNum(metres) || metres <= 0) return null;
+    const d = geom.dist(a, b);
+    return d >= 1 ? okMpp(metres / d) : null;
+  }
+
+  /** The mpp at which the rooms' bounding box is `metres` wide ("Šířka celého půdorysu"). */
+  function scaleFromWidth(plan, metres) {
+    return isNum(metres) && metres > 0 && isObj(plan) ? okMpp(deriveMpp(plan, metres)) : null;
+  }
+
+  /**
+   * Set a verified scale - MUTATES: scale = {mpp, verified:true, method, ref}. false (nothing changed) for an unusable
+   * mpp. method default: the current one (or 'two-points').
+   */
+  function setScale(p, s) {
+    const o = isObj(s) ? s : {};
+    const mpp = okMpp(o.mpp);
+    if (!isObj(p) || mpp === null) return false;
+    const cur = isObj(p.scale) ? p.scale.method : null;
+    const method = SCALE_METHODS.includes(o.method) ? o.method : SCALE_METHODS.includes(cur) ? cur : 'two-points';
+    p.scale = { mpp, verified: true, method, ref: cleanScaleRef(method, o.ref) };
+    return true;
+  }
+
+  /** The user confirmed the scale as it is ("Sedí") - MUTATES. */
+  function confirmScale(p) {
+    if (!isObj(p) || !isObj(p.scale) || !okMpp(p.scale.mpp)) return false;
+    p.scale.verified = true;
+    return true;
+  }
+
+  /**
+   * Sanity checks of the scale (SPEC 14.1), in this order: 'unverified'; 'areaSmall' / 'areaLarge' (the building's
+   * counted area); then per floor (the active one first) 'roomSmall' / 'roomLarge' (counted rooms) and 'doorNarrow' /
+   * 'doorWide'. Only 'unverified' for a plan without rooms.
+   * @param {object} p
+   * @param {{limits?:object}} [opts] overrides of SCALE_LIMITS
+   * @returns {Array<{code:string, floor?:string|null, roomId?:number, doorId?:string, name?:string, value?:number, limit?:number}>}
+   */
+  function scaleIssues(p, opts) {
+    const L = { ...SCALE_LIMITS, ...(opts && isObj(opts.limits) ? opts.limits : {}) };
+    const out = [];
+    if (!isObj(p) || !isObj(p.plan)) return out;
+    if (!isObj(p.scale) || p.scale.verified !== true) out.push({ code: 'unverified' });
+    const mpp = isObj(p.scale) ? p.scale.mpp : NaN;
+    if (!isNum(mpp) || mpp <= 0) return out;
+    const b = buildingArea(p);
+    if (!(b.allM2 > 0)) return out;
+    if (b.areaM2 < L.areaMin) out.push({ code: 'areaSmall', value: b.areaM2, limit: L.areaMin });
+    else if (b.areaM2 > L.areaMax) out.push({ code: 'areaLarge', value: b.areaM2, limit: L.areaMax });
+    const act = activeFloorId(p);
+    const ids = [act].concat(b.floors.map((f) => f.id).filter((id) => id !== act));
+    for (const id of ids) {
+      const F = floorOf(p, id);
+      if (!F) continue;
+      for (const r of planArea(F.plan, mpp, { excluded: F.goal.excluded }).rooms) {
+        if (r.excluded) continue;
+        if (r.areaM2 < L.roomMin) out.push({ code: 'roomSmall', floor: F.id, roomId: r.roomId, name: r.name, value: r.areaM2, limit: L.roomMin });
+        else if (r.areaM2 > L.roomMax) out.push({ code: 'roomLarge', floor: F.id, roomId: r.roomId, name: r.name, value: r.areaM2, limit: L.roomMax });
+      }
+      for (const d of arr(F.plan.doors)) {
+        if (!isObj(d) || !softPoint(d.a) || !softPoint(d.b)) continue;
+        // to the centimetre: a door drawn exactly 60 cm wide is not too narrow
+        const w = round(geom.dist(d.a, d.b) * mpp, 2);
+        if (w < L.doorMin) out.push({ code: 'doorNarrow', floor: F.id, doorId: d.id, name: d.name, value: w, limit: L.doorMin });
+        else if (w > L.doorMax) out.push({ code: 'doorWide', floor: F.id, doorId: d.id, name: d.name, value: w, limit: L.doorMax });
+      }
+    }
+    return out;
+  }
+
+  /** Deep copy of a project; the (large) background data URLs (every floor's) are shared by reference. */
   function clone(project) {
     const bg = project.plan.background;
-    const copy = JSON.parse(JSON.stringify({ ...project, plan: { ...project.plan, background: null } }));
+    const fl = Array.isArray(project.floors) ? project.floors : null;
+    const lite = { ...project, plan: { ...project.plan, background: null } };
+    if (fl) lite.floors = fl.map((f) => (isObj(f) && isObj(f.plan) ? { ...f, plan: { ...f.plan, background: null } } : f));
+    const copy = JSON.parse(JSON.stringify(lite));
     copy.plan.background = bg;
+    if (fl) copy.floors.forEach((f, i) => {
+      if (isObj(f) && isObj(f.plan)) f.plan.background = fl[i].plan.background || null;
+    });
     return copy;
   }
 
@@ -1260,6 +2107,15 @@
     STEER_DEFAULT,
     ROUTER_BANDS_DEFAULT,
     MAX_LINKS,
+    MAX_NODES,
+    NODE_KINDS,
+    MAX_FLOORS,
+    LEVEL_MIN,
+    LEVEL_MAX,
+    CEILING_MATERIALS,
+    CEILING_DEFAULT,
+    SCALE_METHODS,
+    SCALE_LIMITS,
     ROOM_COLORS,
     MAX_ITEMS,
     CONN_TYPES,
@@ -1289,5 +2145,35 @@
     floorMaskAt,
     nearestFloor,
     clone,
+    // SPEC 14: floors
+    activeFloorId,
+    floorOf,
+    atFloor,
+    switchFloor,
+    addFloor,
+    duplicateFloor,
+    removeFloor,
+    moveFloor,
+    renameFloor,
+    setCeiling,
+    floorName,
+    floorGap,
+    cleanCeiling,
+    // SPEC 14: nodes
+    allNodes,
+    nodeById,
+    newNode,
+    addNode,
+    removeNode,
+    moveNodeToFloor,
+    // SPEC 14: scale
+    planArea,
+    buildingArea,
+    scaleFromArea,
+    scaleFromLength,
+    scaleFromWidth,
+    setScale,
+    confirmScale,
+    scaleIssues,
   };
 })();

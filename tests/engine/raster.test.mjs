@@ -129,7 +129,7 @@ test('field: a second node can only improve the signal and marks where it wins',
     router: [200, 200],
     node: { mode: 'ap_cable', pos: n(880, 680), bands: { '2.4': true, '5': true, '6': false }, power: 0, backhaulBand: 5, backhaulThreshold: -67 },
   });
-  p.node.pos = n(880, 680);
+  p.nodes[0].pos = n(880, 680);
   const c = ctxOf(p);
   const g = raster.grid(c);
   const solo = raster.field(c, g, params(p, 'today', 5));

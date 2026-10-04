@@ -9,8 +9,12 @@
  *   export_wifi_floorplan        the plan as structured data (wifi-floor-v2 + v3 project), without the raster background
  *   export_wifi_floorplan_svg    the SVG the "Save project as SVG" command writes
  *   import_wifi_floorplan        import an SVG (project or tracing background) or a PNG/JPEG/WebP data URL, undoable
- *   set_wifi_router_position     move the simulated router (trial position), undoable
- *   set_wifi_secondary_position  move the enabled second node, undoable
+ *   set_wifi_router_position     move the simulated router (trial position, on its own floor), undoable
+ *   set_wifi_secondary_position  move an access point / mesh node / repeater (SPEC 14.2: any of them - `node` = its number
+ *                                in the snapshot's `nodes` list (1 = the first) or its name; without `node` the first
+ *                                enabled one), undoable; the position lies on that node's floor (SPEC 14.3)
+ *   (snapshots: `nodes` = every node with number, name, type, floor, uplink and link quality; `floor` / `floors` with
+ *   several storeys; `secondary` = the first serving node, as before)
  *
  * Input validation is the old app's: x/y finite numbers in 0..1 that lie on the floor, no extra keys; exactly one of
  * svgSource / imageDataUrl.  Registration happens once the shell is ready; all tools are unregistered on pagehide. */
@@ -20,6 +24,14 @@
   const t = (k, p) => WH.i18n.t(k, p);
   const NO_INPUT = { type: 'object', properties: {}, additionalProperties: false };
   const POINT_INPUT = { type: 'object', properties: { x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 } }, required: ['x', 'y'], additionalProperties: false };
+  const NODE_INPUT = {
+    type: 'object',
+    properties: {
+      x: { type: 'number', minimum: 0, maximum: 1 }, y: { type: 'number', minimum: 0, maximum: 1 },
+      node: { anyOf: [{ type: 'integer', minimum: 1, maximum: 8 }, { type: 'string', minLength: 1, maxLength: 50 }] },
+    },
+    required: ['x', 'y'], additionalProperties: false,
+  };
   const r1 = (v) => (Number.isFinite(v) ? Math.round(v * 10) / 10 : null);
   const r6 = (v) => Math.round(v * 1e6) / 1e6;
 
@@ -60,12 +72,49 @@
     }
   }
 
+  /** Every node of the building (SPEC 14.2) in the order the tools count them (1 = the first). */
+  function nodeEntries(p) {
+    const E = WH.engine;
+    if (Array.isArray(p.floors) && typeof E.project.allNodes === 'function') return E.project.allNodes(p);
+    return (p.nodes || []).map((node, index) => ({ node, floor: null, floorName: '', active: true, index }));
+  }
+  /** The snapshot's `nodes`: number, name, type, floor, position, bands, uplink and the wireless link quality. */
+  function nodesInfo(p, a) {
+    const E = WH.engine;
+    const all = nodeEntries(p);
+    const serving = new Set(E.model.nodeList(p).map((n) => n.id));
+    const byId = new Map(all.map((x) => [x.node.id, x.node]));
+    return all.map((x, i) => {
+      const n = x.node;
+      const wl = E.model.isWirelessNode(n);
+      const inf = a && Array.isArray(a.nodes) ? a.nodes.find((y) => y && y.id === n.id) : null;
+      const up = n.uplink && n.uplink !== 'router' ? byId.get(n.uplink) : null;
+      return {
+        number: i + 1, name: n.name, scenario: n.mode, enabled: !!n.enabled, serving: serving.has(n.id),
+        floor: x.floorName || null, position: n.pos ? { x: n.pos.x, y: n.pos.y } : null, bands: Object.assign({}, n.bands),
+        uplink: up ? up.name : 'router', maxMbps: Number.isFinite(n.maxMbps) ? n.maxMbps : null,
+        wirelessUplinkDbm: wl && inf && Number.isFinite(inf.backhaul) ? Math.round(inf.backhaul) : null,
+        wirelessUplinkBandGHz: wl ? n.backhaulBand : null,
+        weakUplink: !!(wl && inf && inf.weakBackhaul),
+        sharePercent: inf && Number.isFinite(inf.share) ? r1(inf.share) : null,
+      };
+    });
+  }
+  /** SPEC 14.3: the floor the numbers are for, and the others (only with several floors). */
+  function floorInfo(p) {
+    const E = WH.engine;
+    if (!Array.isArray(p.floors) || p.floors.length < 2) return {};
+    const act = E.project.activeFloorId(p);
+    const name = (id) => { const f = p.floors.find((x) => x.id === id); return f ? f.name : null; };
+    return { floor: name(act), routerFloor: name(p.net.routerFloor), floors: p.floors.slice().sort((x, y) => x.level - y.level).map((f) => ({ name: f.name, level: f.level })) };
+  }
+
   function coverageSnapshot() {
     const p = project();
     const E = WH.engine;
     const a = analyse(p);
-    const nodeOn = p.node.mode !== 'none';
-    const wireless = nodeOn && E.model.isWirelessNode(p.node);
+    const nodes = nodesInfo(p, a);
+    const first = nodes.find((n) => n.serving) || null;
     const thr = p.model.threshold;
     const trial = a ? E.raster.stats(a.grid, a.trial, targetIds(p), thr, p.goal.excluded) : null;
     const today = a ? E.raster.stats(a.grid, a.today, targetIds(p), thr, p.goal.excluded) : null;
@@ -73,13 +122,16 @@
       type: 'illustrative_prediction',
       router: { x: p.net.router.x, y: p.net.router.y },
       today: { x: p.net.baseline.x, y: p.net.baseline.y },
-      secondary: nodeOn ? {
-        position: { x: p.node.pos.x, y: p.node.pos.y },
-        scenario: p.node.mode,
-        bands: Object.assign({}, p.node.bands),
-        wirelessUplinkDbm: wireless && a && Number.isFinite(a.backhaul) ? Math.round(a.backhaul) : null,
-        wirelessUplinkBandGHz: wireless ? p.node.backhaulBand : null,
+      ...floorInfo(p),
+      // (the first serving node, in the shape older agents know)
+      secondary: first ? {
+        position: first.position,
+        scenario: first.scenario,
+        bands: first.bands,
+        wirelessUplinkDbm: first.wirelessUplinkDbm,
+        wirelessUplinkBandGHz: first.wirelessUplinkBandGHz,
       } : null,
+      nodes,
       ...bandInfo(p, a),
       target: targetName(p),
       goodSignalThresholdDbm: thr,
@@ -130,17 +182,21 @@
       safetyReservePercent: g.reserve,
       targetsMbps: { download: g.targetDown, upload: g.targetUp },
       limitsMbps: { download: p.net.wanDown, upload: p.net.wanUp },
-      secondarySpeedSupported: false,
+      // SPEC 10 / 14.2: a node-served place goes through that node's link (its uplink chain and its own ceiling)
+      secondarySpeedSupported: true,
+      ...floorInfo(p),
       target: targetName(p),
       result: null,
       rooms: [],
     };
-    if (p.node.mode !== 'none') return Object.assign(out, { reason: 'secondary_node', note: t('app.tool.speed.node') });
     if (!curve) return Object.assign(out, { reason: 'needs_speed_tests', note: t('app.tool.speed.noCurve') });
     if (!a) return out;
     const n = p.net;
+    const nodesOn = Array.isArray(a.params.trial.nodes) && a.params.trial.nodes.length > 0;
     const sf = E.speed.fieldSpeed(a.ctx, a.grid, a.params.trial, curve,
-      { wanDown: n.wanDown, wanUp: n.wanUp, wanPort: n.wanPort, ontPort: n.ontPort, wanLink: n.wanLink, reserve: g.reserve }, a.trial);
+      { wanDown: n.wanDown, wanUp: n.wanUp, wanPort: n.wanPort, ontPort: n.ontPort, wanLink: n.wanLink, reserve: g.reserve }, a.trial,
+      nodesOn ? { nodeWins: a.nodeWins || undefined, backhaulCurves: E.speed.buildCurves(meas, { device: g.device }) } : undefined);
+    if (nodesOn) out.note = t('planner.agent.speedNodes');
     const st = (ids, excluded) => {
       const s = E.speed.stats(a.grid, sf, { roomIds: ids, excluded, targetDown: g.targetDown, targetUp: g.targetUp });
       return { knownPercent: r1(s.known), meetsTargetPercent: r1(s.coverage), medianDownMbps: r1(s.medianDown), medianUpMbps: r1(s.medianUp), p10DownMbps: r1(s.p10Down), p10UpMbps: r1(s.p10Up) };
@@ -150,14 +206,42 @@
     return out;
   }
 
-  /** Old-app validation: an object with exactly finite x/y in 0..1 that lies on the floor. */
-  function floorPoint(input) {
+  /** Old-app validation: an object with exactly finite x/y in 0..1 (+ the `extra` keys) that lies on the floor of `plan`
+   *  (default: the floor on screen). */
+  function floorPoint(input, plan, extra) {
     const p = project();
-    const ok = input && typeof input === 'object' && !Object.keys(input).some((k) => k !== 'x' && k !== 'y')
+    const keys = ['x', 'y'].concat(extra || []);
+    const ok = input && typeof input === 'object' && !Object.keys(input).some((k) => !keys.includes(k))
       && Number.isFinite(input.x) && Number.isFinite(input.y) && input.x >= 0 && input.x <= 1 && input.y >= 0 && input.y <= 1
-      && !!WH.engine.project.roomAt(p.plan, { x: input.x, y: input.y });
+      && !!WH.engine.project.roomAt(plan || p.plan, { x: input.x, y: input.y });
     if (!ok) throw new Error(t('app.tool.err.position'));
     return { x: r6(input.x), y: r6(input.y) };
+  }
+  /** The plan of floor `id` (any floor; the floor on screen without floors). */
+  function planOf(p, id) {
+    const E = WH.engine.project;
+    if (!id || !Array.isArray(p.floors) || typeof E.floorOf !== 'function') return p.plan;
+    const f = E.floorOf(p, id);
+    return (f && f.plan) || p.plan;
+  }
+  /** `node` of set_wifi_secondary_position: its number (1 = the first of the snapshot's list), its name (any case) or
+   *  its id; without it the first enabled node. -> {node, floor} */
+  function pickNode(p, sel) {
+    const all = nodeEntries(p);
+    if (!all.length) throw new Error(t('app.tool.err.noNode'));
+    if (sel === undefined || sel === null) {
+      const x = all.find((y) => y.node.enabled);
+      if (!x) throw new Error(t('app.tool.err.noNode'));
+      return x;
+    }
+    let x = null;
+    if (typeof sel === 'number' && Number.isInteger(sel)) x = all[sel - 1] || null;
+    else if (typeof sel === 'string') {
+      const k = sel.trim().toLocaleLowerCase();
+      x = all.find((y) => y.node.id === sel) || all.find((y) => String(y.node.name || '').trim().toLocaleLowerCase() === k) || null;
+    }
+    if (!x) throw new Error(t('planner.agent.err.node', { n: all.length }));
+    return x;
   }
 
   const settle = () => new Promise((res) => setTimeout(res, 0));
@@ -236,10 +320,11 @@
       },
       {
         name: 'set_wifi_router_position', title: t('app.tool.router'),
-        description: 'Move the simulated Router (trial position) on the floor map. x and y are normalized plan coordinates from 0 to 1 and must lie on the floor. Undoable. Does not change the physical router.',
+        description: 'Move the simulated Router (trial position) on the floor map. x and y are normalized plan coordinates from 0 to 1 and must lie on the floor of the router\'s storey (routerFloor in the snapshot when the home has several floors). Undoable. Does not change the physical router.',
         inputSchema: POINT_INPUT, annotations: { readOnlyHint: false, untrustedContentHint: false },
         async execute(input) {
-          const q = floorPoint(input);
+          const p0 = project();
+          const q = floorPoint(input, planOf(p0, p0.net.routerFloor));
           WH.store.commit('planner.undo.router', (p) => { p.net.router = q; }, ['net']);
           await settle();
           return coverageSnapshot();
@@ -247,12 +332,22 @@
       },
       {
         name: 'set_wifi_secondary_position', title: t('app.tool.node'),
-        description: 'Move the enabled simulated secondary Wi-Fi node on the floor map using normalized coordinates (0 to 1, on the floor). Select a scenario in the visible controls first. Undoable. Does not configure hardware.',
-        inputSchema: POINT_INPUT, annotations: { readOnlyHint: false, untrustedContentHint: false },
+        description: 'Move a simulated access point, mesh node or repeater on the floor map using normalized coordinates (0 to 1, on that node\'s floor). `node` picks it: its number in the coverage snapshot\'s `nodes` list (1 = the first) or its name; without `node` the first enabled one is moved. Add nodes in the visible "More access points" card first. Undoable. Does not configure hardware.',
+        inputSchema: NODE_INPUT, annotations: { readOnlyHint: false, untrustedContentHint: false },
         async execute(input) {
-          if (project().node.mode === 'none') throw new Error(t('app.tool.err.noNode'));
-          const q = floorPoint(input);
-          WH.store.commit('planner.undo.node', (p) => { p.node.pos = q; }, ['node']);
+          const p0 = project();
+          const x = pickNode(p0, input && typeof input === 'object' ? input.node : undefined);
+          const q = floorPoint(input, planOf(p0, x.floor), ['node']);
+          const id = x.node.id;
+          const fid = x.floor;
+          WH.store.commit('planner.undo.nodeMove', (p) => {
+            const E = WH.engine.project;
+            if (fid && Array.isArray(p.floors) && typeof E.moveNodeToFloor === 'function') return E.moveNodeToFloor(p, id, fid, q) !== false ? undefined : false;
+            const n = (p.nodes || []).find((y) => y.id === id);
+            if (!n) return false;
+            n.pos = q;
+            return undefined;
+          }, ['nodes', 'floors']);
           await settle();
           return coverageSnapshot();
         },

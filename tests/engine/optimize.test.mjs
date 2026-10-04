@@ -125,7 +125,7 @@ test('find: deterministic, grid size independent in character, goal room and exc
 test('find: honours a second node and calibration offsets', async () => {
   const p = P.create({ template: 'demo', lang: 'cs' });
   p.view.band = 5; // one band: a node that does not serve it must be ignored
-  p.node = { mode: 'ap_cable', pos: P.nearestFloor(p.plan, { x: 0.8, y: 0.3 }), bands: { '2.4': true, '5': true, '6': false }, power: 0, backhaulBand: 5, backhaulThreshold: -67 };
+  p.nodes = [{ id: 'node-1', name: 'AP 2', mode: 'ap_cable', pos: P.nearestFloor(p.plan, { x: 0.8, y: 0.3 }), bands: { '2.4': true, '5': true, '6': false }, power: 0, backhaulBand: 5, backhaulThreshold: -67, maxMbps: null, uplink: 'router', enabled: true }];
   const { ctx, grid, offsets } = setup(p);
   const node = model.nodeParams(p);
   const solo = await optimize.find(ctx, grid, optsFor(p, { offsets }));
@@ -196,7 +196,7 @@ test('find: errors', async () => {
   const { ctx, grid } = setup(p);
   await assert.rejects(optimize.find(ctx, grid, {}), RangeError);
   await assert.rejects(optimize.find(ctx, grid, { band: 7 }), RangeError);
-  const node = { mode: 'ap_cable', pos: p.node.pos, bands: { '2.4': true, '5': true, '6': true }, power: 0 };
+  const node = { mode: 'ap_cable', pos: P.nearestFloor(p.plan, { x: 0.3, y: 0.55 }), bands: { '2.4': true, '5': true, '6': true }, power: 0 };
   // a second node no longer refuses the speed search (SPEC 10); an unusable curve is still "no curve"
   await assert.rejects(optimize.find(ctx, grid, { band: 5, node, speed: { curve: {}, targetDown: 50, targetUp: 20 } }), (err) => err.message === 'err.opt.noCurve');
   await assert.rejects(optimize.find(ctx, grid, { band: 5, speed: { curve: null, targetDown: 50, targetUp: 20 } }), (err) => err.message === 'err.opt.noCurve');

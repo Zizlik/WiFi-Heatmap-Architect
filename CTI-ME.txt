@@ -29,9 +29,18 @@ BĚŽNÉ POUŽITÍ (režim Wi-Fi, klávesa 2)
    adresy → Nastavení webu → Přístup k místní síti → Povolit.
 3. „Prvotní měření“ (karta Začínáme): průvodce ukáže 4-6 míst k měření, pak
    doladí sílu routeru i útlum zdí a ukáže „Propustnost bytu“.
-4. Co by se změnilo: přesuň router nebo zapni druhý přístupový bod / mesh /
+4. Co by se změnilo: přesuň router nebo přidej přístupový bod / mesh /
    opakovač - u měřených bodů uvidíš třeba „−72 → −58 (+14)“ a „↓120 → ≈310“
    a v seznamu „Co by se změnilo v tvých bodech“ i to, co rychlost omezuje.
+
+MĚŘÍTKO, DALŠÍ PŘÍSTUPOVÉ BODY, PATRA
+Po první nakreslené místnosti se aplikace zeptá „Víš, kolik má byt m²?“ -
+napiš plochu ze smlouvy a měřítko se dopočítá (jde to i přes jednu místnost,
+zeď, dvě místa se známou vzdáleností nebo šířku). Dokud měřítko neověříš,
+režim Wi-Fi hlásí „Měřítko neověřeno“. Karta „Další přístupové body“ přidá
+AP / mesh / opakovač (až 8, každý k routeru nebo k jinému bodu). Dům s více
+patry: v Půdorysu Patra > Přidat patro; patro přepneš vlevo na mapě nebo
+Ctrl+↑/↓. Vyzkoušej Soubor → Ukázkový dům se dvěma patry.
 
 WI-FI 7 A PŘEPÍNÁNÍ PÁSEM
 Novější routery mají jednu síť a zařízení si pásmo vybírá samo. Nic
@@ -42,6 +51,7 @@ na 2,4 GHz; která pásma router vysílá, nastavíš v kartě Pokročilé.
 KLÁVESY
 1 Půdorys · 2 Wi-Fi · F nejlepší místo · D dnešní místo · M měření
 B pásmo 2,4/5/6/Auto · V signál/rychlost/změna · P předpověď u bodů
+Ctrl+↑/↓ patro nahoru/dolů · Alt+1…9 patro podle čísla
 + − 0 zoom · Ctrl+Z zpět · Ctrl+S uložit · ? zkratky · „?“ u volby = nápověda
 
 VZHLED A PROBLÉMY

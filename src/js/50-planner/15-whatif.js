@@ -10,6 +10,8 @@
  *   PL.wi.tip(m)              tooltip lines (measured / model today / model new / predicted + what limits the speed)
  *   PL.wi.summary()           {n, avg, up, down, same, best, worst, items[]} sorted by benefit
  *   PL.wi.verdict(sum)        one plain sentence naming the change ("Opakovač pomůže hlavně v místě „Ložnice“ (+14 dB), …")
+ *   PL.wi.srcNode(r)          the node that would serve a point after the change (SPEC 14.2: any number of nodes) or null
+ *   PL.wi.links() / linkOf(id) engine.speed.nodeLinks for the current scenario (each node's uplink chain), cached
  *   PL.wi.section()           the "Co by se změnilo v tvých bodech" block of the Measurements card ({el, sync})
  *   PL.insidePoint(q, m)      a floor point >= m metres from every wall / room outline, as close to q as possible
  *   PL.measPoint(q)           where a NEW measurement goes: the room under the cursor, never on a wall line
@@ -135,7 +137,8 @@
     if (S.q === 'coarse' && cache.rows && p.measurements.length > 40) return cache.rows;
     let ctx;
     try { ctx = PL.ensureCtx(p); } catch (e) { return null; }
-    const key = [ctx.version, S.offsKey, PL.posKey(p.net.router), JSON.stringify(p.node), S.measVer, JSON.stringify(PL.speedLimits(p)), p.goal.device, p.goal.reserve].join('|');
+    // (every serving node of the building counts - SPEC 14.2 / 14.3 - and the floor the points lie on)
+    const key = [ctx.version, S.offsKey, PL.posKey(p.net.router), p.net.routerFloor, PL.floorId(), JSON.stringify(PL.nodeList()), S.measVer, JSON.stringify(PL.speedLimits(p)), p.goal.device, p.goal.reserve].join('|');
     if (key !== cache.key) {
       let rows = null;
       try { rows = A.predictAtMeasurements(ctx, p, { offsets: S.offs }); } catch (e) { PL.report(e, 'whatif.predict', { bug: true }); rows = null; }
@@ -161,7 +164,7 @@
     // capDown = the binding ceiling (ENGINE-API 7.7); null for a wireless link the curve cannot rate ("slabé propojení")
     const p = PL.P();
     let v = s.capDown;
-    if (!fin(v) && k === 'device') v = p.node.maxMbps;
+    if (!fin(v) && k === 'device') { const n = WI.srcNode(r); v = n ? n.maxMbps : null; }
     if (!fin(v) && k === 'plan') v = p.net.wanDown;
     if (!fin(v) && k === 'link') v = WH.engine.speed.linkLimit(p.net);
     return { k, v: fin(v) ? v : null };
@@ -170,6 +173,15 @@
   WI.capText = (c) => (!c ? '' : c.v === null && c.k === 'backhaul' ? t('planner.wi.capU') : t('planner.wi.cap.' + c.k, { v: c.v === null ? '?' : PL.mbps(c.v) }));
   /** The same as a noun phrase for sentences: "propojení s routerem (≈ 300 Mb/s)" / "slabé propojení s routerem". */
   WI.capNoun = (c) => (!c ? '' : c.v === null && c.k === 'backhaul' ? t('planner.wi.capNU') : t('planner.wi.capN.' + c.k, { v: c.v === null ? '?' : PL.mbps(c.v) }));
+  /** The node that would serve a measured point after the change (rows carry sourceId / sourceIndex; a row of the
+   *  older shape says only 'node': the first serving node then). */
+  WI.srcNode = (r) => {
+    if (!r || r.source !== 'node') return null;
+    const list = PL.nodeList();
+    if (r.sourceId) { const n = list.find((x) => x.id === r.sourceId); if (n) return n; }
+    if (Number.isInteger(r.sourceIndex) && r.sourceIndex > 0 && list[r.sourceIndex - 1]) return list[r.sourceIndex - 1];
+    return list.length === 1 ? list[0] : null;
+  };
   /** The second node serves this point with a stronger signal, yet the speed falls below the measured one because its link
    *  to the router / the device's ceiling binds (a repeater where the router's signal is already weak). */
   const slower = (r) => {
@@ -278,7 +290,10 @@
     if (fin(r.measured)) out.push(line('.text-muted', t('planner.wi.tip.measured', { v: db(r.measured) })));
     if (fin(r.modelToday) && fin(r.modelNew)) out.push(line('.text-muted', t('planner.wi.tip.model', { a: db(r.modelToday), b: db(r.modelNew) })));
     out.push(line('.pl-tip__wi', el('span', t('planner.wi.tip.pred')), el('b.num', db(r.predicted)), el(`span.pl-chip.pl-chip--${tn}`, tn !== 'zero' ? ui().icon(tn === 'up' ? 'arrow-up' : 'arrow-down', 16) : null, el('span', PL.db(r.delta)))));
-    if (PL.P().node.mode !== 'none' && r.source) out.push(line('.text-muted', t(r.source === 'node' ? 'planner.wi.tip.fromNode' : 'planner.wi.tip.fromRouter')));
+    if (PL.anyNode() && r.source) {
+      const sn = WI.srcNode(r);
+      out.push(line('.text-muted', sn ? t('planner.wi.tip.fromNodeN', { name: PL.nodeName(sn) }) : t(r.source === 'node' ? 'planner.wi.tip.fromNode' : 'planner.wi.tip.fromRouter')));
+    }
     // Auto (SPEC 13): a steering device may move to another band after the change
     const bn = WH.engine.units.normBand(r.bandNew);
     if (bn && bn !== WH.engine.units.normBand(r.band)) out.push(line('.text-muted', t('planner.wi.tip.bandNew', { a: PL.band(r.band), b: PL.band(bn) })));
@@ -315,15 +330,36 @@
       same: items.filter((x) => x.d > -1 && x.d < 1).length, best: items[0], worst: items[items.length - 1],
     };
   };
-  /** Who makes the change: the node type, the new router position, or both. */
-  const who = () => {
-    const p = PL.P();
-    const node = p.node.mode !== 'none';
-    return t('planner.wi.who.' + (node && PL.moved() ? 'both' : node ? p.node.mode : 'router'));
+  /** The summary's points grouped by the source that would serve them (the router, each node): [{node|null, name, n,
+   *  avg}] - the router first, then the nodes in building order. */
+  WI.bySource = (s) => {
+    if (!s || !PL.anyNode()) return [];
+    const by = new Map();
+    for (const x of s.items) {
+      const sn = WI.srcNode(x.r);
+      const k = sn ? sn.id : (x.r.source === 'node' ? '?' : 'router');
+      if (k === '?') continue;
+      const g = by.get(k) || { node: sn || null, name: sn ? PL.nodeName(sn) : t('planner.tip.routerName'), n: 0, sum: 0 };
+      g.n += 1;
+      g.sum += x.d;
+      by.set(k, g);
+    }
+    const order = ['router', ...PL.nodeList().map((n) => n.id)];
+    return order.filter((k) => by.has(k)).map((k) => { const g = by.get(k); return { node: g.node, name: g.name, n: g.n, avg: g.sum / g.n }; });
+  };
+  /** Who makes the change: the new router position, the node (by its name - the one serving the best point when there
+   *  are several), or both. */
+  const who = (s) => {
+    const list = PL.nodeList();
+    if (list.length && PL.moved()) return t('planner.wi.who.both');
+    if (!list.length) return t('planner.wi.who.router');
+    if (list.length === 1) return PL.nodeName(list[0]);
+    const sn = s && s.best ? WI.srcNode(s.best.r) : null;
+    return sn ? PL.nodeName(sn) : t('planner.wi.who.nodes');
   };
   WI.verdict = (s) => {
     if (!s) return '';
-    const w = who();
+    const w = who(s);
     // two points of the same name (two dots in one room) get their list number: „Ložnice“ (3)
     const p0 = PL.P();
     const name = (x) => {
@@ -349,32 +385,36 @@
     if (z !== b && z.d <= -1) txt += ' ' + t('planner.wi.v.worse', { name: name(z), d: PL.db(z.d) });
     else if (sl) txt += ' ' + t('planner.wi.v.slower', { name: name(sl), a: PL.mbps(sl.r.speed.measuredDown), b: PL.mbps(sl.r.speed.predDown) });
     else if (s.same && z !== b) { const same = s.items.find((x) => x.d > -1 && x.d < 1); if (same) txt += ' ' + t('planner.wi.v.same', { name: name(same) }); }
-    // the link to the router is what slows it down: the one thing that helps is a spot closer to the router
-    const mode = PL.P().node.mode;
+    // the link to the router is what slows it down: the one thing that helps is a spot closer to its uplink
     const linkBinds = (r) => (slower(r) && r.speed.limitedBy === 'backhaul') || weakLink(r);
-    if ((mode === 'repeater' || mode === 'mesh_wifi') && s.items.some((x) => linkBinds(x.r))) txt += ' ' + t('planner.wi.v.closer');
+    const wireless = (r) => { const n = WI.srcNode(r); return !n || PL.nodeWireless(n.mode); };
+    if (s.items.some((x) => linkBinds(x.r) && wireless(x.r))) txt += ' ' + t('planner.wi.v.closer');
     return txt;
   };
-  let link = { a: null, v: null };
-  /** engine.speed.nodeLink for the current scenario (the backhaul band's own curve when there is one), cached per analysis. */
-  WI.link = () => {
+  let links = { a: null, v: [] };
+  /** engine.speed.nodeLinks for the current scenario (each node's backhaul band's own curve when there is one, chained
+   *  wireless hops multiplied), cached per analysis: one NodeLink per serving node (building order). */
+  WI.links = () => {
     const p = PL.P();
     const S = PL.S;
     const E = WH.engine;
-    if (!p || p.node.mode === 'none' || !S.a) return null;
-    if (link.a === S.a && link.mv === S.measVer) return link.v;
-    let v = null;
+    if (!p || !S.a || !PL.anyNode()) return [];
+    if (links.a === S.a && links.mv === S.measVer) return links.v;
+    let v = [];
     try {
       const meas = PL.filledMeasurements();
       const curve = PL.speedCurve(p.view.band, meas).curve;
-      const bh = E.speed.buildCurve(meas, { band: p.node.backhaulBand, device: p.goal.device });
-      v = E.speed.nodeLink(S.a.ctx, E.model.fieldParams(p, 'trial', { offsets: S.offs }), curve, bh ? { backhaulCurve: bh } : {});
-    } catch (e) { PL.report(e, 'whatif.nodeLink', { bug: true }); v = null; }
-    link = { a: S.a, mv: S.measVer, v };
+      const state = E.model.fieldParams(p, 'trial', { offsets: S.offs });
+      v = E.speed.nodeLinks(S.a.ctx, state, curve, { backhaulCurves: PL.backhaulCurves(meas) }) || [];
+    } catch (e) { PL.report(e, 'whatif.nodeLinks', { bug: true }); v = []; }
+    links = { a: S.a, mv: S.measVer, v };
     return v;
   };
-  /** Throughput of the second node's wireless link to the router (Mb/s), NaN when unknown (no speed curve / wired). */
-  WI.backhaulMbps = () => { const l = WI.link(); return l && l.wireless && l.known && fin(l.down) ? l.down : NaN; };
+  WI.linkOf = (id) => WI.links().find((l) => l && l.id === id) || null;
+  /** The first serving node's link (older callers). */
+  WI.link = () => WI.links()[0] || null;
+  /** Throughput of a node's wireless link to its uplink (Mb/s, the whole chain), NaN when unknown (no speed curve / wired). */
+  WI.backhaulMbps = (id) => { const l = id ? WI.linkOf(id) : WI.link(); return l && l.wireless && l.known && fin(l.down) ? l.down : NaN; };
   /** One line for the Result card. */
   WI.resultLine = (s) => (s ? t('planner.wi.res', { n: s.n, d: PL.db(s.avg), up: s.up, down: s.down }) : '');
 
@@ -386,7 +426,9 @@
     const verdict = el('p.pl-wi__verdict', { 'aria-live': 'polite' });
     const list = el('ol.pl-wi__list');
     const tip = el('p.text-xs.text-muted.pl-wi__idle');
-    const box = el('div.pl-wi', head, verdict, sum, list);
+    // SPEC 14.2: with several nodes, what each source would do at the points it serves
+    const bySrc = el('div.pl-wi__by', { hidden: true });
+    const box = el('div.pl-wi', head, verdict, sum, bySrc, list);
     const root = el('div.pl-wi-host', box, tip);
     let key = '';
     function row(x) {
@@ -398,9 +440,12 @@
         ? el('span.pl-wi__sp', ui().icon('download', 16), fin(r.speed.measuredDown) ? PL.mbps(r.speed.measuredDown) + ' → ' : '', el(`b.pl-lab__v.pl-lab__v--${st}`, '≈' + PL.mbps(r.speed.predDown)), ` ${t('planner.mbps')}`)
         : null;
       const c = WI.cap(r) || (weakLink(r) ? { k: 'backhaul', v: null } : null);
-      const b = el('button.pl-wi__row', { type: 'button', 'aria-label': t('planner.wi.rowAria', { name: x.m.name, a: was, b: num(r.predicted), d: PL.db(r.delta) }) + (c ? ' · ' + WI.capText(c) : '') },
+      // SPEC 14.2: which source would serve the point ("přes AP 2") while nodes are on
+      const sn = PL.anyNode() ? WI.srcNode(r) : null;
+      const via = sn ? t('planner.wi.via', { name: PL.nodeName(sn) }) : '';
+      const b = el('button.pl-wi__row', { type: 'button', 'aria-label': t('planner.wi.rowAria', { name: x.m.name, a: was, b: num(r.predicted), d: PL.db(r.delta) }) + (via ? ' · ' + via : '') + (c ? ' · ' + WI.capText(c) : '') },
         el('span.pl-wi__no', String(x.i + 1)),
-        el('span.pl-wi__main', el('span.pl-wi__name.truncate', x.m.name), el('span.pl-wi__sub', el('span.num', `${was} → ${num(r.predicted)} dBm`), sp, c ? el('span.pl-wi__capt', ui().icon('lock', 16), WI.capText(c)) : null)),
+        el('span.pl-wi__main', el('span.pl-wi__name.truncate', x.m.name), el('span.pl-wi__sub', el('span.num', `${was} → ${num(r.predicted)} dBm`), sp, via ? el('span.pl-wi__via', ui().icon(PL.nodeIcon(sn.mode), 16), via) : null, c ? el('span.pl-wi__capt', ui().icon('lock', 16), WI.capText(c)) : null)),
         el(`span.pl-chip.pl-chip--${tn}`, tn !== 'zero' ? ui().icon(tn === 'up' ? 'arrow-up' : 'arrow-down', 16) : null, el('span', PL.signed(Math.round(x.d)))));
       b.addEventListener('click', () => { if (PL.showMeas) PL.showMeas(x.m.id); });
       return el('li', b);
@@ -411,7 +456,7 @@
         if (q === 'coarse') return;   // while the router is dragged: once the pointer rests
         const p = PL.P();
         const s = WI.summary();
-        const k = s ? JSON.stringify([WH.i18n.lang, s.items.map((x) => [x.m.id, x.m.name, Math.round(x.d * 10), x.r.predicted, x.r.speed && x.r.speed.predDown, x.r.speed && x.r.speed.limitedBy]), p.node.mode, PL.moved()]) : 'none' + WH.i18n.lang + (p.measurements.length > 0) + WI.active() + !!WI.rows();
+        const k = s ? JSON.stringify([WH.i18n.lang, s.items.map((x) => [x.m.id, x.m.name, Math.round(x.d * 10), x.r.predicted, x.r.speed && x.r.speed.predDown, x.r.speed && x.r.speed.limitedBy, x.r.sourceId || x.r.sourceIndex || x.r.source]), PL.nodeList().map((n) => [n.id, n.name, n.mode]), PL.moved()]) : 'none' + WH.i18n.lang + (p.measurements.length > 0) + WI.active() + !!WI.rows();
         if (k === key) return;
         key = k;
         box.hidden = !s;
@@ -425,6 +470,11 @@
           el('span.pl-wi__cnt.pl-wi__cnt--up', t('planner.wi.up', { n: s.up })),
           el('span.pl-wi__cnt.pl-wi__cnt--down', t('planner.wi.down', { n: s.down })),
           el('span.pl-wi__cnt', t('planner.wi.same', { n: s.same })));
+        const groups = WI.bySource(s);
+        bySrc.hidden = groups.length < 2;
+        bySrc.replaceChildren(...(bySrc.hidden ? [] : groups.map((g) => el('span.pl-wi__src',
+          g.node ? ui().icon(PL.nodeIcon(g.node.mode), 16) : ui().icon('router', 16),
+          el('span', t('planner.wi.bySrc', { name: g.name, n: g.n, d: PL.db(g.avg) }))))));
         list.replaceChildren(...s.items.map(row));
       },
     };

@@ -11,17 +11,20 @@
  *   WH.store.on(topic | [topics] | '*', fn) -> off     fn is called ONCE per change batch even when several topics matched
  *   WH.store.prefs / setPref(key, value) / getPref(key, fallback)
  *
- * History covers: name, plan, scale, net, node, model, goal, measurements.  `view` (band, layer, toggles ...) is
- * deliberately NOT part of undo/redo, so pressing Ctrl+Z never flips a layer switch back and forth.
- * The background image (a potentially multi-megabyte data URL string) is never deep-copied: snapshots keep the
- * same string reference. */
+ * History covers: name, plan, scale, net, nodes, floors, model, goal, measurements.  `view` (band, layer, toggles,
+ * the active floor ...) is deliberately NOT part of undo/redo, so pressing Ctrl+Z never flips a layer switch back and
+ * forth. Floors (SPEC 14.3, ENGINE-API S.1): the top-level plan / nodes / measurements / goal are the ACTIVE floor's and
+ * the floors[] entry holding null content marks it, so a snapshot always restores a consistent building; after an undo
+ * or redo that lands on another floor, view.floor follows it (syncFloorView).
+ * Background images (potentially multi-megabyte data URL strings - the active plan's AND every other floor's) are never
+ * deep-copied or stringified: snapshots keep the same string references and signatures compare them by identity. */
 (function () {
   'use strict';
   const g = globalThis;
   g.WH = g.WH || {};
 
-  const TOPICS = ['plan', 'scale', 'net', 'node', 'model', 'goal', 'measurements', 'view'];
-  const HISTORY_KEYS = ['name', 'plan', 'scale', 'net', 'node', 'model', 'goal', 'measurements'];
+  const TOPICS = ['plan', 'scale', 'net', 'nodes', 'floors', 'model', 'goal', 'measurements', 'view'];
+  const HISTORY_KEYS = ['name', 'plan', 'scale', 'net', 'nodes', 'floors', 'model', 'goal', 'measurements'];
   const ALL_SIG_KEYS = HISTORY_KEYS.concat(['view']);
   const MAX_HISTORY = 100;
   const SAVE_DELAY = 500;
@@ -56,20 +59,41 @@
     return copy;
   }
 
-  function bgOf(p) { return p && p.plan ? p.plan.background || null : null; }
+  /** The floors without the backgrounds of their (inactive) plans. */
+  function floorsNoBg(floors) {
+    if (!Array.isArray(floors)) return floors;
+    return floors.map((f) => (f && f.plan && typeof f.plan === 'object' && f.plan.background
+      ? Object.assign({}, f, { plan: planNoBg(f.plan) }) : f));
+  }
+
+  /** Every background of the project by reference: the active plan's first, then one per floors[] entry. */
+  function bgOf(p) {
+    const list = [p && p.plan ? p.plan.background || null : null];
+    if (p && Array.isArray(p.floors)) for (const f of p.floors) list.push(f && f.plan ? f.plan.background || null : null);
+    return list;
+  }
+
+  const sameBg = (a, b) => {
+    if (a === b) return true;
+    if (!a || !b || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+    return true;
+  };
+
+  const sigSource = (p, k) => (k === 'plan' ? planNoBg(p.plan || {}) : k === 'floors' ? floorsNoBg(p.floors) : p[k]);
 
   /** Stringified slices: cheap structural fingerprints used for change detection. */
   function signatures(p) {
     const s = {};
     for (const k of ALL_SIG_KEYS) {
-      try { s[k] = JSON.stringify(k === 'plan' ? planNoBg(p.plan || {}) : p[k]); } catch (e) { s[k] = String(Math.random()); }
+      try { s[k] = JSON.stringify(sigSource(p, k)); } catch (e) { s[k] = String(Math.random()); }
     }
     return s;
   }
 
   function snapshot(p) {
     const data = {};
-    for (const k of HISTORY_KEYS) data[k] = k === 'plan' ? clone(planNoBg(p.plan || {})) : clone(p[k]);
+    for (const k of HISTORY_KEYS) data[k] = clone(sigSource(p, k));
     return { data, bg: bgOf(p), sigs: signatures(p) };
   }
 
@@ -78,24 +102,43 @@
     for (const k of HISTORY_KEYS) {
       if (k === 'plan') {
         const plan = clone(snap.data.plan);
-        plan.background = snap.bg;
+        plan.background = snap.bg[0];
         project.plan = plan;
+      } else if (k === 'floors') {
+        const floors = clone(snap.data.floors);
+        if (Array.isArray(floors)) {
+          floors.forEach((f, i) => { if (f && f.plan && typeof f.plan === 'object') f.plan.background = snap.bg[i + 1] || null; });
+        }
+        project.floors = floors;
       } else {
         project[k] = clone(snap.data[k]);
       }
     }
   }
 
+  /** After a restore / replace: view.floor names the floor that is active in the data (the floors[] entry with null
+   *  content - ENGINE-API S.2 activeFloorId). view is not undoable, so it could otherwise point at the wrong floor. */
+  function syncFloorView() {
+    if (!project || !project.view || typeof project.view !== 'object') return false;
+    const ep = g.WH.engine && g.WH.engine.project;
+    let id = null;
+    try { id = ep && typeof ep.activeFloorId === 'function' ? ep.activeFloorId(project) : null; } catch (e) { id = null; }
+    if (!id || project.view.floor === id) return false;
+    project.view.floor = id;
+    return true;
+  }
+
   function historyDiffers(a, bSigs, bBg) {
-    if (a.bg !== bBg) return true;
+    if (!sameBg(a.bg, bBg)) return true;
     for (const k of HISTORY_KEYS) if (a.sigs[k] !== bSigs[k]) return true;
     return false;
   }
 
   function changedTopics(aSigs, aBg, bSigs, bBg) {
     const out = [];
+    const bgChanged = !sameBg(aBg, bBg);
     for (const k of TOPICS) {
-      if (aSigs[k] !== bSigs[k] || (k === 'plan' && aBg !== bBg)) out.push(k);
+      if (aSigs[k] !== bSigs[k] || (bgChanged && (k === 'plan' || k === 'floors'))) out.push(k);
     }
     if (aSigs.name !== bSigs.name) out.push('meta');
     return out;
@@ -194,6 +237,7 @@
     const before = snapshot(project);
     for (const k of HISTORY_KEYS) project[k] = next[k];
     if (next.view) project.view = next.view;
+    syncFloorView();
     pushUndo({ label: label || 'replace', snap: before, full: true });
     emit(TOPICS.concat(['meta', 'project:replaced', 'history']), { source: 'replace', label });
     scheduleSave();
@@ -210,9 +254,10 @@
       console.error(`[WH.store] commit "${label}" threw - rolled back:`, e);
       diagCaught(e, `store.commit:${label}`);
       restore(before);
+      syncFloorView();
       return false;
     }
-    if (ret === false) { restore(before); return false; }
+    if (ret === false) { restore(before); syncFloorView(); return false; }
     const sigs = signatures(project);
     const bgAfter = bgOf(project);
     const histChanged = historyDiffers(before, sigs, bgAfter);
@@ -283,7 +328,8 @@
     const nowSigs = signatures(project);
     const nowBg = bgOf(project);
     restore(gs.before);
-    emit(changedTopics(nowSigs, nowBg, gs.before.sigs, gs.before.bg), { source: 'cancel', label: gs.label });
+    const viewMoved = syncFloorView();
+    emit(changedTopics(nowSigs, nowBg, gs.before.sigs, gs.before.bg).concat(viewMoved ? ['view'] : []), { source: 'cancel', label: gs.label });
     return true;
   }
 
@@ -320,6 +366,7 @@
     toStack.push({ label: entry.label, snap: current, full: entry.full });
     if (toStack.length > MAX_HISTORY) toStack.shift();
     restore(entry.snap);
+    syncFloorView();
     const sigs = signatures(project);
     const changed = changedTopics(current.sigs, current.bg, sigs, bgOf(project));
     emit(changed.concat(entry.full ? TOPICS.concat(['project:replaced']) : [], ['history']), { source, label: entry.label });

@@ -77,7 +77,7 @@
     'help.diffView.b': 'Barevně ukáže rozdíl mezi zkušební a dnešní polohou routeru: zeleně tam, kde se signál zlepší, červeně kde zhorší, šedě kde zůstane stejný. Rychlý způsob, jak poznat, jestli se přesun vyplatí.',
 
     'help.layers.t': 'Vrstvy mapy',
-    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdroj signálu (kde je silnější druhý bod), zdi, nábytek, názvy místností, čísla v dBm, body měření a předpověď u nich. Nic z toho nemění výpočet, jen vzhled.',
+    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdroj signálu (který přístupový bod je kde nejsilnější), zdi, nábytek, názvy místností, čísla v dBm, body měření a předpověď u nich. Nic z toho nemění výpočet, jen vzhled.',
 
     'help.ranges.t': 'Čáry dosahu',
     'help.ranges.b': 'Tenké čáry na mapě spojují místa se stejnou sílou signálu, podobně jako vrstevnice na turistické mapě. Ukazují, kam až signál dosáhne při zvolené hranici. Přepni pásmo: na 2,4 GHz sahají čáry přes zdi dál než na 5 nebo 6 GHz.',
@@ -119,7 +119,7 @@
     'help.wallLoss.more': 'Každé 3 dB navíc znamenají polovinu výkonu. Sádrokarton ubere při 5 GHz asi 4 dB, cihla 11 dB, beton 18 dB.',
 
     'help.scale.t': 'Měřítko',
-    'help.scale.b': 'Aplikace potřebuje vědět, kolik metrů je jeden kus nákresu. Zadej skutečnou šířku bytu, nebo v Půdorysu zvol nástroj Měřítko a klikni na dva body, jejichž vzdálenost znáš (třeba šířka dveří 0,9 m). Špatné měřítko zkresluje celý odhad.',
+    'help.scale.b': 'Aplikace potřebuje vědět, kolik metrů je jeden kus nákresu. Nejjednodušší je zadat plochu bytu v m² (najdeš ji ve smlouvě nebo v inzerátu). Jinak v Půdorysu označ dvě místa, jejichž vzdálenost znáš (třeba šířka dveří 80 cm), nebo zadej skutečnou šířku celého půdorysu. Špatné měřítko zkresluje celý odhad.',
 
     // --- measurements --------------------------------------------------------------------------------------------
     'help.calibration.t': 'Kalibrace podle měření',
@@ -163,9 +163,9 @@
     'help.cableCategory.t': 'Kategorie kabelu',
     'help.cableCategory.b': 'Kategorie bývá natištěná na plášti kabelu (Cat5e, Cat6, …). Cat5e zvládne 1 Gb/s, Cat6 až 10 Gb/s na kratší vzdálenost, Cat6a na plných 100 m. Starý Cat5 nebo velmi dlouhý kabel může rychlost omezit.',
 
-    // --- second node ---------------------------------------------------------------------------------------------
-    'help.secondAp.t': 'Druhý přístupový bod',
-    'help.secondAp.b': 'Další zařízení, které vysílá Wi-Fi, aby pokrylo vzdálenou část bytu. Nejlepší je připojit ho k routeru kabelem. Vyber typ podle toho, co máš nebo chceš koupit, a jeho polohu přetáhni na půdorysu.',
+    // --- access points, mesh, repeaters ----------------------------------------------------------------------------
+    'help.secondAp.t': 'Proč další přístupový bod',
+    'help.secondAp.b': 'Další zařízení, které vysílá Wi-Fi, pokryje vzdálenou část bytu nebo domu, kam router nedosáhne. Nejlepší je připojit ho k routeru kabelem. Přidej jich, kolik potřebuješ (až 8), vyber typ podle toho, co máš nebo chceš koupit, a polohu přetáhni na půdorysu.',
 
     'help.apCable.t': 'Přístupový bod po kabelu',
     'help.apCable.b': 'Přístupový bod (AP) připojený síťovým kabelem k routeru. Je to nejspolehlivější řešení: plná rychlost i ve vzdálené místnosti. Vyžaduje ale natažený kabel.',
@@ -180,7 +180,7 @@
     'help.repeater.b': 'Zařízení, které signál přijme a vyšle dál. Je to nejlevnější řešení bez kabelu, ale zpravidla nejslabší: rychlost se výrazně sníží a zařízení někdy zůstanou přilepená na horším signálu.',
 
     'help.backhaul.t': 'Spojení uzlu s routerem',
-    'help.backhaul.b': 'Bezdrátové propojení mezi druhým uzlem a hlavním routerem. Aby mesh fungoval dobře, musí být na místě uzlu ještě dobrý signál od routeru. Mapa označí šrafováním místa, kde uzel sice vysílá, ale k routeru se spojuje špatně.',
+    'help.backhaul.b': 'Bezdrátové propojení přístupového bodu s routerem (nebo s jiným bodem, přes který se připojuje). Aby mesh nebo opakovač fungoval dobře, musí být na jeho místě ještě dobrý signál od toho, ke komu se připojuje. Mapa šrafuje místa, kde bod sice vysílá, ale dál se spojuje špatně.',
 
     'help.power.t': 'Výkon vysílače',
     'help.power.b': 'Úprava výkonu uzlu oproti routeru v dB. 0 znamená stejný výkon, −6 dB zhruba čtvrtinový. Větší výkon zvětší dosah, ale zařízení v bytě tím nezrychlíš: telefon pořád vysílá zpátky slabě.',
@@ -289,7 +289,7 @@
     'help.diffView.b': 'Shows in colour the difference between the trial and today\'s router position: green where the signal improves, red where it gets worse, grey where it stays the same. A quick way to see whether a move is worth it.',
 
     'help.layers.t': 'Map layers',
-    'help.layers.b': 'Turn on or off what you see on the map: range lines, the signal source (where the second point is stronger), walls, furniture, room names, dBm numbers, measurement points and the prediction at them. None of it changes the calculation, only the look.',
+    'help.layers.b': 'Turn on or off what you see on the map: range lines, the signal source (which access point is strongest where), walls, furniture, room names, dBm numbers, measurement points and the prediction at them. None of it changes the calculation, only the look.',
 
     'help.ranges.t': 'Range lines',
     'help.ranges.b': 'Thin lines on the map join places with the same signal strength, like contour lines on a hiking map. They show how far the signal reaches at the chosen threshold. Switch the band: at 2.4 GHz the lines reach further through walls than at 5 or 6 GHz.',
@@ -331,7 +331,7 @@
     'help.wallLoss.more': 'Every extra 3 dB halves the power. At 5 GHz plasterboard takes off about 4 dB, brick 11 dB, concrete 18 dB.',
 
     'help.scale.t': 'Scale',
-    'help.scale.b': 'The app needs to know how many metres one piece of the drawing is. Enter the real width of your home, or in Floor plan pick the Scale tool and click two points whose distance you know (a door is about 0.9 m wide). A wrong scale skews the whole estimate.',
+    'help.scale.b': 'The app needs to know how many metres one piece of the drawing is. The easiest is to type the floor area in m² (it is in your lease or the listing). Otherwise mark two points in Floor plan whose distance you know (a door is about 80 cm wide), or enter the real width of the whole plan. A wrong scale skews the whole estimate.',
 
     // --- measurements --------------------------------------------------------------------------------------------
     'help.calibration.t': 'Calibration from measurements',
@@ -375,9 +375,9 @@
     'help.cableCategory.t': 'Cable category',
     'help.cableCategory.b': 'The category is printed on the cable jacket (Cat5e, Cat6, ...). Cat5e handles 1 Gbps, Cat6 up to 10 Gbps over shorter runs, Cat6a over a full 100 m. Old Cat5 or a very long cable can limit the speed.',
 
-    // --- second node ---------------------------------------------------------------------------------------------
-    'help.secondAp.t': 'Second access point',
-    'help.secondAp.b': 'Another device that broadcasts Wi-Fi to cover a distant part of your home. Best connected to the router by cable. Pick the type that matches what you have or plan to buy, and drag its position on the floor plan.',
+    // --- access points, mesh, repeaters ----------------------------------------------------------------------------
+    'help.secondAp.t': 'Why another access point',
+    'help.secondAp.b': 'Another device that broadcasts Wi-Fi covers a distant part of your flat or house that the router does not reach. Best connected to the router by cable. Add as many as you need (up to 8), pick the type that matches what you have or plan to buy, and drag it into place on the floor plan.',
 
     'help.apCable.t': 'Access point by cable',
     'help.apCable.b': 'An access point (AP) connected to the router with a network cable. It is the most reliable option: full speed even in a distant room. It does require a cable run.',
@@ -392,7 +392,7 @@
     'help.repeater.b': 'A device that receives the signal and sends it on. It is the cheapest cable-free option but usually the weakest: speed drops a lot and devices sometimes stay stuck on the poorer signal.',
 
     'help.backhaul.t': 'Node-to-router link',
-    'help.backhaul.b': 'The wireless link between the second node and the main router. For a mesh to work well there must still be a good signal from the router where the node stands. The map hatches places where the node transmits but connects to the router poorly.',
+    'help.backhaul.b': 'The wireless link from an access point to the router (or to another point it connects through). For a mesh node or repeater to work well, the signal from whatever it connects to must still be good where it stands. The map hatches places where the point transmits but connects onward poorly.',
 
     'help.power.t': 'Transmit power',
     'help.power.b': 'Adjusts the node\'s power relative to the router, in dB. 0 means the same power, −6 dB about a quarter. More power extends the reach but does not make your devices faster: a phone still transmits weakly back.',

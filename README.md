@@ -30,6 +30,13 @@ the Result card say so.*
 *Left: the floor-plan editor with a brick wall selected (7 / 11 / 13 dB at 2.4 / 5 / 6 GHz). Right: measuring on a
 phone - tap where you stand, say which band you are on, press Measure everything.*
 
+![The two-storey demo house, upper floor: the floor switch on the left of the map, the Wi-Fi mesh node "Mesh upstairs" on the landing with its Wi-Fi link to the router, which stands in the hall downstairs (a faded "other floor" ghost), the Signal source hatch, and the Result card of the 1st floor with the Whole house total](docs/screenshot-floors.png)
+
+*A house with two floors (File > Demo two-storey house): the router stands downstairs, so upstairs it only reaches
+through the concrete ceiling (81 % covered); a Wi-Fi mesh node on the landing lifts the 1st floor to 88 % and the whole
+house from 86 % to 90 %. Switch floors on the map (or `Ctrl+↑` / `Ctrl+↓`); the router and nodes of other floors show
+as faded "other floor" ghosts.*
+
 ## What it does
 
 WiFi Heatmap Architect estimates Wi-Fi coverage from a floor plan. Every wall, door and larger piece of furniture takes
@@ -59,9 +66,18 @@ It is a single self-contained HTML file: no account, no installation, no server.
   (*Layers > Predicted change at points*, key `P`, and *Measurement points*) you can switch off for a clean map.
 - **Find the best spot**: an optimiser scores router positions about half a metre apart all over the floor (or only in
   a room you choose), refines the best ones and moves the router there. One key (`D`) brings it back to where it stands today.
-- **Floor-plan editor** with rectangle and polygon rooms, walls (with materials), doors, furniture presets, real-world
-  scale, snapping, undo/redo, a tracing background (an image of your plan to draw over) and a **plan check** that finds
-  gaps in walls, misplaced doors and overlapping rooms.
+- **Floor-plan editor** with rectangle and polygon rooms, walls (with materials), doors, furniture presets, snapping,
+  undo/redo, a tracing background (an image of your plan to draw over) and a **plan check** that finds gaps in walls,
+  misplaced doors, overlapping rooms and sizes that cannot be right (a 1 m² room, a 3 m wide door).
+- **A verified scale, never a guess**: the *Scale* card always shows what the home measures on the plan (≈ 58.0 m²,
+  the biggest and smallest room), so a wrong scale is obvious. Type the flat's area in m² (from the lease or the
+  listing), say "this room has 14 m²" or "this wall is 4.2 m", mark two points a known distance apart (a door is about
+  80 cm) or enter the width - the whole plan scales, its shapes stay. Until the scale is verified the Wi-Fi view says
+  *Scale not verified*, because a plan that is 100 m² instead of 58 m² gets the whole signal map wrong.
+- **Several floors**: floor tabs in the editor (add an empty floor, copy this plan to a new floor, reorder, rename) with
+  a faint outline of the floor below for alignment, and the ceiling between floors (concrete 15 dB, reinforced concrete
+  20 dB, wood 8 dB at 5 GHz, or your own). Signal from another floor is 3-D distance plus the ceiling loss; every floor
+  has its own map, measurements and result, and the Result card adds the **whole house** total.
 - **One click: "Measure everything"** (*Změřit vše*): tap where you stand and the app gathers what it can about this
   device, the Wi-Fi details (from the optional helper or a pasted command output), runs the speed test and saves the
   measurement - with a live checklist, *Cancel* at any time and *Undo* afterwards.
@@ -83,11 +99,13 @@ It is a single self-contained HTML file: no account, no installation, no server.
 - **Built-in speed test** (download, upload, ping, jitter) against Cloudflare's speed-test servers, started only when
   you tap it. With speeds measured in places with clearly different signal the app can also draw a predicted
   **speed map**.
-- **Second access point / mesh**: wired AP, wired or wireless mesh node, or a repeater, with backhaul quality. The map
-  makes it a visible source: a labelled marker ("AP 2", "Mesh 2", "Repeater") with its cable / Wi-Fi link to the
-  router, range lines around *both* sources (the second point's on a blue backing) and the *Signal source* layer -
-  a border and a light hatch where the second point is stronger than the router - plus one sentence in the Result
-  card ("AP 2 is the stronger source in Bedroom and Bathroom; the router elsewhere").
+- **More access points (AP / mesh / repeater)**: as many as a bigger home needs (up to 8) - wired APs, wired or
+  wireless mesh nodes and repeaters, each connected to the router or to another one (a repeater behind AP 2: every
+  wireless hop roughly halves the speed). Each is a visible source on the map: a labelled marker ("AP 2", "Mesh 3",
+  "Repeater 4") with its dashed cable / Wi-Fi link, its own range lines on a blue backing, the *Signal source* layer
+  (a border and a light hatch where a node is stronger than the router), the link quality in dBm and the speed of its
+  link, plus one sentence in the Result card ("AP 2 is the stronger source in Bedroom and Bathroom, Mesh 3 in the
+  Living room; the router elsewhere"). *Find the best spot* moves only the router; the nodes stay where you put them.
 - **Works offline and installs like an app** (PWA) when opened from the web page; the downloaded HTML file also
   works by double-click, with no network at all.
 - **Czech and English**, switchable at any time; three looks - **Light**, **Deep dark** (neutral near-black) and
@@ -122,12 +140,14 @@ change at every measured spot.*
 | | `D` | Router back to today's spot |
 | | `B` / `V` / `L` | Next band (2.4, 5, 6, Auto) / next view (signal, speed, change) / range lines |
 | | `P` | Predicted change at the measured points on / off (map layer) |
+| | `Ctrl+↑` / `Ctrl+↓`, `Alt+1` … `Alt+9` | Floor up / down, floor number n (a house with several floors) |
 | | arrows (`Shift`) | Move the router by 0.25 m (1 m) |
 | | `Enter` | Save a pending measurement |
 | Floor plan | `V` `R` `P` `W` `D` `F` `S` | Select, rectangle room, polygon room, wall, door, furniture, scale |
 | | `G` / `T` | Snap to grid / tracing background |
 | | `Enter` | Finish a polygon room |
 | | `Delete` / `Ctrl+D` | Delete / duplicate the selection |
+| | `Ctrl+↑` / `Ctrl+↓` | Floor up / down |
 | | arrows (`Shift`) | Nudge the selection (4x) |
 
 Mouse and touch: drag empty space to pan, wheel or two fingers to zoom, double-click empty space to fit the plan.
@@ -183,9 +203,20 @@ and the details it returns stay in your browser like any other measurement. The 
 ## Using your own floor plan
 
 - **Draw it**: Floor plan mode (`1`) > rectangle (`R`) or polygon (`P`) rooms, then *Outline the rooms with walls*,
-  add doors (`D`) and big furniture (`F`), and set the real width of the home or measure a known distance (`S`).
+  add doors (`D`) and big furniture (`F`). After the first room the app asks *Do you know the floor area in m²?* - type
+  it and the scale follows (or measure a known distance with `S`, or enter the width).
+- **Two or more floors**: *Floors > Add a floor* in the Floor plan card (*Copy this plan to a new floor* when the floors
+  share the layout), draw each floor, set the ceiling between them; in Wi-Fi mode drag the router to the floor where it
+  stands and add access points where you need them.
 - **Trace an image**: drop a PNG, JPG or WebP (a photo of the plan, a real-estate drawing) onto the app; it becomes a
-  tracing background and you draw the rooms over it.
+  tracing background and you draw the rooms over it. Set the scale first: mark a known distance in the image, or type
+  the flat's area once the rooms are drawn.
+
+![Floor-plan mode, the Scale card: "Do you know the floor area in m²?" with the area typed in and the preview of what every room becomes, next to the demo flat](docs/screenshot-scale.png)
+
+*The Scale card: type the flat's area and see every room's new size before you press Apply. The card always shows the
+resulting area and the biggest / smallest room, so a wrong scale stands out at once.*
+
 - **Open a saved project**: an SVG saved from this app (File > Save project as SVG) contains the whole project and
   opens again with `Ctrl+O` or drag and drop. SVG files from other programs are used as a tracing background.
 
@@ -193,8 +224,10 @@ and the details it returns stay in your browser like any other measurement. The 
 
 Projects are SVG drawings with the data in `<metadata id="wifi-plan-data">` using the `wifi-floor-v2` format of the
 previous version of the app (rooms, walls, doors, furniture, background, width, router, original, optic). Version 3
-reads those files unchanged and writes files that the old version can still open; its extra settings (scale, second
-AP, measurements, view) are stored alongside under `project` and ignored by older versions.
+reads those files unchanged and writes files that the old version can still open; its extra settings (scale, access
+points, floors, measurements, view) are stored alongside under `project` and ignored by older versions - the old
+version opens the floor that was on screen. A file from an older version opens as one floor with one access point at
+most; its scale is shown once for confirmation (*Scale from the loaded file: the home is ≈ 58 m². Is that right?*).
 
 ## Development
 
@@ -205,7 +238,7 @@ offline-capable web version (the service worker is only used over http/https, ne
 
 ```sh
 node build.mjs            # build index.html, index.cs.html, sw.js, manifest.webmanifest
-node build.mjs --check    # + checks: syntax, cs/en strings complete, hints, no external URLs, PWA files, size <= 2 MB
+node build.mjs --check    # + checks: syntax, cs/en strings complete, hints, no external URLs, PWA files, size <= 2.5 MB
 node tests/engine/run-all.mjs    # all unit tests (node:test): engine (geometry, propagation, calibration fit,
                                  # optimiser, formats ...), speed test, Wi-Fi details parser (tests/devinfo)
 npm test / npm run check / npm run build    # the same through npm
@@ -259,6 +292,12 @@ zdmi zůstávají oranžové a u každého změřeného bodu je vidět, co by p�
 *Stejná scéna plus druhý přístupový bod po kabelu („AP 2“) v ložnici: ložnice je zelená díky **AP 2**, ne routeru – říkají
 to jeho vlastní čáry dosahu, modře šrafovaná část bytu, kde je silnější, propojení kabelem i věta ve Výsledku.*
 
+![Ukázkový dům se dvěma patry, horní patro: přepínač pater vlevo na mapě, mesh „Mesh nahoře“ na chodbě s propojením přes Wi-Fi k routeru, který stojí v předsíni v přízemí (vybledlá značka „na jiném patře“), šrafy zdroje signálu a Výsledek 1. patra s celým domem](docs/screenshot-floors.png)
+
+*Dům se dvěma patry (Soubor > Ukázkový dům se dvěma patry): router stojí v přízemí, nahoru dosáhne jen přes betonový
+strop (pokryto 81 %); mesh na chodbě v patře zvedne 1. patro na 88 % a celý dům z 86 na 90 %. Patra přepínáš na mapě
+(nebo `Ctrl+↑` / `Ctrl+↓`); router a body z jiných pater jsou vidět jako vybledlé značky „na jiném patře“.*
+
 ### Co umí
 
 - **Mapa signálu** pro pásma 2,4, 5 a 6 GHz, pokrytí celého bytu i jednotlivých místností a pohled „Změna proti dnešku“.
@@ -274,8 +313,17 @@ to jeho vlastní čáry dosahu, modře šrafovaná část bytu, kde je silnějš
   (opakovač za zdí dá málokdy víc než ~300 Mb/s) a strop zařízení, který zadáš; aplikace řekne, co tě zrovna brzdí.
   Předpověď i samotné body jsou vrstvy mapy (*Vrstvy > Předpověď u bodů*, klávesa `P`, a *Body měření*), dají se vypnout.
 - **Najít nejlepší místo** pro router (kdekoli, nebo jen ve vybrané místnosti); klávesa `D` ho vrátí na dnešní místo.
-- **Kreslení půdorysu**: místnosti, zdi s materiálem, dveře, nábytek, měřítko, obkreslení obrázku a **kontrola
-  půdorysu**, která najde díry ve zdech a další chyby.
+- **Kreslení půdorysu**: místnosti, zdi s materiálem, dveře, nábytek, obkreslení obrázku a **kontrola půdorysu**,
+  která najde díry ve zdech, chybné dveře i rozměry, které nemůžou sedět (místnost 1 m², dveře široké 3 m).
+- **Ověřené měřítko, žádné hádání**: karta *Měřítko* pořád ukazuje, kolik má byt podle plánku (≈ 58,0 m², největší
+  a nejmenší místnost), takže špatné měřítko hned uvidíš. Napiš plochu bytu v m² (ze smlouvy nebo z inzerátu), řekni
+  „tahle místnost má 14 m²“ nebo „tahle zeď měří 4,2 m“, označ dvě místa se známou vzdáleností (dveře mají kolem 80 cm)
+  nebo zadej šířku – celý plán se přepočítá a tvary zůstanou. Dokud měřítko není ověřené, režim Wi-Fi hlásí *Měřítko
+  neověřeno*: plánek se 100 m² místo 58 m² by pokazil celou mapu signálu.
+- **Víc pater**: záložky pater v Půdorysu (přidat prázdné patro, duplikovat půdorys do nového patra, přeskládat,
+  přejmenovat), jemný obrys patra pod ním pro zarovnání a strop mezi patry (beton 15 dB, železobeton 20 dB, dřevo
+  8 dB při 5 GHz, nebo vlastní). Signál z jiného patra počítá s prostorovou vzdáleností a útlumem stropu; každé patro
+  má svou mapu, měření i výsledek a Výsledek ukáže i **celý dům**.
 - **Změřit vše jedním klepnutím**: klepni do mapy, kde stojíš, a aplikace sama zjistí, co jde (zařízení, údaje
   o Wi-Fi z pomocníka nebo z vloženého výpisu), změří rychlost a měření uloží. Průběh vidíš v seznamu kroků, zrušit
   jde kdykoli a uložení vrátíš tlačítkem Zpět.
@@ -293,10 +341,13 @@ to jeho vlastní čáry dosahu, modře šrafovaná část bytu, kde je silnějš
   aplikace označí.
 - **Vestavěný test rychlosti** (stahování, odesílání, odezva) přes servery Cloudflare; spustí se jen, když na něj
   klepneš. Z měření na více místech pak aplikace nakreslí i odhad rychlosti.
-- **Druhý přístupový bod / mesh / opakovač**. Na mapě je vidět jako zdroj: značka s názvem („AP 2“, „Mesh 2“,
-  „Opakovač“) a propojením k routeru (kabel / Wi-Fi), čáry dosahu kolem *obou* zdrojů (ty od druhého bodu na modrém
-  podkladu) a vrstva *Zdroj signálu* – hranice a jemné šrafování tam, kde je druhý bod silnější než router – plus věta
-  ve Výsledku („AP 2 má navrch v místnostech Ložnice a Koupelna, jinde je silnější router“).
+- **Další přístupové body (AP / mesh / opakovač)**: kolik jich větší byt nebo dům potřebuje (až 8) – přístupové body
+  po kabelu, mesh po kabelu i přes Wi-Fi a opakovače, každý připojený k routeru nebo k jinému bodu (opakovač za AP 2:
+  každý bezdrátový skok rychlost zhruba půlí). Každý je na mapě vidět jako zdroj: značka s názvem („AP 2“, „Mesh 3“,
+  „Opakovač 4“) s čárkovaným propojením (kabel / Wi-Fi), vlastní čáry dosahu na modrém podkladu, vrstva *Zdroj
+  signálu* (hranice a jemné šrafování tam, kde je bod silnější než router), kvalita spojení v dBm a rychlost propojení,
+  plus věta ve Výsledku („AP 2 má navrch v místnostech Ložnice a Koupelna, Mesh 3 v Obýváku, jinde je silnější
+  router“). *Najít nejlepší místo* hýbe jen routerem, body zůstanou, kam jsi je dal.
 - **Funguje offline a jde nainstalovat** jako aplikace; stažený HTML soubor funguje i po dvojkliku bez internetu.
 - Čeština i angličtina, tři vzhledy - **Světlý**, **Deep dark** (neutrální téměř černá) a **OLED černá** (čistá černá
   s jemnými linkami) - nebo Automaticky podle systému; klávesové zkratky (tabulka výše, `?` v aplikaci ukáže všechny).
@@ -333,9 +384,22 @@ nebo v Info o zařízení. Žádná analytika, žádné cookies.
 
 ### Vlastní půdorys
 
-Nakresli ho v režimu Půdorys (`1`), nebo do aplikace přetáhni obrázek plánu (PNG, JPG, WebP) a obkresli ho. Uložený
-projekt (SVG z této aplikace) otevřeš přes `Ctrl+O` nebo přetažením. Soubory starší verze (`wifi-floor-v2`) se načtou
-beze změny a nová verze ukládá tak, aby je otevřela i ta stará.
+Nakresli ho v režimu Půdorys (`1`), nebo do aplikace přetáhni obrázek plánu (PNG, JPG, WebP) a obkresli ho. Po první
+místnosti se aplikace zeptá *Víš, kolik má byt m²?* – napiš plochu a měřítko se dopočítá (nebo označ známou vzdálenost
+klávesou `S`, případně zadej šířku). Dům s více patry: v kartě Půdorys *Patra > Přidat patro* (nebo *Duplikovat
+půdorys do nového patra*, když mají patra stejný půdorys), nakresli každé patro a nastav strop mezi nimi; v režimu
+Wi-Fi pak dej router na patro, kde opravdu stojí, a přidej přístupové body, kde je potřeba (patro přepneš `Ctrl+↑` /
+`Ctrl+↓` nebo `Alt+1` … `Alt+9`).
+
+![Režim Půdorys, karta Měřítko: „Víš, kolik má byt m²?“ s vepsanou plochou a náhledem, kolik bude mít každá místnost](docs/screenshot-scale.png)
+
+*Karta Měřítko: napiš plochu bytu a ještě před potvrzením uvidíš, kolik bude mít každá místnost. Výslednou plochu
+a největší i nejmenší místnost ukazuje karta pořád, takže chybné měřítko hned bije do očí.*
+
+Uložený projekt (SVG z této aplikace) otevřeš přes `Ctrl+O` nebo přetažením. Soubory starší verze (`wifi-floor-v2`)
+se načtou beze změny (jako jedno patro s nejvýš jedním přístupovým bodem; jejich měřítko ti aplikace jednou ukáže
+k potvrzení: „Měřítko z načteného souboru: byt ≈ 58 m². Sedí?“) a nová verze ukládá tak, aby je otevřela i ta stará
+(otevře patro, které bylo zrovna na obrazovce).
 
 ### Pro vývojáře
 

@@ -47,7 +47,7 @@
       if (!isObj(m) || isNum(m.value) || !ctx || !o.baseline) return m;
       const b = units.normBand(m.band);
       if (b === null || !isNum(m.x) || !isNum(m.y)) return m;
-      const v = model.softSignal(ctx, o.baseline, { x: m.x, y: m.y }, b, model.offsetFor(o.offsets, b), o.soften);
+      const v = model.softSignal(ctx, model.asRouter(ctx, o.baseline), { x: m.x, y: m.y }, b, model.offsetFor(o.offsets, b), o.soften);
       return Number.isFinite(v) ? { ...m, value: round(v, 2), predictedSignal: true } : m;
     });
   }
@@ -174,9 +174,10 @@
 
   /** Is the node on for this field (in Auto: on some band the router sends)? */
   function nodeOnFor(params) {
-    if (!params || !params.node) return false;
-    if (model.isAuto(params)) return model.routerBandList(params.bands).some((b) => model.nodeActive(params.node, b));
-    return model.nodeActive(params.node, units.normBand(params.band !== undefined ? params.band : params.targetBand));
+    const nodes = model.stateNodes(params);
+    if (!nodes.length) return false;
+    const bands = model.isAuto(params) ? model.routerBandList(params.bands) : [units.normBand(params.band !== undefined ? params.band : params.targetBand)];
+    return nodes.some((nd) => bands.some((b) => model.nodeActive(nd, b)));
   }
 
   function rateAt(signal, nodes) {
@@ -297,11 +298,11 @@
     let bhU = null;
     let dev = null;
     if (link) {
-      if (link.wireless) {
-        if (!link.known) return null;
-        bhD = link.down;
-        bhU = link.up;
-      }
+      // the node's uplink chain (SPEC 14.2): unknown anywhere -> unknown; its throughput caps (also a wired node behind
+      // a wireless one)
+      if (!link.known) return null;
+      bhD = isNum(link.down) ? link.down : null;
+      bhU = isNum(link.up) ? link.up : null;
       dev = link.maxMbps;
     }
     const lk = isNum(l.linkLimit) ? l.linkLimit : null;
@@ -339,10 +340,15 @@
     return viaCore({ down: r.down, up: r.up, extrapolated: !!r.extrapolated }, toLimits(limits), link || null);
   }
 
-  /** nodeLink() from an already known uplink signal (the optimizer traces it itself). */
-  function linkFromSignal(node, sig, curve, backhaulCurve) {
+  /**
+   * nodeLink() from an already known uplink signal (the optimizer traces it itself). `upstream` = the NodeLink of the
+   * node's uplink node (SPEC 14.2 chain; null / omitted = the router): a wireless hop's rate is multiplied by the factors
+   * of every wireless hop above it and capped by the upstream capacity; a wired node behind a node gets that capacity.
+   */
+  function linkFromSignal(node, sig, curve, backhaulCurve, upstream) {
     const wireless = model.isWirelessNode(node);
     const maxMbps = isNum(node.maxMbps) && node.maxMbps > 0 ? node.maxMbps : null;
+    const up = upstream && typeof upstream === 'object' ? upstream : null;
     const out = {
       mode: node.mode,
       wireless,
@@ -358,9 +364,31 @@
       maxMbps,
       capDown: maxMbps,
       capUp: maxMbps,
+      hops: (wireless ? 1 : 0) + (up && isNum(up.hops) ? up.hops : 0),
+      chainFactor: up && isNum(up.chainFactor) ? up.chainFactor : 1,
+      upstream: up ? { down: isNum(up.capDown) ? up.capDown : null, up: isNum(up.capUp) ? up.capUp : null } : null,
     };
-    if (!wireless) return out;
+    const minN = (a, b) => (a === null ? b : b === null ? a : Math.min(a, b));
+    if (up && !up.known) {
+      // a hop above is unknown: so is this node's throughput
+      out.known = false;
+      out.reason = up.reason || 'curve';
+      out.approx = !!up.approx;
+      if (!wireless) return out;
+    }
+    if (!wireless) {
+      // a wired node: no own wireless hop; behind another node it gets that node's capacity
+      if (out.upstream) {
+        out.down = out.upstream.down;
+        out.up = out.upstream.up;
+        out.capDown = minN(out.down, maxMbps);
+        out.capUp = minN(out.up, maxMbps);
+        out.approx = !!up.approx;
+      }
+      return out;
+    }
     out.factor = BACKHAUL_FACTOR[node.mode] || 0.5;
+    out.chainFactor *= out.factor;
     out.signal = isNum(sig) ? sig : null;
     out.weak = out.signal !== null && isNum(node.backhaulThreshold) && out.signal < node.backhaulThreshold;
     let cb = validCurve(backhaulCurve) ? backhaulCurve : null;
@@ -379,8 +407,11 @@
       out.reason = 'weak';
       return out;
     }
-    out.down = r.down * out.factor;
-    out.up = r.up * out.factor;
+    if (!out.known) return out;
+    if (up && up.approx) out.approx = true;
+    // the hop's rate x the factors of every wireless hop up to the router, then the capacity above it
+    out.down = minN(r.down * out.chainFactor, out.upstream ? out.upstream.down : null);
+    out.up = minN(r.up * out.chainFactor, out.upstream ? out.upstream.up : null);
     out.capDown = maxMbps === null ? out.down : Math.min(out.down, maxMbps);
     out.capUp = maxMbps === null ? out.up : Math.min(out.up, maxMbps);
     return out;
@@ -400,20 +431,64 @@
    *   unknown -> known:false); capX = min(uplink, maxMbps) = the node-side ceiling (null = none)
    */
   function nodeLink(ctx, state, curve, opts) {
-    const node = state && state.node;
-    if (!node || node.mode === 'none' || !node.pos || !isNum(node.pos.x) || !isNum(node.pos.y)) return null;
-    let sig = null;
-    if (model.isWirelessNode(node) && ctx && state.router && isNum(state.router.x) && isNum(state.router.y)) {
-      const v = model.backhaulSignal(ctx, state);
-      sig = isNum(v) ? v : null;
-    }
-    // a curves map (SPEC 13): the backhaul band's curve, else the nearest band's (flagged approx by linkFromSignal)
-    let c = curve;
-    if (!validCurve(curve) && isObj(curve)) {
-      const pick = curveFor(curve, units.normBand(node.backhaulBand) || 5);
-      c = pick ? pick.curve : null;
-    }
-    return linkFromSignal(node, sig, c, opts && opts.backhaulCurve);
+    const k = opts && Number.isInteger(opts.index) ? opts.index : 0;
+    return nodeLinks(ctx, state, curve, opts)[k] || null;
+  }
+
+  /**
+   * The uplink of EVERY node of a state (SPEC 14.2), same order as state.nodes: nodeLink() + the chain - {id, index,
+   * uplink ('router' | node id), uplinkIndex (-1 = router), hops (wireless hops up to the router), chainFactor (the
+   * product of their factors), upstream ({down, up} capacity of the uplink node, null for the router)}. A wireless
+   * node's down / up = curve(backhaul) x chainFactor capped by the upstream capacity; a wired node behind a node = that
+   * node's capacity; unknown anywhere above -> known:false.
+   * @param {object} ctx
+   * @param {object} state model.fieldParams(project, 'trial', {offsets})
+   * @param {object|null} curve one curve or a curves map (each node uses its backhaul band's)
+   * @param {{backhaulCurve?:object|null, backhaulCurves?:object}} [opts] backhaulCurve = one curve for every backhaul;
+   *        backhaulCurves = a map {'2.4','5','6'} (each node takes its band's)
+   * @returns {object[]} [] without nodes
+   */
+  function nodeLinks(ctx, state, curve, opts) {
+    const o = opts || {};
+    const nodes = model.stateNodes(state);
+    if (!nodes.length) return [];
+    const okRouter = !!(ctx && state.router && isNum(state.router.x) && isNum(state.router.y));
+    const out = new Array(nodes.length).fill(null);
+    const busy = new Set();
+    const linkOf = (k) => {
+      if (out[k]) return out[k];
+      const nd = nodes[k];
+      if (!nd || !nd.pos || !isNum(nd.pos.x) || !isNum(nd.pos.y)) return null;
+      const ui = model.uplinkIndexOf(nodes, nd);
+      let upLink = null;
+      if (ui >= 0 && !busy.has(k)) {
+        busy.add(k);
+        upLink = linkOf(ui);
+        busy.delete(k);
+      }
+      let sig = null;
+      if (model.isWirelessNode(nd) && okRouter) {
+        const v = model.backhaulSignal(ctx, state, k);
+        sig = isNum(v) ? v : null;
+      }
+      const bb = units.normBand(nd.backhaulBand) || 5;
+      // a curves map (SPEC 13): the backhaul band's curve, else the nearest band's (flagged approx by linkFromSignal)
+      let c = curve;
+      if (!validCurve(curve) && isObj(curve)) {
+        const pick = curveFor(curve, bb);
+        c = pick ? pick.curve : null;
+      }
+      const bc = isObj(o.backhaulCurves) && validCurve(o.backhaulCurves[units.bandKey(bb)]) ? o.backhaulCurves[units.bandKey(bb)] : o.backhaulCurve;
+      const l = linkFromSignal(nd, sig, c, bc, upLink);
+      l.id = nd.id === undefined ? null : nd.id;
+      l.index = k;
+      l.uplink = ui >= 0 ? nodes[ui].id : 'router';
+      l.uplinkIndex = ui;
+      out[k] = l;
+      return l;
+    };
+    for (let k = 0; k < nodes.length; k++) linkOf(k);
+    return out;
   }
 
   /**
@@ -434,7 +509,7 @@
    */
   function pointSpeed(ctx, p, state, curve, limits, opts) {
     const o = opts || {};
-    const out = { known: false, down: null, up: null, limitedBy: null, limitedByUp: null, capDown: null, capUp: null, extrapolated: false, source: 'router', signal: null, link: null, band: null, curveBand: null, approx: false, reason: null };
+    const out = { known: false, down: null, up: null, limitedBy: null, limitedByUp: null, capDown: null, capUp: null, extrapolated: false, source: 'router', sourceIndex: 0, sourceId: null, signal: null, link: null, band: null, curveBand: null, approx: false, reason: null };
     if (!ctx || !p || !isNum(p.x) || !isNum(p.y) || !state || !state.router || units.normBandMode(state.band) === null) {
       out.reason = 'params';
       return out;
@@ -443,7 +518,14 @@
     out.signal = d.combined;
     out.source = d.bestSource;
     out.band = d.band;
-    if (d.bestSource === 'node') out.link = o.link !== undefined ? o.link : nodeLink(ctx, state, curve, o);
+    // SPEC 14.2: the winner of the place (0 router, k = state.nodes[k-1]) and its link
+    out.sourceIndex = d.winner || 0;
+    out.sourceId = d.winner > 0 ? model.stateNodes(state)[d.winner - 1].id || null : null;
+    if (d.winner > 0) {
+      if (o.link !== undefined && (d.winner === 1 || !Array.isArray(o.links))) out.link = o.link;
+      else if (Array.isArray(o.links)) out.link = o.links[d.winner - 1] || null;
+      else out.link = nodeLinks(ctx, state, curve, o)[d.winner - 1] || null;
+    }
     const cf = curveFor(curve, d.band);
     if (!cf) {
       out.reason = 'curve';
@@ -498,7 +580,7 @@
   function fieldSpeed(ctx, g, params, curve, limits, signalField, opts) {
     const o = opts || {};
     const n = g && isNum(g.cols) && isNum(g.rows) && g.idx ? g.cols * g.rows : 0;
-    const out = { down: new Float32Array(n), up: new Float32Array(n), known: new Uint8Array(n), limitedBy: new Uint8Array(n), source: null, link: null, signal: null, bands: null, approx: null, approxAny: false, supported: true, reason: null };
+    const out = { down: new Float32Array(n), up: new Float32Array(n), known: new Uint8Array(n), limitedBy: new Uint8Array(n), source: null, link: null, links: [], signal: null, bands: null, approx: null, approxAny: false, supported: true, reason: null };
     const auto = !!params && model.isAuto(params);
     const band = !params ? null : auto ? 'auto' : units.normBand(params.band !== undefined ? params.band : params.targetBand);
     if (!n || !ctx || !params || !params.router || !isNum(params.router.x) || !isNum(params.router.y) || band === null) {
@@ -507,7 +589,10 @@
       return out;
     }
     const nodeOn = nodeOnFor(params);
-    if (nodeOn) out.link = nodeLink(ctx, params, curve, o);
+    if (nodeOn) {
+      out.links = nodeLinks(ctx, params, curve, o);
+      out.link = out.links[0] || null;
+    }
     const tbl = curveTable(curve, params);
     if (!tbl.some(Boolean)) {
       out.supported = false;
@@ -526,13 +611,13 @@
         if (nodeOn && !wins) wins = fx.nodeWins;
         if (auto && !bands) bands = fx.bands;
       }
-    } else if (!sig) sig = E.raster.field(ctx, g, { ...params, node: null });
+    } else if (!sig) sig = E.raster.field(ctx, g, { ...params, nodes: [], node: null });
     out.signal = sig;
     out.source = wins || null;
     out.bands = bands || null;
     const approx = tbl.some((c) => c && c.approx) ? new Uint8Array(n) : null;
     const lim = toLimits(limits);
-    const link = out.link;
+    const links = out.links;
     const idx = g.idx;
     for (let m = 0; m < idx.length; m++) {
       const i = idx[m];
@@ -544,7 +629,8 @@
         approx[i] = 1;
         out.approxAny = true;
       }
-      const v = viaCore(r, lim, wins && wins[i] === 1 ? link : null);
+      // the cell's winner (SPEC 14.2: 0 router, k = node k) and that node's link
+      const v = viaCore(r, lim, wins && wins[i] ? links[wins[i] - 1] || null : null);
       if (!v) {
         out.limitedBy[i] = LIMIT_CODE.backhaul;
         continue;
@@ -694,7 +780,9 @@
       planCap,
       limitedShare: { plan: 0, link: 0, backhaul: 0, device: 0 },
       nodeShare: 0,
+      nodeShares: [],
       link: null,
+      links: [],
       bandShare: null,
       approxShare: 0,
       target: { down: td, up: tu },
@@ -702,10 +790,13 @@
     if (!okGrid) return { ...base, reason: 'params' };
     const sf = fieldSpeed(ctx, g, params, curve, limits, signalField, opts);
     base.link = sf.link;
+    base.links = sf.links;
+    base.nodeShares = model.stateNodes(params).map(() => 0);
     if (!sf.supported) return { ...base, reason: sf.reason };
     const sig = sf.signal;
     const wins = sf.source;
-    const link = sf.link;
+    const links = sf.links;
+    const perNode = new Float64Array(base.nodeShares.length + 1);
     const tbl = curveTable(curve, params);
     const bandsArr = sf.bands;
     let approxCells = 0;
@@ -736,14 +827,18 @@
         if (!weakest || s < weakest.signal) weakest = { i, signal: s };
         if (sf.known[i]) knownCells++;
         bound[sf.limitedBy[i]]++;
-        const viaNode = !!(wins && wins[i] === 1);
-        if (viaNode) nodeCells++;
+        const w = wins ? wins[i] : 0;
+        const viaNode = w > 0;
+        if (viaNode) {
+          nodeCells++;
+          if (w < perNode.length) perNode[w]++;
+        }
         if (sf.approx && sf.approx[i]) approxCells++;
         if (sf.known[i] && (planCap.down !== null || planCap.up !== null)) {
           // the Wi-Fi alone (incl. the node's link and ceiling where the node serves): no plan / link / reserve
           const cf = tbl[bandsArr ? bandsArr[i] : 0];
           const raw = cf ? rateCore(cf.curve, s) : null;
-          const r = raw && viaCore(raw, {}, viaNode ? link : null);
+          const r = raw && viaCore(raw, {}, viaNode ? links[w - 1] || null : null);
           if (r && ((planCap.down !== null && r.down >= PLAN_NEAR * planCap.down) || (planCap.up !== null && r.up >= PLAN_NEAR * planCap.up))) planLimited++;
         }
       }
@@ -777,12 +872,40 @@
       planLimitedShare: share,
       limitedShare: { plan: pct(bound[1]), link: pct(bound[2]), backhaul: pct(bound[3]), device: pct(bound[4]) },
       nodeShare: pct(nodeCells),
+      nodeShares: base.nodeShares.map((_, k) => pct(perNode[k + 1])),
       bandShare: bandsArr ? E.raster.bandShare(g, bandsArr, ids) : null,
       approxShare: pct(approxCells),
     };
   }
 
+  /**
+   * The speed curves {'2.4','5','6'} from the measurements of EVERY floor (SPEC 14.3): each floor's points get their
+   * bands resolved and their speed-only signals filled on that floor (the router on its floor), then one curve per band.
+   * The same as buildCurves(fillSignals(ctx, model.resolveBands(ctx, project), …)) for a single floor.
+   * @param {object} ctx a context of the project (any floor)
+   * @param {object} project
+   * @param {{offsets?:object, soften?:number, device?:string}} [opts] offsets default model.offsets(ctx, project);
+   *        device default goal.device
+   */
+  function projectCurves(ctx, project, opts) {
+    const o = opts || {};
+    const offsets = o.offsets || model.offsets(ctx, project, { soften: o.soften });
+    const device = o.device !== undefined ? o.device : project.goal && project.goal.device;
+    const PJ = E.project;
+    const ids = Array.isArray(project.floors) && project.floors.length > 1 && ctx.floor !== null && ctx.floor !== undefined ? project.floors.map((f) => f.id) : [null];
+    let all = [];
+    for (const id of ids) {
+      const c = id === null ? ctx : model.floorContext(ctx, id);
+      const pf = id === null ? project : PJ.atFloor(project, id);
+      const list = model.resolveBands(c, pf, { soften: o.soften });
+      all = all.concat(fillSignals(c, list, { baseline: pf.net.baseline, offsets, soften: o.soften }));
+    }
+    return buildCurves(all, { device });
+  }
+
   E.speed = {
+    nodeLinks,
+    projectCurves,
     validRate,
     validCurve,
     monotoneSpeed,

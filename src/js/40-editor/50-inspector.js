@@ -11,12 +11,13 @@
   const t = (k, p) => WH.i18n.t(k, p);
   const el = (...a) => WH.util.el(...a);
   const ICON = { room: 'rect', wall: 'wall', door: 'door', furniture: 'sofa' };
-  const ISSUE_ICON = { gap: 'warning', door: 'door', edges: 'autowall', overlap: 'layers', outside: 'sofa' };
+  const ISSUE_ICON = { gap: 'warning', door: 'door', edges: 'autowall', overlap: 'layers', outside: 'sofa', scale: 'ruler' };
   const fmt = (n, d) => WH.util.fmt(n, d);
   const fold = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const typing = (n) => document.activeElement === n;
 
   let aside = null;
+  let scaleBox = null;
   let topBox = null;
   let top = null;           // {key, el, sync()}
   let checkCard = null;
@@ -36,6 +37,7 @@
   }
   function kv(rows) { return el('dl.kv.ed-kv', rows.map(([k, v]) => el('div', el('dt', k), el('dd.num', v)))); }
   function withKbd(node, spec) { node.append(el('span.ed-kbd.hide-touch', WH.ui.kbd(spec))); return node; }
+  ED.withKbd = withKbd;
   function numIn(o) {
     const i = WH.ui.numberInput(o);
     i.classList.add('input--sm');
@@ -80,18 +82,9 @@
       stats.append(el('div.ed-stat', WH.ui.icon(icon, 18), el('span.ed-stat__txt', n, l)));
     }
 
-    // scale
-    const scaleLine = el('div.ed-scale-line');
-    const widthIn = numIn({
-      min: 1, max: 200, step: 0.1, ariaLabel: t('editor.scale.width'),
-      onChange: (v) => {
-        const pl = ED.plan();
-        if (pl && v !== null && v >= 1 && v <= 200) ED.setMpp(E.project.deriveMpp(pl, v)); else sync();
-      },
-    });
-    const fWidth = WH.ui.field({ label: 'editor.scale.width', hint: 'scale', unit: 'm', control: widthIn, inline: true });
-    const measure = withKbd(WH.ui.button({ i18n: 'editor.scale.measure', icon: 'ruler', size: 'sm', variant: 'soft', onClick: () => ED.tools.setTool('scale') }), 's');
-    const scaleSec = section('editor.sec.scale', null, scaleLine, fWidth, el('div.cluster', measure));
+    // (the scale has its own card at the top of the inspector: 45-scale.js)
+    // floor of a multi-storey plan: name, level, ceiling (55-floors.js)
+    const floorSec = ED.floors ? ED.floors.section() : null;
 
     // walls
     const auto = WH.ui.button({ i18n: 'editor.autoWalls', icon: 'autowall', onClick: () => ED.autoWallsAll() });
@@ -131,7 +124,7 @@
       WH.ui.button({ i18n: 'editor.demo', icon: 'home', size: 'sm', onClick: () => ED.newProject('demo') }),
       WH.ui.button({ i18n: 'editor.new', icon: 'plan', size: 'sm', onClick: () => ED.newProject('blank') }));
 
-    card.body.append(stats, scaleSec, wallSec, bgSec, el('div.ed-sec', snapSw, colors), note, el('div.ed-sec', proj));
+    card.body.append(stats, floorSec ? floorSec.el : '', wallSec, bgSec, el('div.ed-sec', snapSw, colors), note, el('div.ed-sec', proj));
 
     function sync() {
       const pl = ED.plan();
@@ -141,9 +134,7 @@
         statEls[k].n.textContent = String(n);
         statEls[k].l.textContent = ` ${t(`editor.count.${k}`, { n })}`;
       }
-      const m = ED.mpp();
-      scaleLine.replaceChildren(WH.ui.icon('ruler', 16), el('span.num', t('editor.scale.line', { px: fmt(1 / m, 0) })));
-      if (!typing(widthIn)) widthIn.setValue(Math.round(E.project.widthFromMpp(pl, m) * 10) / 10);
+      if (floorSec) floorSec.sync();
       const has = !!pl.background;
       if (has !== bgState) { bgState = has; buildBg(has); }
       if (has && bgBody._sw) { bgBody._sw.setChecked(ED.pref('bg')); if (!typing(bgBody._op.input)) bgBody._op.setValue(Math.round(ED.bgAlpha() * 100)); }
@@ -205,6 +196,10 @@
       const area = el('span');
       syncs.push((ob) => { area.textContent = ED.fmtArea(ob.points); });
       body.push(kv([[t('editor.f.area'), area]]));
+      // "Tahle místnost má [14] m²" -> the scale of the whole plan (SPEC 14.3, 14.1 addition)
+      const sf = ED.scaling.objectForm(o);
+      syncs.push(sf.sync);
+      body.push(sf.el);
     }
 
     if (o.type === 'wall') {
@@ -229,6 +224,10 @@
       const len = el('span');
       body.push(kv([[t('editor.f.length'), len]]));
       body.push(el('div.cluster', WH.ui.button({ i18n: 'editor.addDoor', icon: 'door', size: 'sm', variant: 'soft', onClick: () => { const w = ED.find(id); if (w) ED.addDoor(id, { x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2 }); } })));
+      // "Tahle zeď měří [4,2] m" -> the scale of the whole plan
+      const sf = ED.scaling.objectForm(o);
+      syncs.push(sf.sync);
+      body.push(sf.el);
       syncs.push((w) => {
         if (!typing(mat)) mat.value = matOf(w);
         if (!typing(loss)) loss.setValue(ED.wallLoss(w));
@@ -362,8 +361,11 @@
     const list = el('div.ed-issues');
     for (const is of issues) {
       const actions = el('div.cluster.ed-issue__actions');
-      actions.append(WH.ui.button({ i18n: 'editor.check.show', icon: 'search', size: 'sm', variant: 'ghost', onClick: () => showIssue(is) }));
-      if (is.fix) {
+      if (is.box) actions.append(WH.ui.button({ i18n: 'editor.check.show', icon: 'search', size: 'sm', variant: 'ghost', onClick: () => showIssue(is) }));
+      if (is.fix === 'scale') {
+        // scale sanity checks (SPEC 14.1): one click to the place where the scale is set
+        actions.append(WH.ui.button({ i18n: 'editor.check.setScale', icon: 'ruler', size: 'sm', variant: 'soft', onClick: () => ED.scaling.fixIssue(is) }));
+      } else if (is.fix) {
         actions.append(WH.ui.button({
           i18n: is.fix === 'join' || is.fix === 'snap' ? 'editor.check.join' : is.fix === 'edges' ? 'editor.check.addWalls' : 'editor.check.fix', icon: 'check', size: 'sm', variant: 'soft',
           onClick: () => {
@@ -381,11 +383,13 @@
       if (is.type === 'edges') actions.append(WH.ui.button({ i18n: 'editor.check.keepOpen', icon: 'eye-off', size: 'sm', variant: 'ghost', onClick: ignore }));
       else actions.append(WH.ui.iconButton({ icon: 'eye-off', tip: 'editor.check.ignore', size: 'sm', onClick: ignore }));
       const info = is.type === 'edges';
+      const k = is.type === 'scale' ? `editor.issue.scale.${is.code}` : `editor.issue.${is.type}`;
+      const text = t(`${k}.b`, is.params) + (is.params && is.params.floor ? ` ${t('editor.issue.onFloor', { floor: is.params.floor })}` : '');
       list.append(el(`div.ed-issue${info ? '.ed-issue--info' : ''}`,
         el('span.ed-issue__icon', WH.ui.icon(ISSUE_ICON[is.type] || 'warning', 18)),
         el('div.ed-issue__main',
-          el('div.ed-issue__title', t(`editor.issue.${is.type}.t`)),
-          el('div.ed-issue__text', t(`editor.issue.${is.type}.b`, is.params)),
+          el('div.ed-issue__title', t(`${k}.t`)),
+          el('div.ed-issue__text', text),
           actions)));
     }
     box.append(list);
@@ -393,6 +397,7 @@
 
   function showIssue(is) {
     const s = ED.S;
+    if (is.floor && ED.floors && is.floor !== ED.activeFloorId()) ED.floors.switchTo(is.floor);
     if (is.ids.length && ED.find(is.ids[0])) ED.select(is.ids[0]);
     s.focus = is;
     ED.zoomTo(is.box);
@@ -459,6 +464,7 @@
   // ---------------------------------------------------------------------------------------------------------------
   function build(asideEl) {
     aside = asideEl;
+    scaleBox = el('div.ed-scale-box');
     topBox = el('div.ed-top-card');
     checkCard = WH.ui.card({ id: 'ed-check', title: 'editor.card.check', icon: 'check-circle', hint: 'editorCheck' });
     checkCard.classList.add('ed-check-card');
@@ -467,13 +473,17 @@
     searchIn.addEventListener('input', () => renderList(false));
     listBody = el('div.ed-list', { 'data-no-wheel': '' });
     listCard.body.append(searchIn, listBody);
-    aside.replaceChildren(topBox, checkCard, listCard);
+    aside.replaceChildren(scaleBox, topBox, checkCard, listCard);
     refresh();
   }
 
   /** Full rebuild (language switch, first show). */
   function refresh() {
     if (!aside) return;
+    const had = scaleBox.contains(document.activeElement);
+    scaleBox.replaceChildren(ED.scaling.buildCard().el);
+    ED.scaling.sync();
+    if (had) { try { scaleBox.querySelector('input,button').focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
     top = null;
     showTop();
     renderIssues();
@@ -482,6 +492,7 @@
 
   function planChanged() {
     if (!aside) return;
+    ED.scaling.sync();
     showTop();
     scheduleList();
   }

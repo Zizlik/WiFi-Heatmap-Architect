@@ -408,6 +408,7 @@
 
   /**
    * Show a non-blocking message.  toast('text') | toast({text|i18n, params, action:{label, fn}}, {kind:'info|ok|warn|error', ms}).
+   * A question with two answers: actions:[{label|i18n, fn, primary?}, ...] (shown on their own row under the text).
    * Returns {close()}.
    */
   function toast(msg, o) {
@@ -428,7 +429,8 @@
     node.append(el('span.toast__icon', ui.icon(ICON_FOR[kind], 20)), msgEl);
     let timer = 0;
     let gone = false;
-    const ms = o.ms !== undefined ? o.ms : (def.action ? 9000 : MS_FOR[kind]);
+    const acts = (Array.isArray(def.actions) ? def.actions : def.action ? [def.action] : []).filter((a) => a && typeof a.fn === 'function');
+    const ms = o.ms !== undefined ? o.ms : (acts.length ? 9000 : MS_FOR[kind]);
     const rec = { text, kind, restart, close, node };
     function close() {
       if (gone) return;
@@ -443,18 +445,20 @@
       clearTimeout(timer);
       if (ms > 0) timer = setTimeout(close, ms);
     }
-    if (def.action && typeof def.action.fn === 'function') {
-      const a = ui.button({ label: def.action.label, i18n: def.action.i18n, variant: 'soft', size: 'sm' });
+    const btns = acts.map((act) => {
+      const a = ui.button({ label: act.label, i18n: act.i18n, icon: act.icon, variant: act.primary ? 'primary' : 'soft', size: 'sm' });
       a.classList.add('toast__action');
-      a.addEventListener('click', () => { try { def.action.fn(); } catch (e) { console.error(e); caught(e, 'toast.action'); } close(); });
-      node.append(a);
-    }
+      a.addEventListener('click', () => { try { act.fn(); } catch (e) { console.error(e); caught(e, 'toast.action'); } close(); });
+      return a;
+    });
+    if (btns.length === 1) node.append(btns[0]);
     const x = ui.iconButton({ icon: 'x', tip: 'ui.close', size: 'sm', variant: 'ghost' });
     x.classList.add('toast__close');
     x.setAttribute('data-tip-noaria', '');
     x.setAttribute('aria-label', t('ui.close'));
     x.addEventListener('click', close);
     node.append(x);
+    if (btns.length > 1) { node.classList.add('toast--ask'); node.append(el('div.toast__actions', ...btns)); }
     node.addEventListener('pointerenter', () => clearTimeout(timer));
     node.addEventListener('pointerleave', restart);
     node.addEventListener('focusin', () => clearTimeout(timer));

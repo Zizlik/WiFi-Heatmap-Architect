@@ -20,7 +20,7 @@ WH.i18n.add('cs', {
   'planner.cw.r.moved': 'Červené R je teď na zkušebním místě, {d} od dnešního.',
   'planner.cw.r.back': 'Vrátit R na dnešní místo',
   'planner.cw.r.here': 'Router stojí tady',
-  'planner.cw.r.node': 'Druhý přístupový bod během měření vypni – model teď počítá jen s hlavním routerem.',
+  'planner.cw.r.node': 'Další přístupové body během měření vypni – model teď počítá jen s hlavním routerem.',
 
   // step 2: band
   'planner.cw.b.t': 'Pro které pásmo ti mám ukázat místa?',
@@ -176,7 +176,7 @@ WH.i18n.add('en', {
   'planner.cw.r.moved': 'The red R is on a trial position now, {d} from today’s.',
   'planner.cw.r.back': 'Put the R back to today’s place',
   'planner.cw.r.here': 'The router is here',
-  'planner.cw.r.node': 'Switch the second access point off while measuring – the model only counts the main router now.',
+  'planner.cw.r.node': 'Switch the extra access points off while measuring – the model only counts the main router now.',
 
   'planner.cw.b.t': 'Which band should I show the spots for?',
   'planner.cw.b.b': 'The spots to measure depend on the band. You do not have to pin your device to it, though: when the router switches bands by itself (band steering, Wi-Fi 7), every measurement counts for the band it was really taken on – on a PC the helper finds it out, on a phone you pick it.',

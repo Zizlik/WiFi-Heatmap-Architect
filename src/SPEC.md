@@ -39,10 +39,10 @@ Audience: a non-technical home user (Czech first, English second). Tone: friendl
 8. Performance: dragging the router must feel instant (≥ 30 fps) on a 12 m flat with ~20 walls and ~20 furniture
    polygons; a full-quality recompute ≤ 150 ms on a laptop. Use a coarse raster while dragging, refine after ~120 ms idle.
 9. Robustness: never throw to the console during normal use; corrupt files/localStorage → friendly toast, app stays usable.
-10. Size: each built file ≤ 2 MB without a user background image (`node build.mjs --check` enforces it; raised from 1 MB in
-    stage 5 (the stage-4 bundle was ~977 KB) and from 1.5 MB in stage 7 (the stage-6 bundle was ~1408 KB, stage 7 starts at
-    ~1.55 MB)). The bundle is deliberately NOT minified: readable code is worth more than bytes for a local app opened from disk
-    (GitHub Pages serves it gzipped, ~440 KB on the wire).
+10. Size: each built file ≤ 2.5 MB without a user background image (`node build.mjs --check` enforces it; raised from 1 MB in
+    stage 5 (the stage-4 bundle was ~977 KB), from 1.5 MB in stage 7 (the stage-6 bundle was ~1408 KB) and from 2 MB in
+    stage 9 (scale, many nodes and floors brought the bundle to ~2.0 MB)). The bundle is deliberately NOT minified: readable
+    code is worth more than bytes for a local app opened from disk (GitHub Pages serves it gzipped, ~570 KB on the wire).
 
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -193,13 +193,15 @@ WH.store (the ONE source of truth for project data; see §3.1 for the shape)
    .init(project)                // replace whole project, clears history, emits 'project:replaced' + all topics
    .commit(label, mutator(project), topics[])    // atomic change with undo entry
    .begin(label) / .live(mutator, topics[]) / .end()  // drag-style: snapshot at begin, many live updates, one undo entry at end (only if changed)
-   .undo() / .redo() / .canUndo() / .canRedo()    // global linear history (max 100, background image excluded from snapshots & shared by reference)
-   .on(topic, fn)->off           // topics: 'plan','scale','net','node','model','goal','measurements','view','project:replaced','history'
+   .undo() / .redo() / .canUndo() / .canRedo()    // global linear history (max 100, background images - every floor's - excluded from snapshots & shared by reference)
+   .on(topic, fn)->off           // topics: 'plan','scale','net','nodes','floors','model','goal','measurements','view','project:replaced','history'
+                                 // (stage 9: 'node' became 'nodes' + 'floors'; after an undo / redo view.floor follows the restored active floor)
    .prefs  // {lang, theme:'auto|light|dark', collapsed:{cardId:bool}, tourDone, welcomeDone, checklistDismissed, …} persisted separately; .setPref(k,v)
    Autosave: debounce 500 ms after any change → WH.io.saveLocal(project); failure (quota) → one toast, retry without background.
+   Backgrounds are stored under their own localStorage keys, one per floor ('wifi-heatmap-v3-bg' = floor-1, else '…-bg:<floorId>').
 WH.viewport = createViewport(hostEl, {minScale, maxScale, onChange(view)}) -> { view:{scale,tx,ty}, fit(bboxNorm), zoomBy(f, cx?, cy?), toWorld(clientX,clientY)->{x,y} norm 0..1, toScreen(p), setEnabled(b), destroy() }
    // pan: empty-space drag OR middle button OR Space+drag; wheel zoom around cursor (ctrl+wheel/pinch too); touch pinch; applies to both editor SVG and planner canvas via the callback.
-WH.ui = { icon(name,size=20)->SVGElement, hint(key), enhance(root), tip(el, i18nKey, kbd?), toast(msg|{text,action:{label,fn}}, {kind:'info|ok|warn|error', ms}),
+WH.ui = { icon(name,size=20)->SVGElement, hint(key), enhance(root), tip(el, i18nKey, kbd?), toast(msg|{text,action:{label,fn}}|{text,actions:[{label|i18n,fn,primary?}…]}, {kind:'info|ok|warn|error', ms}),
           confirm({title,body,ok,cancel,danger})->Promise<bool>, dialog({title, content, wide?})->{close()}, menu(anchorEl, items[{label|i18n,icon,kbd,onClick,sep,danger}]),
           segmented(items,{value,onChange,aria}), switch(...), field helpers…, shortcuts: WH.ui.keys.register({mode:'global|planner|editor', key:'ctrl+s', i18n:'…', run(e)}) , WH.ui.keys.sheet(),
           tour(steps) , theme.get/set }

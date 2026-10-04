@@ -37,6 +37,195 @@ unit tested (`node tests/engine/run-all.mjs`) and also verified in headless Chro
   (2.4 GHz × 0.65, 6 GHz × 1.15). Every function that takes a band applies it itself; to show "the dB the model uses" for
   an object call `model.obstacleLossFor(obj, band, project)`. `model.bandPower` adds a per-band transmit power difference.
 
+## S. Stage 9 (SPEC 14): verified scale, many nodes, floors - READ THIS FIRST
+
+Everything of this section is part of the contract; the older sections below stay valid where this one does not
+say otherwise. Summary of what changed for callers:
+
+* **`project.node` is gone** from the in-memory project: **`project.nodes`** (array, the ACTIVE floor's nodes, ≤ 8 in
+  the whole building) replaces it. Files keep a `node` key (= `nodes[0]` in the old shape) only for older app versions.
+* **Floors.** `project.floors` (1..9, ascending `level`) + `view.floor` (the active floor's id). The top-level
+  **`plan`, `nodes`, `measurements`, `goal.room`, `goal.excluded` are always the ACTIVE floor's** - every existing
+  single-floor code path keeps working unchanged on the floor the user looks at. Other floors keep theirs inside their
+  `floors[]` entry; the active entry holds `null` there. Never touch that convention by hand: use the helpers
+  (`switchFloor`, `addFloor`, `removeFloor`, `duplicateFloor`, `moveFloor`, `floorOf`, `atFloor`).
+* `net.routerFloor` / `net.opticFloor` = the floor of the router (trial AND baseline) / of the internet inlet.
+  `goal.allowedRoom` refers to a room of `net.routerFloor`.
+* **Scale** carries its provenance: `scale = {mpp, verified, method, ref}`; helpers for "area in m²", "two points",
+  "width", the plan's area and the sanity checks.
+* Every field / point / statistic / speed / what-if / optimizer function handles **any number of nodes** (router +
+  nodes, the strongest wins per place) and **sources on other floors** (3-D distance + ceiling loss). The winner of
+  a cell is an index: `0` = router, `k` = `state.nodes[k - 1]`.
+
+### S.1 Data
+
+```js
+Project += {
+  scale:  { mpp, verified: bool, method: 'two-points'|'area'|'width'|'import'|'default',
+            ref: null | {a: Point, b: Point, metres} (two-points) | {areaM2, roomId?} (area) | {metres} (width) },
+  net:    { …, routerFloor: floorId, opticFloor: floorId },
+  nodes:  Node[],                                   // the ACTIVE floor's nodes
+  floors: Floor[],                                  // 1..MAX_FLOORS (9), sorted by level, levels unique
+  view:   { …, floor: floorId },                    // the active floor (also derivable: activeFloorId)
+}
+Node  = { id: 'node-1' (unique in the building), name: 'AP 2' (≤ 50, editable),
+          mode: 'ap_cable'|'mesh_cable'|'mesh_wifi'|'repeater', pos: Point (on its floor),
+          bands: {'2.4','5','6': bool}, power: -10..6 dB, backhaulBand: 2.4|5|6, backhaulThreshold: -80..-55,
+          maxMbps: null|10..10000, uplink: 'router' | nodeId (any floor; no cycles), enabled: bool }
+Floor = { id: 'floor-1', name (≤ 50), level: int -3..20 (0 = ground floor),
+          ceiling: { material: 'concrete'|'reinforced_concrete'|'wood'|'custom', lossDb: 0..40 (5 GHz reference),
+                     heightM: 2..6 },              // the slab ABOVE this floor + this storey's height: the slab between
+                                                   // the ground floor and the 1st floor is the GROUND floor's ceiling
+                                                   // (the top floor's ceiling is the roof - unused)
+          plan: Plan|null, nodes: Node[]|null, measurements: Measurement[]|null,
+          goal: {room: 'all'|roomId, excluded: roomId[]}|null }   // null = the active floor (content at the top level)
+```
+
+* Constants (`E.project`): `MAX_NODES` 8, `MAX_FLOORS` 9, `LEVEL_MIN/MAX` (−3 / 20), `NODE_KINDS`
+  (`['ap_cable','mesh_cable','mesh_wifi','repeater']`; `NODE_MODES` still lists `'none'` for older code), `CEILING_MATERIALS`
+  (`{concrete: 15, reinforced_concrete: 20, wood: 8}` dB at 5 GHz), `CEILING_DEFAULT` (`{material:'concrete', lossDb:15,
+  heightM:2.7}`), `SCALE_METHODS`, `SCALE_LIMITS` (`{areaMin:15, areaMax:400, roomMin:1.5, roomMax:80, doorMin:0.6,
+  doorMax:1.6}`).
+* **Migration (sanitize)**: a file without `floors` becomes ONE floor (`floor-1`, level 0, "Přízemí" / "Ground floor",
+  concrete ceiling) holding its plan / measurements; `node` with mode ≠ `'none'` → `nodes = [{id:'node-1', name:'AP 2',
+  …node, uplink:'router', enabled:true}]`, mode `'none'` → `nodes = []`; `scale` without `verified` → `verified:false`,
+  `method:'import'` when the file had an mpp or a legacy `width` (the UI shows the one-time banner "Měřítko z načteného
+  souboru: byt ≈ 58 m². Sedí?"), else `'default'`. `create({template:'demo'|'house2'})` → verified (`'width'`), blank →
+  `{verified:false, method:'default'}`. Garbage: unknown uplinks / cycles → `'router'`; > 8 nodes → the first 8 in
+  building order; duplicate floor levels → moved up to the next free level; a floor whose plan is invalid is dropped
+  (strict: throws like the plan of the file).
+* **Serialize**: `serialize` / `buildSvg` write exactly the in-memory shape (top-level `plan` = the active floor, other
+  floors complete inside `project.floors`) plus `project.node` = `nodes[0]` in the old shape (`mode:'none'` when there is
+  none or it is disabled), so the OLD v2 app (reads `plan/width/router/original/optic`) and older v3 builds (read
+  `project.node`, `project.measurements`) open the active floor. `parseSvgText(buildSvg(p)).project` deep-equals
+  `sanitize(p)` with any number of floors / nodes.
+* Building order of nodes (= the winner index order): floors by ascending level, then each floor's `nodes` order.
+  It does NOT depend on which floor is active.
+
+### S.2 `E.project` - floors, nodes, scale
+
+| Function | Notes |
+|---|---|
+| `activeFloorId(p) → id|null` | the floor whose entry holds `null` content (else `view.floor`, else the first); `null` for a project without floors (hand-made objects: everything then behaves as one floor) |
+| `floorOf(p, id?) → FloorView|null` | `{id, name, level, ceiling, index, active, plan, nodes, measurements, goal:{room, excluded}}` - the content of ANY floor (top level for the active one). Read-only. `id` default = active |
+| `atFloor(p, id) → Project` | a shallow read-only VIEW of the project with that floor active (the same object for the active floor). Pass it to any single-floor function (`createContext`, `analysis.run`, `homeSummary`, …) |
+| `switchFloor(p, id) → bool` | **mutates** (store mutator): makes `id` the active floor (moves the content between the top level and `floors[]`, sets `view.floor`) |
+| `addFloor(p, {name, level, above=true, copyFrom, lang}) → id` | **mutates**: a new empty floor (default level = above the highest / below the lowest with `above:false`, default name `floorName(level)`); `copyFrom: floorId` copies that floor's plan (rooms, walls, doors, furniture; no background, no nodes, no measurements) - "Duplikovat půdorys do nového patra". Does not switch to it. `null` when `MAX_FLOORS` is reached |
+| `duplicateFloor(p, id, {name, lang}) → id` | = `addFloor(p, {copyFrom: id, …})` above the highest floor |
+| `removeFloor(p, id) → bool` | **mutates**: never the last floor; the active one → the nearest floor becomes active; the router / inlet on it → moved to the new active floor (centre of its first room); nodes uplinking to its nodes → `'router'` |
+| `moveFloor(p, id, dir) → bool` | **mutates**: swaps `level` with the next floor up (`dir` +1) / down (−1) - "reorder" |
+| `renameFloor(p, id, name)` · `setCeiling(p, id, {material, lossDb, heightM})` | **mutate**; a material without `lossDb` takes its default |
+| `floorName(level, lang) → string` | 'Přízemí', '1. patro', '2. patro', 'Suterén', '2. suterén' / 'Ground floor', '1st floor', … |
+| `floorGap(p, fromId, toId) → {levels, heightM, lossDb}` | the slabs between two floors: `levels` = |Δlevel|, `heightM` = sum of the storey heights crossed, `lossDb` = sum of their ceiling losses (5 GHz reference) |
+| `allNodes(p) → [{node, floor, floorName, active, index}]` | every node of the building in building order (`index` = that order); `active` = on the active floor |
+| `nodeById(p, id) → {node, floor}|null` | |
+| `newNode(p, {mode='ap_cable', pos, floor, uplink='router', lang}) → Node` | a complete node (free id, name 'AP n' with the first free n ≥ 2, the default bands / power / threshold, `enabled:true`), **not added**: `store.commit('…', (pr) => pr.nodes.push(E.project.newNode(pr, {mode})))`. Default `pos` = the visual centre of the room farthest from the router and the other nodes on that floor (default floor = active); `null` when `MAX_NODES` is reached |
+| `removeNode(p, id) → bool` | **mutates**; nodes uplinking to it take over its uplink |
+| `moveNodeToFloor(p, id, floorId, pos?) → bool` | **mutates**; the position is snapped onto that floor |
+| `planArea(plan|project, mpp?, {excluded}) → Area` | `{areaM2 (rooms minus excluded), allM2, rooms:[{roomId, name, areaM2, excluded}], largest, smallest}` (largest / smallest of the counted rooms, `null` without rooms). For a project: its active plan, `scale.mpp`, `goal.excluded`. Areas = polygon areas (overlaps counted twice) |
+| `buildingArea(p) → {areaM2, allM2, floors:[{id, name, level, areaM2, allM2}]}` | every floor (its own `goal.excluded`) |
+| `scaleFromArea(plan, areaM2, {excluded, roomId}) → mpp|null` | the mpp at which the counted rooms (or the one room `roomId`) have `areaM2` - "Plocha bytu v m²" / "Tahle místnost má 14 m²". Uniform: proportions never change. `null` for no rooms / area ≤ 0 |
+| `scaleFromLength(a, b, metres) → mpp|null` | two points (normalized) that are `metres` apart - "Dvě místa se známou vzdáleností" / "Tahle zeď měří 4,2 m" |
+| `scaleFromWidth(plan, metres)` | = `deriveMpp` |
+| `setScale(p, {mpp, method, ref}) → bool` | **mutates**: `scale = {mpp (clamped 0.0005..0.2), verified:true, method, ref}`; `false` (nothing changed) for an unusable mpp |
+| `confirmScale(p)` | **mutates**: `verified = true` (the banner's [Sedí]) |
+| `scaleIssues(p, {limits}) → Issue[]` | the sanity checks of SPEC 14.1, in this order: `{code:'unverified'}`; `{code:'areaSmall'|'areaLarge', value: m², limit}` (the whole building's counted area); per floor (active floor first) `{code:'roomSmall'|'roomLarge', floor, roomId, name, value, limit}`, `{code:'doorNarrow'|'doorWide', floor, doorId, name, value: m, limit}`. `[]` = all fine. A plan without rooms gives only `unverified` (walls have no thickness in this model, so "wall thinner than 5 cm" cannot be checked) |
+
+### S.3 `E.model` - sources on several floors, any number of nodes
+
+```js
+ctx = model.createContext(project, { fit, floor })   // floor default = the active floor; the plan of that floor
+ctx.floor (id|null) · ctx.level · model.floorContext(ctx, floorId) → the context of another floor of the SAME project
+                                                      // (cached on ctx, same fit option; ctx itself for its own floor)
+```
+**Physics across floors** (a source - router or node - on floor A, a place on floor B ≠ A):
+`signal = bandBase − 10·n·log10(max(1, d3)) − (½ · walls_B(source→place) + ceilingLoss(A↔B, band)) · wallFactor + offset`,
+`d3 = √(horizontal² + heightM²)` (`floorGap`), `walls_B` = the obstacle loss of floor B's walls / doors / furniture along the
+horizontal path (softened like everything else, half-weighted: the signal comes down / up through the slab, it does
+not run along the floor), `ceilingLoss` = Σ `lossDb` of the slabs crossed × `BAND_FACTOR[band]`. Floor A's own walls are
+not traced. **Stairs, open galleries and holes in the slab are not modelled** (a real house is usually a little
+better than the map near the staircase). Same floor = exactly the old physics.
+
+| Function | Change |
+|---|---|
+| `nodeList(project) → NodeParams[]` | every node that can serve: `enabled`, a known mode, and an uplink chain that reaches the router through enabled nodes. `NodeParams = {id, name, index (in this list), floor, mode, pos:{x,y,floor}, power, bands, backhaulBand, backhaulThreshold, maxMbps, uplink:'router'|id, uplinkIndex (-1 = the router, else the index in this list)}`, building order |
+| `nodeParams(project)` | = `nodeList(project)[0] || null` (compat) |
+| `fieldParams(project, which, {band, offsets, soften})` | `State = {band, router:{x,y,floor}, baseline:{x,y,floor}, nodes: NodeParams[] ([] for 'today'), node: nodes[0]|null, offsets, soften?, bands?, steer?}`. `node` is a **non-enumerable** compat mirror (readable as `state.node`, lost by `{...state}`). `model.stateNodes(state)` is what every engine function uses: `state.nodes`, except when a caller sets an own `node` itself (`{...state, node: X}` → just X, `{...state, node: null}` → none - the legacy override keeps working). To change the nodes of a state set `nodes` |
+| `combinedSignal / steeredSignal` | max over the router and every node serving the band; `steeredSignal().nodeWins` = the winner index of the picked band (0 = router) |
+| `pointSignalDetail(ctx, p, state)` | + `nodes: (dBm|null)[]` (per `state.nodes`), `nodeIndex` (the strongest node, −1 = none), `nodeId`, `winner` (0 router / k = `nodes[k-1]`); `node` = the strongest node's signal, `bestSource` `'router'|'node'`, `backhaul` / `weakBackhaul` = of the strongest node |
+| `backhaulSignal(ctx, state, index = 0) → dBm|null` | the node's uplink: from its uplink (the router, or the uplink node - its `power` added) to the node, on its `backhaulBand`, traced on the node's floor (`floorContext`), softened, calibrated. `null` for a missing node |
+| `backhaulSignals(ctx, state) → (dBm|null)[]` | per `state.nodes` (`null` for wired nodes is NOT applied here - the signal is always reported) |
+| `distance3(ctx, from, to) → m` | 3-D distance (`from.floor` may be another floor) |
+| `calibrateAll / offsets(ctx, project)` | **pooled over every floor**: each floor's measurements are predicted on that floor (its context, the router on `routerFloor`), one offset per band = the router's strength. `used[i].floor` tells the floor. Same numbers as before for one floor |
+| `resolveBands(ctx, project)` | the measurements of `ctx.floor` |
+| `fitProject(project, {floor})` | the measurements of `floor` (default `net.routerFloor`: n / walls are learnt where the ceiling does not interfere); `fitStale` watches the same floor |
+
+### S.4 `E.raster` / `E.speed` / `E.optimize` / `E.analysis`
+
+| Function | Change |
+|---|---|
+| `raster.field / fieldEx(ctx, g, params)` | any number of nodes, sources on other floors. **Per-source fields are cached** (keyed on geometry, cell, aa, soften, band, offset, the source's position / floor / power), so a drag frame recomputes only the moved source: 8 nodes + router, real plan, cell 8, Auto ≈ 3-6 ms. `nodeWins` = **winner index** (`Uint8Array`, 0 = router, k = `params.nodes[k-1]`; with one node exactly the old 0 / 1). `raster.clearCache()` drops the per-source fields |
+| `raster.contours(ctx, {source})` | `'router'`, `'combined'`, `'node'` (= the first node), **`'node:<id>'`** (that node alone: its position, floor, power, bands) |
+| `raster.sourceEdges(g, wins)` | borders between all zones (router / every node) |
+| `raster.sourceShare(g, wins, roomIds, excluded)` | + `bySource: number[]` (% per source: [router, node 1, …]), `perRoomBySource: Map<roomId, number[]>`; `node` = all nodes together |
+| `speed.nodeLinks(ctx, state, curve, {backhaulCurve, backhaulCurves}) → NodeLink[]` | one per `state.nodes`. **Uplink chain**: a wired node uplinking to the router = no cap; to a node = that node's capacity (its link and `maxMbps`). A wireless node: `hop = curve(backhaul signal) × factor × the factors of every wireless hop above it` (a repeater behind a repeater: × 0.5 × 0.5), then `min(hop, capacity of its uplink node)`. `NodeLink += {id, index, uplink, uplinkIndex, hops (wireless hops up to the router), chainFactor, upstream:{down, up}|null}`; `down/up` = the effective uplink throughput; unknown anywhere above → `known:false` (`reason` of the first unknown hop) |
+| `speed.nodeLink(ctx, state, curve, {index = 0, …})` | = `nodeLinks(…)[index]` (compat) |
+| `speed.fieldSpeed / homeSummary / pointSpeed` | a cell / place goes through the link of the node that wins it. `fieldSpeed().source` = the winner index array, `links`, `link` = `links[0]`; `homeSummary()` + `nodeShares: number[]` (% per node), `links`; `pointSpeed()` + `sourceIndex` (0 router / k), `sourceId` |
+| `speed.projectCurves(ctx, project, {offsets, soften, device}) → {'2.4','5','6'}` | the speed curves from the measurements of EVERY floor (bands resolved, speed-only points filled on their own floor) |
+| `optimize.find(ctx, g, opts)` | `opts.nodes` (array; `opts.node` still works) - nodes stay where they are; `ctx`/`g` = the ROUTER's floor (the candidates lie there; `allowedRoom` is a room of it). `opts.floors = [{ctx, grid, goalRoom, excluded}]` = the floors whose places count (area weighted) - when given, ONLY these count, so list the router's floor too if it should (`findProject` does it for you); omitted = the router floor's `goalRoom` / `excluded` as before. Result + `floor` (the router floor id) |
+| `optimize.findProject(project, {cell=4, band, scope, speed, offsets, soften, clearance}, ctl) → Promise<Result>` | the whole recipe: the router floor's context, `scope:'floor'` (default when `goal.room` is a room: the active floor's goal room / whole floor minus excluded) or `'building'` (every floor minus its excluded rooms); Result + `floor` (the router floor), `perFloor: [{id, before, after}]` (`before/after` of the scope as a whole) |
+| `analysis.run(project, {floor, …})` | `floor` default = active (= `run(atFloor(project, floor))`); + `floor`, `nodes: [{id, name, index, floor, mode, onFloor, uplink, backhaul (dBm|null), weakBackhaul, share (% of the goal area of this floor won), link (NodeLink when opts.curves given, else null)}]`, `sourceShare.bySource`. `opts.curves` (a curve or curves map) / `opts.limits` fill the links' Mb/s |
+| `analysis.building(project, {cell = 8, band, cache, soften}) → Building` | `{floors:[{id, name, level, active, areaM2, stats:{today, trial}, cells}], total:{today, trial} (area weighted over the floors' goal areas), delta:{coverage, mean}}` - "Celý dům". `cache` = an object you keep (`{}`): per-floor today fields stay cached |
+| `analysis.suggestSpots / predictAtMeasurements(ctx, project, …)` | work on `ctx.floor` (its measurements / plan; the router may be on another floor) |
+| `analysis.whatIfActive(project)` | router moved or ANY node enabled on any floor |
+
+### S.4b Low-level additions
+
+`model.floorContext(ctx, floorId)`, `model.vertOf(ctx, floorId)` (`{levels, heightM, lossDb, dz2, ceil:[2.4, 5, 6 GHz dB], wallW}` or
+null), `model.asRouter(ctx, pt)` (a point without a `floor` key = on `ctx.routerFloor`), `model.stateNodes(state)`,
+`model.uplinkIndexOf(nodes, node)`, `model.calibrateGroups([{ctx, list, floor}], band, opts)` (calibrate() pooled over floors),
+`model.CROSS_WALL_WEIGHT` (0.5), `ctx.routerFloor`; `raster.statsMany([{grid, field, roomIds, excluded}], threshold)` (stats pooled
+over grids - "Celý dům"), `raster.sourcesFor(ctx, params, band)`, `raster.clearCache()`; `speed.linkFromSignal(node, sig, curve,
+backhaulCurve, upstream)` (the 5th argument = the uplink node's NodeLink); `project.cleanCeiling`, `project.addNode`.
+Every point function treats a `from` point with a `floor` key as a source on that floor (`fieldParams` / `nodeList` put it
+there); a point without one is on the context's floor - except router / baseline points handed to `calibrate`, `fillSignals`,
+`inferBand`, `suggestSpots`, `predictAtMeasurements`, which default to `net.routerFloor` (`asRouter`).
+
+### S.5 Demo 'house2'
+
+`project.create({template:'house2', lang})` → "Dům se dvěma patry" / "Two-storey house": 9 × 8 m footprint, scale
+verified (80 px per m), ground floor (Obývák s kuchyní, Předsíň se schodištěm, Pracovna, WC, Technická místnost) with the
+router in the hall at the foot of the stairs, 1. patro (Ložnice, Dětský pokoj, Pokoj pro hosty, Koupelna, Chodba se schodištěm)
+with an enabled Wi-Fi mesh node "Mesh nahoře" / "Mesh upstairs" on the landing (uplink: router; its 5 GHz uplink ≈ −66 dBm
+through the slab), a concrete ceiling (15 dB at 5 GHz, 2.8 m storeys), `view.band 'auto'`, active floor = ground floor,
+the stairwell drawn upstairs as a non-blocking "Otvor schodiště". Upper floor at 5 GHz: the router alone ≈ 13 % covered,
+with the mesh node ≈ 85 % (Auto: 81 → 88 %, 2.4 GHz reaches it anyway: 97 %); the ground floor ≈ 87 % (5 GHz) either way.
+
+### S.6 Recipes
+
+```js
+// 1. Scale from the flat's area ("Víš, kolik má byt m²?")
+const mpp = E.project.scaleFromArea(p.plan, 58, { excluded: p.goal.excluded });
+if (mpp) store.commit('scale.area', (pr) => E.project.setScale(pr, { mpp, method: 'area', ref: { areaM2: 58 } }), ['scale']);
+const a = E.project.planArea(store.project);          // a.areaM2 = 58, a.rooms[i].areaM2 for the toast
+const issues = E.project.scaleIssues(store.project);  // [] or [{code:'roomSmall', floor, roomId, value, limit}, …]
+
+// 2. Add a node (AP / mesh / repeater)
+store.commit('node.add', (pr) => { const n = E.project.newNode(pr, { mode: 'mesh_wifi' }); if (n) pr.nodes.push(n); }, ['nodes']);
+const a2 = E.analysis.run(store.project, { cell: 4, curves });   // a2.nodes[k] = {id, name, backhaul, share, link…}
+// a2.source[i]: 0 = router, k = a2.params.trial.nodes[k - 1]; contours of one node:
+E.raster.contours(a2.ctx, { ...a2.params.trial, threshold: p.model.rangeThreshold, source: 'node:' + a2.nodes[0].id });
+
+// 3. Switch floor + compute
+store.update((pr) => E.project.switchFloor(pr, 'floor-2'), ['plan', 'nodes', 'measurements', 'goal', 'floors', 'view'], { quiet: true });
+const pr = store.project;                               // re-read: the top level is now floor 2
+const ctx = E.model.createContext(pr);                  // floor 2 (sources downstairs come through the ceiling)
+const run = E.analysis.run(pr, { cell: 4, ctx });       // run.floor === 'floor-2'
+const house = E.analysis.building(pr, { cell: 8, cache: houseCache });   // "Celý dům"
+```
+
+---
+
 ## 0. Conventions
 
 | Thing | Convention |
@@ -61,31 +250,36 @@ Project = {
   v: 3,
   name: string(≤80),
   plan: { rooms: Room[], walls: Wall[], doors: Door[], furniture: Furniture[], background: dataURL|null },  // each array ≤ 250
-  scale: { mpp: number },                    // metres per canvas px, 0.0005..0.2. NEVER re-derived after load
+  scale: { mpp: number,                      // metres per canvas px, 0.0005..0.2. NEVER re-derived after load
+           verified: bool, method: 'two-points|area|width|import|default', ref: null|{a,b,metres}|{areaM2,roomId?}|{metres} },  // SPEC 14.1, §S
   net:   { router: Point,                    // TRIAL position (what the user moves)
            baseline: Point,                  // TODAY (where the router really is; measurements belong to it)
            optic: Point,                     // internet inlet
            wanDown: null|0..10000, wanUp: null|0..10000,          // Mb/s of the plan
            wanPort: null|100|1000|2500|5000|10000, ontPort: same, wanLink: same,
            cableCategory: 'unknown|cat5|cat5e|cat6|cat6a|cat7|cat8', cableLength: null|0.1..500,
-           routerBands: {'2.4':bool,'5':bool,'6':bool} },  // SPEC 13: the bands the router sends (default 2.4 + 5)
-  node:  { mode: 'none|ap_cable|mesh_cable|mesh_wifi|repeater', pos: Point,
-           bands: {'2.4':bool,'5':bool,'6':bool}, power: -10..6 (dB), backhaulBand: 2.4|5|6, backhaulThreshold: -80..-55,
-           maxMbps: null|10..10000 },        // SPEC 10: the node's real ceiling in Mb/s ("Kolik zvládne"), whole numbers;
-                                             // null = unknown (also 0 / negative / garbage); older files load with null
+           routerBands: {'2.4':bool,'5':bool,'6':bool},    // SPEC 13: the bands the router sends (default 2.4 + 5)
+           routerFloor: floorId, opticFloor: floorId },   // SPEC 14.3: the floor of the router (trial + baseline) / inlet
+  nodes: Node[] (the ACTIVE floor's; ≤ 8 in the building)  // SPEC 14.2, replaces `node` - see §S.1:
+         // { id, name, mode: 'ap_cable|mesh_cable|mesh_wifi|repeater', pos: Point,
+         //   bands: {'2.4':bool,'5':bool,'6':bool}, power: -10..6 (dB), backhaulBand: 2.4|5|6, backhaulThreshold: -80..-55,
+         //   maxMbps: null|10..10000 (SPEC 10: "Kolik zvládne", whole Mb/s; null = unknown), uplink: 'router'|nodeId, enabled }
   model: { nearSignal: -55..-25 (dBm at 1 m, 5 GHz; 40), n: 1.6..4 (2.2), wallLoss: 0..20 (8, the 5 GHz value),
            threshold: -75..-55 (-67, "good signal"), rangeThreshold: -80..-45 (-60),
            bandPower: {'2.4': -10..6, '5': -10..6, '6': -10..6} (dB, default 0 each; added to that band's signal),
            steer: {six: -90..-50 (-70), five: -90..-50 (-72)},   // SPEC 13: band-steering thresholds (§7.9)
            fit?: Fit },                      // SPEC 9, only after the calibration wizard (older files: no key at all)
-  goal:  { room: 'all'|roomId, allowedRoom: 'any'|roomId, excluded: roomId[], mode: 'signal'|'speed',
-           targetDown: 1..10000 (50), targetUp: 1..10000 (50), reserve: 0..80 (30, %), device: string(≤50) },
-  measurements: Measurement[] (≤500),
+  goal:  { room: 'all'|roomId, allowedRoom: 'any'|roomId, excluded: roomId[], mode: 'signal'|'speed',   // room / excluded:
+           targetDown: 1..10000 (50), targetUp: 1..10000 (50), reserve: 0..80 (30, %), device: string(≤50) },  // the active floor's;
+                                                                              // allowedRoom: a room of net.routerFloor
+  measurements: Measurement[] (≤500 per floor; the ACTIVE floor's; ids unique in the building),
+  floors: Floor[] (1..9, ascending level; the active entry holds null content - §S.1),
   view:  { band: 2.4|5|6|'auto' ('auto' with ≥ 2 router bands; §7.9), layer: 'signal|speed|diff', ranges, walls, furniture, labels, values, calibrate: bool,
            points: bool (true; planner layer "Body měření" - the measurement dots + their labels),
            whatif: bool (true; layer "Předpověď u bodů" - the "→ predicted (+Δ)" part of those labels / tooltips / PNG),
            sourceZones: bool (true; layer "Zdroj signálu", SPEC 10.3 - the border between the router's and the node's zone),
-           palette: 'default|cb' }      // a missing / non-boolean points, whatif or sourceZones (older files) ⇒ true; view only, not undoable
+           palette: 'default|cb',       // a missing / non-boolean points, whatif or sourceZones (older files) ⇒ true; view only, not undoable
+           floor: floorId }             // SPEC 14.3: the active floor (= project.activeFloorId(p); the null-content entry decides)
 }
 Room        { id:'room-1', type:'room', roomId:1..250 (unique int), name(≤50), points: Point[3..200], color:'#rrggbb' }
 Wall        { id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|wood|metal|masonry|solid_guess|custom', loss?:0..30 }
@@ -111,17 +305,21 @@ Fit         { n:1.6..4, wallFactor:0.5..2, method:'offset'|'offset+n+walls', cou
                                       n? (present when the band took part in the n/wall fit), before?:{offset, rms, looRms|null}}} }
 ```
 
-Invariants guaranteed by `sanitize` (and expected from the editor): ids unique across all object types; polygons valid
-(`geom.validatePolygon`); every door has an existing wall; `net.router`, `net.baseline`, `node.pos` lie on the floor
-(when the plan has rooms); `goal.room/allowedRoom/excluded` refer to existing roomIds; the node's backhaul band is one the
-node serves; all numbers clamped to the ranges above. Constants: `project.WALL_MATERIALS` (the number a preset stores in
+Invariants guaranteed by `sanitize` (and expected from the editor): ids unique across all object types of a plan (each
+floor's plan has its own id space); polygons valid (`geom.validatePolygon`); every door has an existing wall; `net.router`,
+`net.baseline` lie on the floor of `net.routerFloor`, every node on its own floor (when that plan has rooms); `goal.room/
+excluded` refer to roomIds of the active floor (other floors: their `floors[].goal`), `goal.allowedRoom` to the router
+floor; a node's backhaul band is one it serves; node ids unique in the building, uplinks existing and acyclic; measurement
+ids unique in the building; all numbers clamped to the ranges above. Constants: `project.WALL_MATERIALS` (the number a preset stores in
 `wall.loss` = the 5 GHz column of `MATERIALS`: drywall 4, wood 5, glass 4, brick 11, masonry 11, solid_guess 15,
 concrete 18, reinforced_concrete 26, metal 30), `project.LEGACY_WALL_MATERIALS` (the OLD app's numbers: drywall 3, brick 8,
 concrete 12, reinforced_concrete 18, glass 3, wood 3, metal 25, masonry 8, solid_guess 12), `project.FURNITURE_KINDS`
 (stored numbers: custom 3, bed 1, wood 3, books 5, appliance 8, metal 12 - unchanged, they equal the 5 GHz column),
 `project.MATERIALS` / `FURNITURE_BANDS` / `BAND_FACTOR` (= the `model.*` tables of §7.1a), `BAND_POWER_MIN/MAX` (−10 / 6),
 `project.ROOM_COLORS`, `NODE_MODES`, `NODE_MBPS_MIN/MAX` (10 / 10000), `WAN_RATES`, `CABLE_CATEGORIES`, `MAX_ITEMS` (250), `CONN_TYPES`,
-`FIT_METHODS`, `STEER_MIN/MAX` (−90 / −50), `STEER_DEFAULT` (`{six:-70, five:-72}`), `ROUTER_BANDS_DEFAULT`, `MAX_LINKS` (4).
+`FIT_METHODS`, `STEER_MIN/MAX` (−90 / −50), `STEER_DEFAULT` (`{six:-70, five:-72}`), `ROUTER_BANDS_DEFAULT`, `MAX_LINKS` (4); SPEC 14:
+`MAX_NODES` (8), `NODE_KINDS`, `MAX_FLOORS` (9), `LEVEL_MIN/MAX` (−3 / 20), `CEILING_MATERIALS`, `CEILING_DEFAULT`, `SCALE_METHODS`,
+`SCALE_LIMITS` (§S).
 
 ---
 
@@ -161,7 +359,9 @@ store.live(pr => { pr.net.router = p; }, ['net']);
 const a = E.analysis.run(project, { cell: 8, aa: 1, ctx, offsets, cache: cacheFast, reuse: { trial: buf } });   // ≈ 4–6 ms (real plan)
 // when the pointer rests ≈ 120 ms:  E.analysis.run(project, { cell: 4, ctx, offsets, cache: cacheFull })    // ≈ 15–25 ms, smooth edges
 ```
-`router`, `baseline` and `node.pos` are not part of the context, so keep the same `ctx` while only they move; rebuild it
+`router`, `baseline` and the nodes' positions are not part of the context, so keep the same `ctx` while only they move (the
+nodes' softened fields are cached per position, so dragging the router with 8 nodes on costs about what it costs without
+them; dragging a node recomputes only that node); rebuild it
 (`model.createContext(project)`) after any plan / model / scale edit. With a `cache`, today's field **and today's
 statistics** (`stats.today`, `perRoom.today`) are computed once per baseline; a drag frame only computes the trial
 field and its statistics (exact median / p10 by selection, no sorting), so a view no longer needs its own lean path.
@@ -187,10 +387,13 @@ const r = await E.optimize.find(ctx, grid, {
     band: project.view.band, goalRoom: project.goal.room === 'all' ? null : project.goal.room,
     allowedRoom: project.goal.allowedRoom === 'any' ? null : project.goal.allowedRoom,
     threshold: project.model.threshold, excluded: project.goal.excluded,
-    router: project.net.router, node: E.model.nodeParams(project), offsets: offs,
+    router: project.net.router, nodes: E.model.nodeList(project), offsets: offs,
   }, { onProgress: f => bar.value = f, signal: ac.signal });
 // r.pos (normalized, on the floor, ≥ 0.2 m from walls), r.roomId, r.before.coverage → r.after.coverage, r.after.mean …
 // before/after are the same (softened, aa 2 at cell 4) numbers analysis.run shows for those router positions
+// SPEC 14.3, several floors: one call does it all (the router floor's context, every floor's goal area, the nodes):
+const rb = await E.optimize.findProject(project, { cell: 4, offsets: offs }, { signal: ac.signal });
+// rb.floor = net.routerFloor (the router stays on it), rb.scope 'building'|'floor', rb.perFloor[{id, before, after}]
 ```
 
 ### 2.5 Files
@@ -350,11 +553,11 @@ All points normalized. Returned distances are px.
 | Function | Notes |
 |---|---|
 | `SCHEMA_VERSION` | 3 |
-| `create({template:'demo'|'blank', lang}) → Project` | demo (SPEC 11, the README showcase): a realistic Czech 3+kk, 74 m² + a 3.9 m² balcony, 10.5 × 8.8 m incl. the bay and the balcony, `scale.mpp = 0.0125` (80 px per m). 7 rooms (Obývák s kuchyní / Living & kitchen with a bay, Ložnice / Bedroom, Pracovna / Study, Koupelna / Bathroom, WC, Předsíň / Hall - L-shaped -, Balkon / Balcony), an entrance niche; 22 walls (exterior brick, reinforced concrete / concrete to the building's corridor, a brick load-bearing spine, plasterboard partitions, tiled masonry around bathroom and WC, a glass bay front and balcony railing); 7 doors (an open doorway hall → living room, closed doors, a glass balcony door, a heavy front door); 22 pieces of furniture as real shapes at real sizes (L corner sofa, coffee table, TV unit, dining table with chairs, L kitchen counter, fridge, oven, 160 × 200 bed + 2 nightstands, wardrobe, desk, round office chair, bookcase, sofa bed, bathtub, half-oval washbasin, washing machine, toilet with cistern and oval bowl, shoe cabinet, built-in wardrobe, round balcony table; ≤ 12 corners each). Router = baseline by the shoe cabinet next to the front door, the internet inlet (fibre box) on the other side of the door - markers ≥ 1.3 m apart and clear of the hall label even on a phone: 5 GHz whole flat ≈ 52 % today, ≈ 79 % at the best spot, 2.4 GHz ≈ 93 %. `goal.excluded` = the balcony; the (off) second node waits in the bedroom; `goal.device` "Telefon"/"Phone"; `view.band` `'auto'` with `net.routerBands` 2.4 + 5 GHz (SPEC 13). blank: no rooms, `mpp 0.012`, also `'auto'`. Unknown template ⇒ demo |
-| `defaults(lang?)` | fresh `{scale,net,node,model,goal,measurements,view}` (plan-independent defaults) |
+| `create({template:'demo'|'house2'|'blank', lang}) → Project` | **house2** (SPEC 14.3): the two-storey house of §S.5. demo (SPEC 11, the README showcase): a realistic Czech 3+kk, 74 m² + a 3.9 m² balcony, 10.5 × 8.8 m incl. the bay and the balcony, `scale.mpp = 0.0125` (80 px per m). 7 rooms (Obývák s kuchyní / Living & kitchen with a bay, Ložnice / Bedroom, Pracovna / Study, Koupelna / Bathroom, WC, Předsíň / Hall - L-shaped -, Balkon / Balcony), an entrance niche; 22 walls (exterior brick, reinforced concrete / concrete to the building's corridor, a brick load-bearing spine, plasterboard partitions, tiled masonry around bathroom and WC, a glass bay front and balcony railing); 7 doors (an open doorway hall → living room, closed doors, a glass balcony door, a heavy front door); 22 pieces of furniture as real shapes at real sizes (L corner sofa, coffee table, TV unit, dining table with chairs, L kitchen counter, fridge, oven, 160 × 200 bed + 2 nightstands, wardrobe, desk, round office chair, bookcase, sofa bed, bathtub, half-oval washbasin, washing machine, toilet with cistern and oval bowl, shoe cabinet, built-in wardrobe, round balcony table; ≤ 12 corners each). Router = baseline by the shoe cabinet next to the front door, the internet inlet (fibre box) on the other side of the door - markers ≥ 1.3 m apart and clear of the hall label even on a phone: 5 GHz whole flat ≈ 52 % today, ≈ 79 % at the best spot, 2.4 GHz ≈ 93 %. `goal.excluded` = the balcony; no node yet (`newNode` puts the first one into the bedroom, the farthest counted room); scale verified (`method 'width'`, 10.5 m); `goal.device` "Telefon"/"Phone"; `view.band` `'auto'` with `net.routerBands` 2.4 + 5 GHz (SPEC 13). blank: no rooms, `mpp 0.012` not verified (`'default'`), also `'auto'`. Every template: `floors` (one floor, "Přízemí" / "Ground floor", for demo / blank). Unknown template ⇒ demo |
+| `defaults(lang?)` | fresh `{scale,net,nodes,model,goal,measurements,view}` (plan-independent defaults; `nodes: []`, scale not verified) |
 | `sanitize(raw, {strict=true, lang}) → Project` | accepts: v3 Project, SVG-metadata payload (with/without `project`), legacy `wifi-floor-v2` `{plan,width,router,original,optic}`, bare plan (old demo shape / `USER_PLAN`), old localStorage `{ed, appliedPlan}`, or a JSON **string** of any of these. Clamps everything, snaps markers to the floor, drops unusable measurements, cleans names (control chars, ≤50 code points). Legacy defaults: `mpp = deriveMpp(plan, width∈[6,25] else 12)`, `baseline = original ?? router`, trial = `router`, optic from file or just inside the left edge, band 5. A wall with a preset material and the OLD app's number of that preset (`LEGACY_WALL_MATERIALS`, e.g. brick 8) gets the new table's 5 GHz number (brick 11; SPEC 7.1); `model.bandPower` defaults to zeros. Throws on garbage (see §8). `strict:false` drops bad objects instead of throwing (used for the app's own localStorage) |
 | `sanitizeDetailed(raw, opts) → {project, warnings:string[], svgBackground:string|null}` | `svgBackground` = a legacy `data:image/svg+xml;base64,…` plan background that cannot be kept; **io must rasterize it to PNG** and set `project.plan.background` |
-| `serialize(project, {withBackground=true}) → string` | JSON for `<metadata id="wifi-plan-data">`: `{format:'wifi-floor-v2', plan, width, router, original, optic, app:'wifi-heatmap-architect', v:3, project:{name,scale,net,node,model,goal,measurements,view}}`. The first six keys are what the OLD app reads (`width` is clamped to 6..25; `router`=trial, `original`=baseline). Also the format for localStorage `wifi-heatmap-v3`. Throws `err.plan.polygon` for an invalid outline; everything else is written as `sanitize(project, {strict:false})` (a no-op for a store project), so a half-edited object (NaN point, door whose wall is gone, duplicate id, missing colour) is repaired/dropped instead of producing a file our own loader refuses - **every file we write loads again** |
+| `serialize(project, {withBackground=true}) → string` | JSON for `<metadata id="wifi-plan-data">`: `{format:'wifi-floor-v2', plan, width, router, original, optic, app:'wifi-heatmap-architect', v:3, project:{name,scale,net,node,nodes,model,goal,measurements,view,floors}}` (SPEC 14: `node` = the legacy single node = `nodes[0]` for older builds, `floors` with every other floor's content; `withBackground:false` drops every floor's image). The first six keys are what the OLD app reads (the active floor) (`width` is clamped to 6..25; `router`=trial, `original`=baseline). Also the format for localStorage `wifi-heatmap-v3`. Throws `err.plan.polygon` for an invalid outline; everything else is written as `sanitize(project, {strict:false})` (a no-op for a store project), so a half-edited object (NaN point, door whose wall is gone, duplicate id, missing colour) is repaired/dropped instead of producing a file our own loader refuses - **every file we write loads again** |
 | `buildSvg(project, {lang, markers=true, withBackground=true}) → string` | complete visual SVG 1080×942 (rooms, furniture, walls, doors, labels, router/today/inlet markers, 1 m scale bar) + XML-escaped metadata, both drawn from the same repaired project as `serialize` (no `NaN`/`undefined` anywhere - tested incl. a broken live project and 250-object plans). Round-trips: `parseSvgText(buildSvg(p)).project` deep-equals `sanitize(p)`. Tested against ports of the old loader. ≈ 37 KB for the showcase demo, ≈ 0.7 MB for 250 of everything |
 | `parseSvgText(text) → {project, hasData, svgBackground, warnings}` | DOM-free (regex + entity decoding; handles CDATA, single quotes, numeric entities). `hasData:false` ⇒ ordinary image (`project:null`). Rejects DOCTYPE/ENTITY, > 8 000 000 chars. **Linear time** on hostile input (the metadata block is found with an attribute run that cannot cross the next `<`; the old single regex took 33 s for 800 kB of `<metadata `, 8 MB now ≈ 10 ms). The first `<metadata … id="wifi-plan-data" …>` (attributes ≤ 1000 chars, `id` preceded by white space) wins |
 | `migrateLegacyStorage(getItem, {lang}) → Project|null` | reads `wifi-floor-v5`, `wifi-floor-network-v1`, `wifi-speed-v1`, `wifi-flow-v1`; measurements only if taken at the same "original" (within 2e-6 of the original the old app stored, or of the snapped baseline) and on the floor (old rule); never throws; `null` when there is nothing worth migrating (no plan / empty plan without background) |
@@ -434,6 +637,9 @@ ctx = model.createContext(project, { fit })   // fit: omitted = project.model.fi
 // Cost ≈ 0.2 ms. Does not include router/baseline/node/measurements. Tolerates half-edited objects (missing points, NaN):
 // they are skipped. Without a fit the version is exactly what it was before SPEC 9.
 ```
+
+**SPEC 14 (§S.3):** the node functions below take any number of nodes (`state.nodes`; `node` / `nodeParams` are compat for
+the first one) and sources on other floors; `createContext(project, {floor})`; calibration pools every floor.
 
 Physics (identical to the old app unless noted — see §9), the exact ray model; what the map shows is this with the
 obstacle loss softened (§7.0):
@@ -563,7 +769,7 @@ Grid = raster.grid(ctx, { cell = 4 })      // integer 1..64; always covers the w
 |---|---|
 | `field(ctx, grid, params, reuse?) → Float32Array` | `params = {band, router, node?, offsets?, aa?, soften?}` (= `model.fieldParams(...)` result). `reuse`: your own `Float32Array(cols*rows)` to avoid allocation (returned). **`soften`** (metres, default `model.SOFTEN` = 0.4, 0 = exact rays): diffraction softening, §7.0. **`aa`** (default 1): anti-aliasing factor, must divide `grid.cell` (4 → 2 or 4). Softened (default): `aa:2` re-samples only the cells along a wall (wall steps get anti-aliased; everything else is blurred anyway) — no extra cost. Exact (`soften:0`): `aa:2` re-evaluates the cells on wedge / shadow / wall edges (they differ from a same-room neighbour by > 0.4 dB) as the mean of 2×2 same-room sub-samples, ≈ 1.3–2× the cost of aa 1 (equals exhaustive 2×2 supersampling: mean error 0.0005 dB). Rule of thumb: dragging `{cell:8, aa:1}`, settled `{cell:4, aa:2}`. `targetBand` is accepted as an alias of `band`. Deterministic; a `reuse` buffer's old content does not matter |
 | `nodeWinsOf(field, params) → Uint8Array|null|undefined` | the `nodeWins` `fieldEx` computed for exactly this output array with these source positions (a WeakMap: nothing kept alive; `undefined` when the array was not, or no longer, computed for them - e.g. a reused buffer refilled for another router position). `speed.fieldSpeed` / `homeSummary` use it, so `a.trial` needs nothing extra |
-| `fieldEx(ctx, grid, params, reuse?) → {field, nodeWins:Uint8Array|null}` | `nodeWins[i]=1` where the second node beats the router (hatch it when the uplink is weak). With softening each source is softened separately and `nodeWins` is decided on the softened values (= the colours, = `pointSignalDetail().bestSource`) |
+| `fieldEx(ctx, grid, params, reuse?) → {field, nodeWins:Uint8Array|null}` | `nodeWins[i]` = the **winner index** (SPEC 14.2: 0 = the router, k = `params.nodes[k-1]`; with one node 1 = the node, as before; hatch node cells whose uplink is weak). With softening each source is softened separately and `nodeWins` is decided on the softened values (= the colours, = `pointSignalDetail().bestSource`) |
 | `diff(a, b)` | `a − b` per cell (positive = a stronger); `diff(trial, today)` = improvement |
 | `smooth(grid, field, {passes=1})` | 3×3 blur that never mixes rooms — **display only** (stats should use the raw field). Rarely needed now that fields are softened |
 | `stats(grid, field, roomIds|null, threshold, excluded?) → {coverage, mean, median, p10, n}` | area-weighted (every cell has equal area). `roomIds`: array / single id / `null` = whole flat (all rooms except `excluded`). `coverage` in %, others dBm, `p10` = weak tail (10th percentile), `n` cells. Empty ⇒ `{0,−110,−110,−110,0}`. `median`/`p10` are exact order statistics found by selection (O(n), ≈ 0.1 ms for 13 500 cells — the same values a sort gives) |
@@ -573,8 +779,8 @@ Grid = raster.grid(ctx, { cell = 4 })      // integer 1..64; always covers the w
 | `signalColor(dbm, palette) → [r,g,b]` | for legends; stops are the SPEC §1.8 palettes (`raster.STOPS`) |
 | `contours(ctx, {band, router, node?, offset?, offsets?, threshold, res=[120,104], soften?, smooth=2, grid?, field?}) → Point[][]` | range lines = iso-lines of "signal = threshold" (marching squares). Chains of normalized points; a closed loop repeats its first point at the end. **Traced on the softened field** (the colours): by default on a grid of cell ≈ `1080/res[0]` px (9 px at res 120, 18 px at res 60; `aa 1`) inside the rooms and up to ~2 cells beyond the outlines (clip to the rooms when drawing); with `grid` + `field` (e.g. `a.grid, a.trial`) exactly on that field, nothing recomputed. `soften:0` (or a plan without rooms) = the old exact lattice of (res[0]+1)×(res[1]+1) nodes over the whole canvas. Node counted as in `field`. **Smoothed**: points closer than half a lattice cell to their predecessor are dropped (marching-squares stubs), then `smooth` Chaikin passes (default 2, 0 = raw polylines, max 4) — closed loops stay closed, open chains keep their end points, every point stays within half a lattice cell of the raw line; the sharpest turn of a range line on a real plan drops from ≈ 70° to ≈ 20°. 3 bands at res 120 ≈ 6–13 ms, at res 60 ≈ 1.5–3 ms |
 | `contours(ctx, {…, source:'router'|'node'|'combined'})` | **SPEC 10.3** (per-source range lines): `'combined'` (default) = the stronger of both sources, as before; `'router'` = the router alone (the node ignored); `'node'` = the second node alone - its position stands in for the router, its `power` is added to the band's offset, only the bands it serves (`[]` when there is no node, it is off, or it does not serve the band; in the band mode Auto only the router bands it serves take part). With a given `grid` + `field` the source is ignored (that field is traced as it is). Same tracing / smoothing; deterministic; the options are not mutated |
-| `sourceEdges(grid, nodeWins, {smooth=2}) → Point[][]` | **SPEC 10.3**: the border between the router's zone and the node's zone - smoothed chains like `contours`, traced midway between cells of different winners of a `nodeWins` mask (`fieldEx` / `analysis.run`); chains may run ~2 cells beyond the outlines (clip to the rooms). `[]` without a mask, with a mask of another grid, or when one source wins everywhere. ≈ 1 ms at cell 4 |
-| `sourceShare(grid, nodeWins, roomIds?, excluded?) → {node, router, perRoom:Map<roomId, %>}` | **SPEC 10.3**: the node's / the router's share (%) of the selected floor (`roomIds` as in `stats`; null = whole flat minus `excluded`) and the node's share of EVERY room with floor cells. Without a mask: `node 0, router 100` |
+| `sourceEdges(grid, nodeWins, {smooth=2}) → Point[][]` | **SPEC 10.3 / 14.2**: the borders of every node's zone (between the router and a node, and between two nodes - drawn as the outline of both) - smoothed chains like `contours`, traced midway between cells of different winners of a `nodeWins` mask (`fieldEx` / `analysis.run`); chains may run ~2 cells beyond the outlines (clip to the rooms). `[]` without a mask, with a mask of another grid, or when one source wins everywhere. ≈ 1 ms at cell 4 |
+| `sourceShare(grid, nodeWins, roomIds?, excluded?) → {node, router, perRoom:Map<roomId, %>, bySource:number[], perRoomBySource:Map<roomId, number[]>}` | **SPEC 10.3 / 14.2**: `bySource` = % per source ([router, node 1, …]), `node` = all nodes together. The node's / the router's share (%) of the selected floor (`roomIds` as in `stats`; null = whole flat minus `excluded`) and the node's share of EVERY room with floor cells. Without a mask: `node 0, router 100` |
 | `chaikin(chain, iterations)` | the Chaikin corner cutting used by `contours` (1/4–3/4 points; open chains keep their ends, closed loops stay closed; chains < 3 points untouched) |
 | `blurPlan(ctx, grid)` · `boxRadii(sigmaCells)` | internals of the softening, exported for tests: the cached wall-masked row/column runs (keyed on `ctx.version` + cell) · the 4 decreasing box radii |
 | `cellAreaM2(ctx, grid)` | m² of one cell |
@@ -627,7 +833,7 @@ download **and** upload on every used test, same band and same device (strict de
 
 ### 7.4 `WH.engine.optimize.find(ctx, grid, opts, ctl?) → Promise<Result>`
 
-`opts = {band*, goalRoom|null, allowedRoom|null, threshold, node, offsets, excluded, router, clearance=0.2, aa, soften, speed}`;
+`opts = {band*, goalRoom|null, allowedRoom|null, threshold, nodes (or the legacy node), offsets, excluded, router, clearance=0.2, aa, soften, speed, floors}` (SPEC 14: §S.4 - `floors` = the floors whose places count, `ctx` = the router's floor; `optimize.findProject` = the whole recipe);
 `ctl = {onProgress(0..1), signal: AbortSignal}`. `speed = {curve, targetDown, targetUp, limits, reserve, backhaulCurve?}`
 optimizes the share of the floor that meets both speed targets instead (rejects with `err.opt.noCurve` without a valid
 curve). **With a second node** (stage 7) node-served samples go through `speed.predictVia` with the node's link; a
@@ -659,7 +865,10 @@ the router on.
   stats:{today,trial}, perRoom:{today:Map,trial:Map}, delta:{coverage, mean} /* trial − today */,
   source: Uint8Array|null, sourceEdges: Point[][], sourceShare: {node, router, perRoom}|null /* SPEC 10.3, see below */ }
 ```
-**SPEC 10.3 (a second node on)**: `source` = the winning source of every trial cell (1 = the node, 0 = the router; the
+**SPEC 14 (floors, many nodes)**: `run(project, {floor})` analyses that floor (default the active one; sources on other
+floors come through the ceiling); + `floor`, `nodes` (per node: id, name, index, floor, mode, onFloor, uplink, backhaul,
+weakBackhaul, share of this floor's goal area, link with `opts.curves`) - see §S.4; `analysis.building` = "Celý dům".
+**SPEC 10.3 (a second node on)**: `source` = the winning source of every trial cell (0 = the router, k = node k; the
 same array as `nodeWins`), `sourceEdges` = `raster.sourceEdges(grid, nodeWins)` (the planner's "Zdroj signálu" border;
 `[]` without a node), `sourceShare` = `raster.sourceShare(grid, nodeWins, targetRooms, excluded)` (the Result sentence
 "AP 2 má navrch v místnostech …"; `null` without a node). Deterministic, ≈ 1 ms extra at cell 4 with a node.
@@ -902,6 +1111,11 @@ because it needs an explicit language; they are mirrored into `WH.i18n` as well.
   `STEER_*`, `ROUTER_BANDS_DEFAULT`, `MAX_LINKS`; `WH.devinfo` `Conn.links`, `linksOf`, `LIMITS.MAX_LINKS`.
 * **SPEC 10.3 (+, node layers)**: `contours(…, {source:'router'|'node'|'combined'})`, `raster.sourceEdges/sourceShare`,
   `analysis.run().source/sourceEdges/sourceShare`, `view.sourceZones` (sanitized, serialized, default on; `tests/engine/source.test.mjs`).
+* **SPEC 14 (+, stage 9)**: everything of §S - `scale.verified/method/ref` + the scale helpers; `project.nodes` replaces
+  `project.node` (files keep `node` = `nodes[0]`), uplink chains, the winner index of `nodeWins`, per-source field cache,
+  `contours(…, {source:'node:<id>'})`, `speed.nodeLinks/projectCurves`, `optimize.findProject`, `analysis.building`;
+  `project.floors` + `view.floor` + `net.routerFloor/opticFloor`, the cross-floor physics, per-floor contexts, the pooled
+  calibration, the demo `house2`.
 * Node test runner: `node --test tests/engine` does not work on Node ≥ 21 (a directory is treated as a module). Use `node tests/engine/run-all.mjs` or `node --test "tests/engine/*.test.mjs"`.
 
 ## 10. Performance
@@ -955,7 +1169,42 @@ frame: `analysis.run` drag frame (cell 8, aa 1, cache) 3.9 / 4.2 ms (one band 2.
 16.4 / 18.5 ms (one band 8.6 / 9.4); `contours` Auto res 120 3.8 / 4.2 ms; `bandEdges` 1.3 ms; `optimize.find` Auto 0.33 s
 (one band 0.21 s). A one-band router in Auto costs exactly one field.
 
+**Stage 9 (SPEC 14, Node, best / median)**: a real-size plan (3 × 3 rooms, ~20 walls, ~20 furniture pieces) with 8
+nodes (wired / mesh / repeaters, one chained), band mode Auto (two bands): `analysis.run` drag frame (cell 8, aa 1, cache,
+the router moving) **7.6 ms median** (5.4 ms at one band) - the same as without nodes within noise: every node's softened
+field is cached per position (`raster.fieldEx` Auto with 8 cached nodes 6.1 ms vs 6.0 ms router only), the combine costs
+≈ 0.3 ms, the zone borders (box-limited marching squares per zone) ≈ 0.9 ms, the shares 0.05 ms. The first frame after a
+plan edit computes the nodes once (≈ 100 ms for 8 nodes × 2 bands at cell 8). A source on another floor costs the same as one
+on this floor. `analysis.building` (2 floors, cell 8) ≈ 2 × a run.
+
 ## 11. Tests
+
+Stage 9 (SPEC 14) added `scale.test.mjs` (scale state + migration of older files / the old app's width, refs per method,
+round trips; `planArea` (counted / excluded rooms, largest / smallest); the user story "58 m² drawn as ~100 m²" - type the area,
+uniform scaling, one room's area, two points / one wall / the width; unusable inputs; `setScale` / `confirmScale`;
+`scaleIssues` (unverified, the flat area, rooms, doors to the centimetre, custom limits, excluded rooms, both demos clean,
+two floors: the area sums the floors, issues name the floor)), `nodes.test.mjs` (migration of the single node (on / off),
+building-wide sanitizing (≤ 8, ids, names, unknown / self / cyclic uplinks), JSON + SVG round trips, the legacy `node` for
+older builds; newNode / addNode / removeNode (uplinks taken over) / MAX_NODES; nodeList (switched off, cut-off chains, order),
+the non-enumerable compat `node` and the legacy override; the raster = max of the separate sources cell by cell with the
+winner index (softened and exact), one node = the legacy call bit for bit, the per-source cache, nodeWinsOf; the point model
+= the raster, backhaul from the uplink node, steered winner; per-node contours, zone borders, shares per source; uplink chains
+(× 0.25, upstream caps, wired behind wireless, unknown above), the Speed map through the winner's link, shares in the summary,
+the tooltip's source; analysis.run per-node info, the what-if naming the serving node, everything off; the optimizer with
+nodes, the legacy call, speed mode through chains; 8 nodes on a real-size plan: a drag frame ≤ 2 × the frame without nodes)
+and `floors.test.mjs` (one floor for old files, messy floors (levels, ceilings, the active floor, duplicate ids / measurement
+ids, a plan-less floor strict / non-strict, ≤ 9 floors); add / duplicate / view = switch (and back = identical) / rename /
+ceiling presets / floorGap / reorder with default names / remove (router moves, uplinks reset, never the last) / MAX_FLOORS;
+two-floor JSON + SVG round trips, the OLD app reads the active floor, older builds read its measurements and node; the
+physics (3-D distance, the ceiling per band, the wall upstairs half, the wall downstairs not at all, wood vs concrete, raster
+= point model exact and softened, single-floor context versions unchanged); the upper floor weaker by the ceiling, a node
+upstairs (and one downstairs) restores it, view = switch = run({floor}), what-if upstairs, "Celý dům" pooled; a wireless node's
+uplink through the slab, calibration pooled over floors (+4 dB recovered from both floors), the fit on the router floor and
+its staleness, speed curves from every floor; spots on the upper floor (3-D distance, the ceiling counts as a wall); the
+optimizer with the router floor fixed (building / floor scope); the two-storey demo house in cs / en). The single-node
+tests of stages 7 - 10.3 now set `nodes` (the demo has no node any more: `DEMO_BEDROOM` in `_helpers.mjs` is where it waited).
+`_validate.mjs` checks the whole SPEC 14 shape (floors, nodes, scale, net floors, view.floor). 318 tests, ≈ 15 s.
+
 
 Stage 6 (SPEC 8 / 9) added: `fit.test.mjs` (synthetic ground truth: 25 noisy points recover n / wallFactor / offset on the
 demo and a 3×3-room plan at 5 and 2.4 GHz, noise-free data almost exactly; 4–5 noisy points stay near the defaults, wild

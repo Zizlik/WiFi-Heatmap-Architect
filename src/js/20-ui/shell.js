@@ -373,14 +373,16 @@
   // ===================================================================================================================
   // File menu actions
   // ===================================================================================================================
-  async function menuDemo() {
+  /** File > Ukázkový byt ('demo') / Ukázkový dům se dvěma patry ('house2', SPEC 14.3). */
+  async function menuDemo(template) {
+    const tpl = template === 'house2' ? 'house2' : 'demo';
     if (!(await confirmReplace())) return;
-    const p = makeProject('demo');
+    const p = makeProject(tpl);
     if (!p) return;
     WH.store.replace(p, 'file.demo');
-    WH.bus.emit('project:created', { template: 'demo' });
+    WH.bus.emit('project:created', { template: tpl });
     views.go('planner');
-    ui.toast({ i18n: 'file.demoLoaded' }, { kind: 'ok' });
+    ui.toast({ i18n: tpl === 'house2' ? 'file.demoHouseLoaded' : 'file.demoLoaded' }, { kind: 'ok' });
   }
 
   async function menuNew() {
@@ -435,7 +437,8 @@
       { i18n: 'file.savePlanPng', icon: 'file-image', onClick: () => WH.io && WH.io.exportPlanPng() },
       { i18n: 'file.saveMapPng', icon: 'image', onClick: saveMapPng, hidden: !canMapPng },
       { sep: true },
-      { i18n: 'file.demo', icon: 'home', onClick: menuDemo },
+      { i18n: 'file.demo', icon: 'home', onClick: () => menuDemo('demo') },
+      { i18n: 'file.demoHouse', icon: 'building', onClick: () => menuDemo('house2') },
       { i18n: 'file.new', icon: 'plan', onClick: menuNew },
       { sep: true },
       // the header's theme button is hidden on very narrow phones: the same menu opens from here

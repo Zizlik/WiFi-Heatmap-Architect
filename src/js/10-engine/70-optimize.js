@@ -45,7 +45,11 @@
    *   goalRoom: roomId to optimize for, or null = whole flat (all rooms except `excluded`)
    *   allowedRoom: roomId the router may be placed in, or null = anywhere on the floor
    *   threshold: dBm for "good signal" (default ctx.p.threshold)
-   *   node: second node params (model.nodeParams) or null; offsets: calibration offsets map; excluded: roomIds
+   *   nodes: the nodes (model.nodeList / fieldParams().nodes; SPEC 14.2 - they stay where they are; the legacy single
+   *     `node` still works); offsets: calibration offsets map; excluded: roomIds
+   *   floors (SPEC 14.3): [{ctx, grid, goalRoom, excluded}] = the floors whose places count (area weighted). When given,
+   *     ONLY these count (list the router's floor too if it should); ctx / g are then just the router's floor, where the
+   *     candidates lie (allowedRoom is a room of it). Omitted: the router floor's goalRoom / excluded, as before
    *   router: current router position {x,y} - used for the `before` numbers and as an extra candidate
    *   aa: anti-aliasing of the exact before/after numbers (default 2 for cell <= 4, else 1) - the same default as
    *     analysis.run, so the numbers agree with the ones the UI shows
@@ -85,54 +89,85 @@
 
     const threshold = isNum(o.threshold) ? o.threshold : ctx.p.threshold;
     const speedMode = !!o.speed;
-    const node = bandList.some((b) => model.nodeActive(o.node, b)) ? o.node : null;
+    // every node (SPEC 14.2) stays where it is; only the ones serving a band of the search matter for the signal
+    const allNodes = model.stateNodes(o);
+    const nodes = allNodes.filter((nd) => bandList.some((b) => model.nodeActive(nd, b)));
     // one curve or a curves map (SPEC 13): the curve of each band, else the nearest band's
     const curveB = speedMode ? bandList.map((b) => speed.curveFor(o.speed.curve, b)) : [];
     if (speedMode && !curveB.some(Boolean)) throw fail('err.opt.noCurve');
 
-    // ---- target rooms and allowed rooms ----
-    const known = new Set(g.roomIds);
-    let targetIds = o.goalRoom !== null && o.goalRoom !== undefined && known.has(o.goalRoom) ? [o.goalRoom] : g.roomIds.filter((id) => !(o.excluded || []).includes(id));
-    if (!targetIds.length) targetIds = g.roomIds.slice();
-    const allowed = o.allowedRoom !== null && o.allowedRoom !== undefined && known.has(o.allowedRoom) ? o.allowedRoom : 0;
+    // ---- the floors whose places count (SPEC 14.3): opts.floors, else the router's floor ----
+    // the router is placed on ctx's floor; a place on another floor sees it through the ceiling
+    const routerFloor = ctx0.floor === undefined ? null : ctx0.floor;
+    const given = Array.isArray(o.floors) ? o.floors.filter((f) => f && f.ctx && f.grid && f.grid.count && f.grid.roomCells) : [];
+    const floors = (given.length ? given : [{ ctx: ctx0, grid: g, goalRoom: o.goalRoom, excluded: o.excluded }]).map((f) => {
+      const fctx = f.ctx;
+      const V = fctx === ctx0 || fctx.floor === routerFloor ? null : model.vertOf(fctx, routerFloor);
+      const known = new Set(f.grid.roomIds);
+      const ex = Array.isArray(f.excluded) ? f.excluded : [];
+      let ids = f.goalRoom !== null && f.goalRoom !== undefined && known.has(f.goalRoom) ? [f.goalRoom] : f.grid.roomIds.filter((id) => !ex.includes(id));
+      if (!ids.length) ids = f.grid.roomIds.slice();
+      return {
+        ctx: fctx,
+        grid: f.grid,
+        ctxB: bandList.map((b) => model.forBand(fctx, b)),
+        V,
+        dz2: V ? V.dz2 : 0,
+        wallW: V ? V.wallW : 1,
+        ceilB: bandList.map((b) => (V ? V.ceil[model.bandIndex(b)] * fctx.wf : 0)),
+        targetIds: ids,
+      };
+    });
+    const allowedKnown = new Set(g.roomIds);
+    const allowed = o.allowedRoom !== null && o.allowedRoom !== undefined && allowedKnown.has(o.allowedRoom) ? o.allowedRoom : 0;
 
-    // ---- regular sub-sample of every target room ----
-    const cells = targetIds.map((id) => g.roomCells.get(id));
-    const totalCells = cells.reduce((s, a) => s + a.length, 0);
-    const kBase = Math.max(1, Math.ceil(Math.sqrt(totalCells / MAX_SAMPLES)));
+    // ---- regular sub-sample of every target room (of every floor) ----
+    let totalCells = 0;
+    for (const fl of floors) for (const id of fl.targetIds) totalCells += fl.grid.roomCells.get(id).length;
+    const nGroups = floors.reduce((s, fl) => s + fl.targetIds.length, 0);
+    const kBaseOf = (fl) => Math.max(1, Math.ceil(Math.sqrt(totalCells / MAX_SAMPLES)));
     // every room keeps a minimum of samples, but never so many that the total explodes (250 rooms x 24 = 6000 samples
     // made a 250-object plan take 40 s); flats with up to ~100 rooms keep the full 24
-    const minPerRoom = clamp(Math.floor((2 * MAX_SAMPLES) / targetIds.length), 4, MIN_PER_ROOM);
+    const minPerRoom = clamp(Math.floor((2 * MAX_SAMPLES) / nGroups), 4, MIN_PER_ROOM);
     const sx = [];
     const sy = [];
+    const sf = []; // the floor (index into floors) of every sample
     const groupStart = [0];
     const groupWeight = [];
-    targetIds.forEach((id, gi) => {
-      const list = cells[gi];
-      let picked = [];
-      for (let k = kBase; k >= 1; k--) {
-        const off = k >> 1;
-        picked = [];
-        for (let m = 0; m < list.length; m++) {
-          const i = list[m];
-          const r = (i / g.cols) | 0;
-          const col = i - r * g.cols;
-          if (col % k === off % k && r % k === off % k) picked.push(i);
+    const groupRef = []; // [floor index, room id]
+    floors.forEach((fl, fi) => {
+      const gg = fl.grid;
+      const kBase = kBaseOf(fl);
+      for (const id of fl.targetIds) {
+        const list = gg.roomCells.get(id);
+        let picked = [];
+        for (let k = kBase; k >= 1; k--) {
+          const off = k >> 1;
+          picked = [];
+          for (let m = 0; m < list.length; m++) {
+            const i = list[m];
+            const r = (i / gg.cols) | 0;
+            const col = i - r * gg.cols;
+            if (col % k === off % k && r % k === off % k) picked.push(i);
+          }
+          if (picked.length >= Math.min(list.length, minPerRoom)) break;
         }
-        if (picked.length >= Math.min(list.length, minPerRoom)) break;
+        if (!picked.length) picked = [list[0]];
+        for (const i of picked) {
+          const r = (i / gg.cols) | 0;
+          sx.push(gg.colPx[i - r * gg.cols]);
+          sy.push(gg.rowPx[r]);
+          sf.push(fi);
+        }
+        groupStart.push(sx.length);
+        groupWeight.push(list.length / totalCells);
+        groupRef.push([fi, id]);
       }
-      if (!picked.length) picked = [list[0]];
-      for (const i of picked) {
-        const r = (i / g.cols) | 0;
-        sx.push(g.colPx[i - r * g.cols]);
-        sy.push(g.rowPx[r]);
-      }
-      groupStart.push(sx.length);
-      groupWeight.push(list.length / totalCells);
     });
     const nS = sx.length;
     const SX = Float64Array.from(sx);
     const SY = Float64Array.from(sy);
+    const SF = Int32Array.from(sf);
 
     // ---- per-sample precomputation (per band) ----
     const nB = bandList.length;
@@ -141,16 +176,35 @@
     const idxB = bandList.map((b) => model.bandIndex(b));
     const kk = 10 * ctx.p.n;
     const mpp = ctx.mpp;
-    const nodeSigB = bandList.map((b, q) => {
-      const ns = new Float64Array(nS).fill(-Infinity);
-      if (!node || !model.nodeActive(node, b)) return ns;
-      const nxp = node.pos.x * W;
-      const nyp = node.pos.y * H;
-      for (let j = 0; j < nS; j++) {
-        const dm = Math.hypot(SX[j] - nxp, SY[j] - nyp) * mpp;
-        ns[j] = clamp(baseB[q] - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(ctxB[q], nxp, nyp, SX[j], SY[j]) + offB[q] + (node.power || 0), -110, -20);
+    /** Exact signal of a source at px (x, y) on floor `fromFloor` at sample j, band q (clamped). */
+    const sigAt = (q, x, y, fromFloor, off, j) => {
+      const fl = floors[SF[j]];
+      const fc = fl.ctxB[q];
+      const V = fromFloor === routerFloor ? fl.V : model.vertOf(fc, fromFloor);
+      let dm = Math.hypot(SX[j] - x, SY[j] - y) * mpp;
+      let L = model.traceLoss(fc, x, y, SX[j], SY[j]);
+      if (V) {
+        dm = Math.sqrt(dm * dm + V.dz2);
+        L = V.wallW * L + V.ceil[idxB[q]] * fc.wf;
       }
-      return ns;
+      return clamp(baseB[q] - kk * Math.log10(dm < 1 ? 1 : dm) - L + off, -110, -20);
+    };
+    // the strongest node per sample and band, and which one (index into allNodes + 1)
+    const nodeSigB = bandList.map(() => new Float64Array(nS).fill(-Infinity));
+    const nodeWinB = bandList.map(() => new Uint8Array(nS));
+    bandList.forEach((b, q) => {
+      for (const nd of nodes) {
+        if (!model.nodeActive(nd, b)) continue;
+        const k = allNodes.indexOf(nd) + 1;
+        const nf = nd.pos.floor === undefined ? null : nd.pos.floor;
+        for (let j = 0; j < nS; j++) {
+          const v = sigAt(q, nd.pos.x * W, nd.pos.y * H, nf === null ? routerFloor : nf, offB[q] + (nd.power || 0), j);
+          if (v > nodeSigB[q][j]) {
+            nodeSigB[q][j] = v;
+            nodeWinB[q][j] = k;
+          }
+        }
+      }
     });
     const per = new Float64Array(3);
     const viaB = new Uint8Array(3);
@@ -158,54 +212,87 @@
     let speedLim = null;
     let tDown = 1;
     let tUp = 1;
-    // speed through the second node: its wireless uplink (router -> node on the backhaul band, exact rays like the
-    // rest of the search) changes with every candidate router position
-    let linkAt = null;
+    // speed through the nodes (SPEC 10 / 14.2): their uplink chains (exact rays like the rest of the search) change with
+    // every candidate router position
+    let linksAt = null;
     if (speedMode) {
       speedLim = speed.toLimits({ ...o.speed.limits, reserve: o.speed.reserve !== undefined ? o.speed.reserve : o.speed.limits && o.speed.limits.reserve });
       tDown = o.speed.targetDown;
       tUp = o.speed.targetUp;
-      if (node) {
-        const bb = units.normBand(node.backhaulBand) || 5;
-        // the client curve stands in for the uplink when there is no backhaul curve; a curves map gives its backhaul band's
-        const pickB = speed.validCurve(o.speed.curve) ? null : speed.curveFor(o.speed.curve, bb);
-        const curveS = speed.validCurve(o.speed.curve) ? o.speed.curve : pickB ? pickB.curve : null;
+      if (nodes.length) {
+        const curveOf = (nd) => {
+          if (speed.validCurve(o.speed.curve)) return o.speed.curve;
+          const pick = speed.curveFor(o.speed.curve, units.normBand(nd.backhaulBand) || 5);
+          return pick ? pick.curve : null;
+        };
         const bCurve = o.speed.backhaulCurve;
-        if (model.isWirelessNode(node)) {
-          const bhCtx = model.forBand(ctx0, bb);
-          const bhBase = model.bandBase(bhCtx, bb);
-          const bhOff = model.offsetFor(o.offsets, bb);
-          const nxp = node.pos.x * W;
-          const nyp = node.pos.y * H;
-          linkAt = (x, y) => {
-            const dm = Math.hypot(nxp - x, nyp - y) * mpp;
-            const sig = clamp(bhBase - kk * Math.log10(dm < 1 ? 1 : dm) - model.traceLoss(bhCtx, x, y, nxp, nyp) + bhOff, -110, -20);
-            return speed.linkFromSignal(node, sig, curveS, bCurve);
+        // the backhaul of a node whose uplink is another node does not depend on the router: traced once
+        const fixed = allNodes.map((nd, k) => {
+          if (!model.isWirelessNode(nd)) return null;
+          const ui = model.uplinkIndexOf(allNodes, nd);
+          if (ui < 0) return undefined; // from the router: per candidate
+          const v = model.backhaulSignal(ctx0, { router: o.router || { x: 0.5, y: 0.5 }, nodes: allNodes, offsets: o.offsets, soften: 0 }, k);
+          return isNum(v) ? v : null;
+        });
+        const bhAt = (nd, x, y) => {
+          const bb = units.normBand(nd.backhaulBand) || 5;
+          const nf = nd.pos.floor === undefined || nd.pos.floor === null ? routerFloor : nd.pos.floor;
+          const nctx = model.forBand(nf === routerFloor ? ctx0 : model.floorContext(ctx0, nf), bb);
+          const V = model.vertOf(nctx, routerFloor);
+          const nxp = nd.pos.x * W;
+          const nyp = nd.pos.y * H;
+          let dm = Math.hypot(nxp - x, nyp - y) * mpp;
+          let L = model.traceLoss(nctx, x, y, nxp, nyp);
+          if (V) {
+            dm = Math.sqrt(dm * dm + V.dz2);
+            L = V.wallW * L + V.ceil[model.bandIndex(bb)] * nctx.wf;
+          }
+          return clamp(model.bandBase(nctx, bb) - kk * Math.log10(dm < 1 ? 1 : dm) - L + model.offsetFor(o.offsets, bb), -110, -20);
+        };
+        linksAt = (x, y) => {
+          const out = new Array(allNodes.length).fill(null);
+          const busy = new Set();
+          const linkOf = (k) => {
+            if (out[k]) return out[k];
+            const nd = allNodes[k];
+            const ui = model.uplinkIndexOf(allNodes, nd);
+            let up = null;
+            if (ui >= 0 && !busy.has(k)) {
+              busy.add(k);
+              up = linkOf(ui);
+              busy.delete(k);
+            }
+            const sig = !model.isWirelessNode(nd) ? null : fixed[k] === undefined ? bhAt(nd, x, y) : fixed[k];
+            out[k] = speed.linkFromSignal(nd, sig, curveOf(nd), bCurve, up);
+            return out[k];
           };
-        } else {
-          const fixed = speed.linkFromSignal(node, null, curveS, bCurve);
-          linkAt = () => fixed;
-        }
+          for (let k = 0; k < allNodes.length; k++) linkOf(k);
+          return out;
+        };
       }
     }
 
-    /** Score of a router at px position (x,y) over the samples. Allocation free apart from a typed-array sort. */
+    /** Score of a router at px position (x,y) on the router floor over the samples. Allocation free apart from a typed-array sort. */
     function score(x, y) {
       let total = 0;
-      const link = linkAt ? linkAt(x, y) : null;
+      const links = linksAt ? linksAt(x, y) : null;
       for (let gi = 0; gi < groupWeight.length; gi++) {
         const a = groupStart[gi];
         const b = groupStart[gi + 1];
         const cnt = b - a;
+        const fl = floors[groupRef[gi][0]];
         let good = 0;
         let sum = 0;
         for (let j = a; j < b; j++) {
-          const dm = Math.hypot(SX[j] - x, SY[j] - y) * mpp;
+          let dm = Math.hypot(SX[j] - x, SY[j] - y) * mpp;
+          if (fl.V) dm = Math.sqrt(dm * dm + fl.dz2);
           const fs = Math.log10(dm < 1 ? 1 : dm);
           let q = 0;
           per.fill(NaN);
           for (let t = 0; t < nB; t++) {
-            let st = baseB[t] - kk * fs - model.traceLoss(ctxB[t], x, y, SX[j], SY[j]) + offB[t];
+            let L = model.traceLoss(fl.ctxB[t], x, y, SX[j], SY[j]);
+            if (fl.V) L = fl.wallW * L + fl.ceilB[t];
+            let st = baseB[t] - kk * fs - L + offB[t];
             st = st < -110 ? -110 : st > -20 ? -20 : st;
             viaB[idxB[t]] = nodeSigB[t][j] > st ? 1 : 0;
             per[idxB[t]] = viaB[idxB[t]] ? nodeSigB[t][j] : st;
@@ -219,7 +306,8 @@
           const viaNode = viaB[idxB[q]] === 1;
           if (speedMode) {
             const cf = curveB[q];
-            const p = cf ? speed.predictVia(cf.curve, s, speedLim, viaNode ? link : null) : null;
+            const link = viaNode && links ? links[nodeWinB[q][j] - 1] : null;
+            const p = cf ? speed.predictVia(cf.curve, s, speedLim, link) : null;
             vals[j - a] = p ? Math.min(p.down / tDown, p.up / tUp) : 0;
           } else {
             vals[j - a] = s;
@@ -239,7 +327,7 @@
       return total;
     }
 
-    // ---- candidate lattice ----
+    // ---- candidate lattice (on the router's floor) ----
     const stepPx = Math.max(8, 0.5 / mpp);
     let minX = Infinity;
     let minY = Infinity;
@@ -366,25 +454,37 @@
       }
       if (c.signal && c.signal.aborted) throw abortError();
 
-      // ---- exact before / after on the full grid (the field the map shows: softened unless soften is 0) ----
+      // ---- exact before / after on the full grids (the fields the map shows: softened unless soften is 0) ----
       const aaF = o.aa !== undefined ? o.aa : g.cell <= 4 ? 2 : 1;
       const norm = (x, y) => ({ x: Number((x / W).toFixed(6)), y: Number((y / H).toFixed(6)) });
-      const fieldAt = (router) =>
-        raster.field(ctx0, g, auto ? { band: 'auto', bands: bandList, steer, router, node, offsets: o.offsets, aa: aaF, soften: o.soften } : { band, router, node, offsets: o.offsets, aa: aaF, soften: o.soften });
-      const summary = (f) => {
-        const st = raster.stats(g, f, targetIds, threshold);
+      const withFloor = (p) => (routerFloor === null ? p : { x: p.x, y: p.y, floor: routerFloor });
+      const fieldsAt = (router) =>
+        floors.map((fl) =>
+          raster.field(
+            fl.ctx,
+            fl.grid,
+            auto
+              ? { band: 'auto', bands: bandList, steer, router: withFloor(router), nodes, offsets: o.offsets, aa: aaF, soften: o.soften }
+              : { band, router: withFloor(router), nodes, offsets: o.offsets, aa: aaF, soften: o.soften },
+          ),
+        );
+      const summary = (fs) => {
+        const st = raster.statsMany(
+          floors.map((fl, fi) => ({ grid: fl.grid, field: fs[fi], roomIds: fl.targetIds })),
+          threshold,
+        );
         return { coverage: st.coverage, mean: st.mean, median: st.median, p10: st.p10 };
       };
       let pos = norm(best.x, best.y);
-      let afterField = null;
+      let afterFields = null;
       if (!speedMode && model.softenOf(o.soften) > 0) {
         // The search ranks with the exact rays on a sub-sample (fast); the numbers the user sees come from the
         // softened full grid. Rank the refined finalists (and the current position, when it is an allowed answer) by
         // the same score on the softened full grid, so the result is never worse than staying put in the UI's numbers.
-        const fullScore = (f) => {
+        const fullScore = (fs) => {
           let total = 0;
-          targetIds.forEach((id, gi) => {
-            const st = raster.stats(g, f, [id], threshold);
+          groupRef.forEach(([fi, id], gi) => {
+            const st = raster.stats(floors[fi].grid, fs[fi], [id], threshold);
             total += groupWeight[gi] * (st.coverage + 0.2 * (st.mean + 100) + 0.2 * (st.p10 + 100));
           });
           return total;
@@ -398,28 +498,94 @@
           const key = `${p.x}:${p.y}`;
           if (done1.has(key)) continue;
           done1.add(key);
-          const f = fieldAt(p);
-          const fs = fullScore(f);
-          if (!top1 || fs > top1.fs + 1e-9) top1 = { p, f, fs, it };
+          const fs = fieldsAt(p);
+          const sc = fullScore(fs);
+          if (!top1 || sc > top1.fs + 1e-9) top1 = { p, f: fs, fs: sc, it };
           await tick();
         }
         if (top1) {
           pos = top1.p;
-          afterField = top1.f;
+          afterFields = top1.f;
           best = { s: top1.it.s === -Infinity ? score(top1.it.x, top1.it.y) : top1.it.s, x: top1.it.x, y: top1.it.y };
         }
       }
       if (c.signal && c.signal.aborted) throw abortError();
-      const after = summary(afterField || fieldAt(pos));
+      const after = summary(afterFields || fieldsAt(pos));
       const samePlace = hasRouter && pos.x === o.router.x && pos.y === o.router.y;
-      const before = hasRouter ? (samePlace ? { ...after } : summary(fieldAt(o.router))) : null;
+      const before = hasRouter ? (samePlace ? { ...after } : summary(fieldsAt(o.router))) : null;
       const scoreBefore = hasRouter ? score(o.router.x * W, o.router.y * H) : null;
       if (c.onProgress) c.onProgress(1);
-      return { pos, roomId: roomAtPx(ctx, best.x, best.y), score: best.s, scoreBefore, before, after, candidates: cand.length };
+      return { pos, roomId: roomAtPx(ctx, best.x, best.y), floor: routerFloor, score: best.s, scoreBefore, before, after, candidates: cand.length };
     } finally {
       yielder.close();
     }
   }
 
-  E.optimize = { find, roomAtPx };
+  /**
+   * "Find the best place" for a whole project in one call (SPEC 14.3): the router stays on net.routerFloor (only its
+   * position there is searched), the nodes stay where they are, the places that count are
+   *   scope 'floor' (default while goal.room is a room): the ACTIVE floor's goal room / whole floor minus its excluded rooms,
+   *   scope 'building' (default otherwise when there are several floors): every floor minus its excluded rooms.
+   * @param {object} project
+   * @param {{cell?:number, band?:number|'auto', scope?:'floor'|'building', offsets?:object, soften?:number,
+   *          clearance?:number, speed?:object, aa?:number}} [opts] cell default 4; band default view.band; offsets
+   *          default model.offsets (the planner should pass its own); speed as find()
+   * @param {{onProgress?:Function, signal?:AbortSignal}} [ctl]
+   * @returns {Promise<object>} find()'s result + perFloor: [{id, before, after}] (the counted places of each floor)
+   */
+  async function findProject(project, opts, ctl) {
+    const o = opts || {};
+    const PJ = E.project;
+    const cell = isNum(o.cell) ? o.cell : 4;
+    const rf = project.net && typeof project.net.routerFloor === 'string' ? project.net.routerFloor : null;
+    const act = PJ.activeFloorId(project);
+    const ctxActive = model.createContext(project);
+    const ctxR = rf !== null && rf !== act ? model.floorContext(ctxActive, rf) : ctxActive;
+    const gR = raster.grid(ctxR, { cell });
+    const offsets = o.offsets || model.offsets(ctxActive, project, { soften: o.soften });
+    const band = units.normBandMode(o.band) || units.normBandMode(project.view && project.view.band) || 5;
+    const st = model.fieldParams(project, 'trial', { band, offsets });
+    const floorIds = Array.isArray(project.floors) && project.floors.length ? project.floors.map((f) => f.id) : [null];
+    const scope = o.scope === 'floor' || o.scope === 'building' ? o.scope : floorIds.length > 1 && project.goal.room === 'all' ? 'building' : 'floor';
+    const ids = scope === 'building' ? floorIds : [act];
+    const floors = ids.map((id) => {
+      const fctx = id === null || id === act ? ctxActive : model.floorContext(ctxActive, id);
+      const F = id === null ? { goal: { room: project.goal.room, excluded: project.goal.excluded } } : PJ.floorOf(project, id);
+      return { id, ctx: fctx, grid: raster.grid(fctx, { cell }), goalRoom: scope === 'floor' && F.goal.room !== 'all' ? F.goal.room : null, excluded: F.goal.excluded };
+    });
+    const usable = floors.filter((f) => f.grid.count);
+    const res = await find(
+      ctxR,
+      gR,
+      {
+        band,
+        bands: st.bands,
+        steer: st.steer,
+        threshold: project.model.threshold,
+        allowedRoom: project.goal.allowedRoom === 'any' ? null : project.goal.allowedRoom,
+        router: project.net.router,
+        nodes: st.nodes,
+        offsets,
+        soften: o.soften,
+        clearance: o.clearance,
+        aa: o.aa,
+        speed: o.speed,
+        floors: usable.map((f) => ({ ctx: f.ctx, grid: f.grid, goalRoom: f.goalRoom, excluded: f.excluded })),
+      },
+      ctl,
+    );
+    // the counted places of each floor, before / after
+    const perFloor = usable.map((f) => {
+      const tid = f.goalRoom !== null ? [f.goalRoom] : null;
+      const at = (router) => {
+        const fld = raster.field(f.ctx, f.grid, { ...st, router: rf === null ? { ...router } : { x: router.x, y: router.y, floor: rf }, aa: f.grid.cell <= 4 ? 2 : 1, soften: o.soften });
+        const s = raster.stats(f.grid, fld, tid, project.model.threshold, f.excluded);
+        return { coverage: s.coverage, mean: s.mean, median: s.median, p10: s.p10 };
+      };
+      return { id: f.id, before: at(project.net.router), after: at(res.pos) };
+    });
+    return { ...res, perFloor, scope };
+  }
+
+  E.optimize = { find, findProject, roomAtPx };
 })();

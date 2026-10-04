@@ -98,6 +98,10 @@
 .pl-dash--node { box-shadow: 0 0 0 2px var(--pl-node-halo); border-radius: 1px; }
 .pl-sw--src { margin-right: 4px; border: 1px solid var(--pl-node); background: repeating-linear-gradient(135deg, var(--pl-node) 0 1.2px, transparent 1.2px 4px); }
 .pl-tip__src .pl-sw { width: 9px; height: 9px; }
+/* a long "Silnější zdroj: AP 2 (−42 dBm) · Opakovač 4 (−58 dBm)" wraps next to its swatch, never under it */
+.pl-tip > .pl-tip__src { flex-wrap: nowrap; align-items: flex-start; }
+.pl-tip__src > .pl-sw { flex: none; margin-top: .42em; }
+.pl-tip__src > span { flex: 1 1 auto; min-width: 0; }
 
 /* markers (DOM over the canvas; the 44 px box is centred on the anchor point) */
 .pl-mk {
@@ -647,3 +651,133 @@ body.pl-has-sheet #toast-root { top: var(--pl-toast-top, calc(var(--header-h, 56
 .pl-zone__sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
 /* Advanced: the router's bands */
 .pl-rbands { --gap: 4px 14px; }
+
+/* ---- stage 9 (SPEC 14): verified scale, any number of nodes, floors ----------------------------------------------- */
+/* SPEC 14.1: the header estimate badge while the Wi-Fi view shows an unverified scale (19-scale.js): a stronger amber,
+   the words open the editor's scale card; the plain "Orientační odhad" text and its info icon step aside */
+.badge--estimate.pl-scaleb { padding-left: 4px; box-shadow: inset 0 0 0 1px var(--warn); }
+.badge--estimate.pl-scaleb > .badge__text, .badge--estimate.pl-scaleb > .icon:first-child { display: none; }
+.pl-scaleb__go {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin: 0; padding: 0 4px 0 6px;
+  border: 0; border-radius: var(--r-pill); background: transparent; color: inherit;
+  font: inherit; font-weight: 700; white-space: nowrap; cursor: pointer;
+}
+.pl-scaleb__go:hover { background: color-mix(in srgb, var(--warn) 18%, transparent); }
+.pl-scaleb__go:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.pl-scaleb__go > .icon { flex: none; }
+.pl-scaleb__short { display: none; }
+@media (max-width: 1099px) { .pl-scaleb__long { display: none; } .pl-scaleb__short { display: inline; } }
+/* phones: the ruler alone (the button keeps its aria-label, the "?" next to it explains) - with the word the header
+   overflowed the 390 px screen by ~65 px and the whole page zoomed out */
+@media (max-width: 720px) { .pl-scaleb__go > .icon:last-child { display: none; } }
+@media (max-width: 560px) {
+  .pl-scaleb__short { display: none !important; }
+  .pl-scaleb__go { padding: 0 4px; }
+  .badge--estimate.pl-scaleb { padding: 0 2px; }
+  .badge--estimate.pl-scaleb > .hint { display: none; }
+}
+.pl-scalenote { padding: 8px 10px; }
+.pl-scalerow { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 10px; }
+.pl-scalerow[hidden] { display: none; }
+.pl-scalerow__state { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: 650; }
+.pl-scalerow__state.is-ok { color: var(--ok-ink); }
+.pl-scalerow__state.is-warn { color: var(--warn-ink); }
+.pl-area { margin-top: 4px; }
+
+/* SPEC 14.3: the floor switch at the left edge of the stage - the top floor on top, like the buttons of a lift */
+.pl-floorslot[hidden] { display: none; }
+.pl-floorbar { align-items: stretch; }
+.pl-floorbar > .hint { align-self: center; margin: 2px 0 0; }
+.pl-floors.seg { flex-direction: column; align-items: stretch; }
+.pl-floors .seg__item { justify-content: flex-start; min-width: 44px; max-width: 168px; min-height: 34px; padding: 0 12px; }
+.pl-floors .pl-fl__long { overflow: hidden; text-overflow: ellipsis; }
+.pl-floors .pl-fl__short { display: none; font-variant-numeric: tabular-nums; }
+@media (pointer: coarse) { .pl-floors .seg__item { min-height: 44px; } }
+@container (max-width: 640px) {
+  .pl-floors .seg__item { justify-content: center; max-width: none; padding: 0 6px; }
+  .pl-floors .pl-fl__long { display: none; }
+  .pl-floors .pl-fl__short { display: inline; }
+}
+.pl-stage.is-mm > .pl-floorslot { display: none; }
+
+/* SPEC 14.2: every node has its marker; switched off = faded, selected = ringed (its settings are open) */
+.pl-mk--node.is-off .pl-mk__dot, .pl-mk--node.is-off .pl-mk__tag { opacity: .45; }
+.pl-mk--node.is-off .pl-mk__dot { border-style: dashed; }
+.pl-mk--node.is-sel .pl-mk__dot { box-shadow: 0 0 0 3px var(--pl-node-halo), var(--shadow-2); }
+.pl-mk--node.is-pulse .pl-mk__dot { animation: pl-pulse 1s var(--ease) 2; }
+@media (prefers-reduced-motion: reduce) { .pl-mk--node.is-pulse .pl-mk__dot { animation: none; box-shadow: 0 0 0 4px var(--focus); } }
+.pl-link.is-far { opacity: .6; }
+/* SPEC 14.3: a source on another floor - a faded dashed ghost with "na jiném patře" below (a click goes there) */
+.pl-mk--far { z-index: 1; cursor: pointer; }
+.pl-mk--far .pl-mk__dot {
+  width: 26px; height: 26px; border: 2px dashed var(--pl-node); background: var(--glass); color: var(--pl-node);
+  box-shadow: none; opacity: .8; font-size: 12px;
+}
+.pl-mk--far.is-router .pl-mk__dot { border-color: var(--danger); color: var(--danger); }
+.pl-mk--far .pl-mk__label { top: calc(50% + 15px); font-size: 10.5px; font-weight: 650; color: var(--ink-2); opacity: .9; }
+.pl-mk--far:hover .pl-mk__dot, .pl-mk--far:focus-visible .pl-mk__dot { opacity: 1; }
+.pl-mk--far:focus-visible .pl-mk__dot { box-shadow: 0 0 0 3px var(--focus); }
+.pl-stage.is-mm .pl-mk--far { pointer-events: none; }
+
+/* the node list ("Další přístupové body") */
+.pl-nlist { display: flex; flex-direction: column; gap: 6px; }
+.pl-nlist:empty { display: none; }
+.pl-nempty[hidden] { display: none; }
+.pl-nrow { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.pl-nrow.is-sel { border-color: var(--accent-line); box-shadow: var(--shadow-1); }
+.pl-nrow__head { display: flex; align-items: center; gap: 4px; padding: 4px; }
+.pl-nrow__main {
+  display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 4px 6px;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.pl-nrow__main:hover { background: var(--surface-3); }
+.pl-nrow__main:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
+.pl-nrow__ico { display: grid; place-items: center; flex: none; width: 30px; height: 30px; border-radius: 50%; background: var(--pl-node); color: var(--pl-node-ink); }
+.pl-nrow.is-off .pl-nrow__ico { opacity: .45; }
+.pl-nrow__txt { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.pl-nrow__name { font-size: var(--fs-sm); font-weight: 700; line-height: 1.35; }
+.pl-nrow__sub { color: var(--muted); font-size: var(--fs-xs); line-height: 1.4; }
+.pl-nrow__sub.is-weak > span:first-child { color: var(--warn-ink); }
+.pl-nrow__warn { color: var(--warn-ink); font-weight: 600; }
+.pl-nrow__chev { display: grid; place-items: center; flex: none; color: var(--muted); transition: transform var(--t-fast) var(--ease); }
+.pl-nrow.is-sel .pl-nrow__chev { transform: rotate(180deg); }
+.pl-nrow__sw { flex: none; min-height: 44px; padding: 0 4px; }
+.pl-nrow__body { padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+.pl-nrow__body[hidden] { display: none; }
+.pl-nrow__body > * + * { margin-top: 10px; }
+.pl-nrow__body .input { width: 100%; }
+.pl-nrow__foot { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .pl-nrow__chev { transition: none; } }
+.pl-wi__via { display: inline-flex; align-items: center; gap: 3px; color: var(--pl-node); font-weight: 650; }
+
+/* the Result card: the whole house (SPEC 14.3) */
+.pl-house { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pl-house[hidden] { display: none; }
+.pl-house__total { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.pl-house__lbl { color: var(--ink-2); font-size: var(--fs-sm); font-weight: 650; }
+.pl-house__old { color: var(--muted); font-weight: 700; }
+.pl-house__arrow { display: grid; place-items: center; color: var(--muted); }
+.pl-house__v { font-size: var(--fs-xl); font-weight: 800; line-height: 1; }
+.pl-house__floors { display: flex; flex-direction: column; gap: 1px; }
+.pl-house__floor { display: grid; grid-template-columns: minmax(0, 1fr) 64px 46px; align-items: center; gap: 8px; min-height: 32px; padding: 3px 6px; font-size: var(--fs-sm); }
+.pl-house__floor .num { text-align: right; white-space: nowrap; }
+.pl-house__name { font-weight: 600; }
+.pl-house__floor[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent-line); }
+.pl-rfloor[hidden] { display: none; }
+
+/* Advanced: floors and ceilings */
+.pl-ceil[hidden] { display: none; }
+.pl-ceil__slab { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface-2); }
+.pl-ceil__t { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); font-weight: 700; }
+.pl-ceil__t > .icon { color: var(--muted); flex: none; }
+
+/* measuring mode (phones): the floor pill at the start of the hint bar (a home with floors) */
+.pl-mm__floor { flex: none; max-width: 44%; min-height: 36px; border-radius: var(--r-pill); }
+.pl-mm__floor .btn__label { overflow: hidden; text-overflow: ellipsis; }
+.pl-mm__floor[hidden] { display: none; }
+.pl-mmbar--hint:has(> .pl-mm__floor:not([hidden])) > .pl-mm__ico { display: none; }
+.pl-mm__tap { display: inline-flex; align-items: center; gap: 10px; min-width: 0; }
+.pl-wi__by { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: var(--fs-xs); color: var(--ink-2); }
+.pl-wi__by[hidden] { display: none; }
+.pl-wi__src { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
+.pl-wi__src > .icon { color: var(--pl-node); flex: none; }

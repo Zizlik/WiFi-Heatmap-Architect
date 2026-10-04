@@ -196,7 +196,7 @@ test('fieldParams / steeredSignal / pointSignalDetail in the band mode Auto', ()
 test('raster: the Auto field is, cell by cell, the field of the band the rule picks; bands, shares, zones, edges, contours', () => {
   const p = demo();
   p.net.routerBands = { '2.4': true, 5: true, 6: true };
-  p.node = { ...p.node, mode: 'ap_cable', bands: { '2.4': true, 5: true, 6: false } };
+  p.nodes = [{ ...E.project.newNode(p, { mode: 'ap_cable', pos: { x: 0.303704, y: 0.550955 } }), bands: { '2.4': true, 5: true, 6: false } }];
   const q = P.sanitize(p);
   const ctx = M.createContext(q);
   const g = R.grid(ctx, { cell: 8 });
@@ -518,7 +518,7 @@ test('predictAtMeasurements: inferred bands; steering of the new scenario only w
   assert.deepEqual(r0.map((e) => [e.band, e.bandInferred, e.bandNew, e.steered, e.delta]), [[2.4, false, 2.4, true, 0], [2.4, true, 2.4, true, 0], [5, false, 5, true, 0]]);
   assert.ok(r0.every((e) => !e.changed && e.speed.predDown === e.speed.measuredDown));
   // a wired AP in the right room: the far clients switch to 5 GHz
-  const pn = P.sanitize({ ...p, node: { mode: 'ap_cable', pos: n(850, 450), bands: { '2.4': true, 5: true, 6: false }, power: 0, backhaulBand: 5, backhaulThreshold: -67 } });
+  const pn = P.sanitize({ ...p, nodes: [{ mode: 'ap_cable', pos: n(850, 450), bands: { '2.4': true, 5: true, 6: false }, power: 0, backhaulBand: 5, backhaulThreshold: -67 }] });
   const r = A.predictAtMeasurements(ctx, pn, { curves });
   const e = r[0];
   assert.equal(e.bandNew, 5);
@@ -526,7 +526,7 @@ test('predictAtMeasurements: inferred bands; steering of the new scenario only w
   assert.equal(e.changed, true);
   const offs = M.offsets(ctx, pn);
   close(e.modelToday, M.softSignal(ctx, pn.net.baseline, { x: e.x, y: e.y }, 2.4, offs['2.4']), 1e-9, 'today on the measured band');
-  close(e.modelNew, M.softSignal(ctx, pn.node.pos, { x: e.x, y: e.y }, 5, offs['5']), 1e-9, 'new on the steered band');
+  close(e.modelNew, M.softSignal(ctx, pn.nodes[0].pos, { x: e.x, y: e.y }, 5, offs['5']), 1e-9, 'new on the steered band');
   close(e.delta, e.modelNew - e.modelToday, 1e-12);
   // = the planner's tooltip in Auto
   const d = M.pointSignalDetail(ctx, { x: e.x, y: e.y }, M.fieldParams(pn, 'trial', { offsets: offs }));
@@ -559,7 +559,7 @@ test('predictAtMeasurements: inferred bands; steering of the new scenario only w
 
 test('Auto is fast enough: steered field cell 8 < 40 ms, cell 4 < 150 ms on the demo (both bands + node)', () => {
   const p = demo();
-  p.node = { ...p.node, mode: 'mesh_wifi' };
+  p.nodes = [E.project.newNode(p, { mode: 'mesh_wifi', pos: { x: 0.303704, y: 0.550955 } })];
   const q = P.sanitize(p);
   const ctx = M.createContext(q);
   const st = M.fieldParams(q, 'trial');

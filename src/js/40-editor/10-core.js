@@ -118,6 +118,7 @@
     door: ['open', (v) => v === 'open' || v === 'closed'],
     doorW: [0.9, (v) => typeof v === 'number' && v >= 0.3 && v <= 3],
     preset: ['wardrobe', (v) => PRESETS.some((p) => p.key === v)],
+    ghost: [true, (v) => typeof v === 'boolean'],   // outline of the floor below (SPEC 14.3)
   };
   function pref(k) {
     const d = PREF[k];
@@ -135,7 +136,7 @@
   function setPref(k, v) {
     WH.store.setPref(`editor.${k}`, v);
     emit('prefs', k);
-    req(k === 'bg' || k === 'bgOpacity' ? 'world' : 'overlay');
+    req(k === 'bg' || k === 'bgOpacity' || k === 'ghost' ? 'world' : 'overlay');
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -143,6 +144,30 @@
   // ---------------------------------------------------------------------------------------------------------------
   const proj = () => (WH.store ? WH.store.project : null);
   const plan = () => { const p = proj(); return p && p.plan ? p.plan : null; };
+
+  // floors (SPEC 14.3): the top-level plan / goal are always the ACTIVE floor's (ENGINE-API S); the other floors are
+  // read through WH.engine.project.floorOf
+  const hasFloors = (p) => !!(p && Array.isArray(p.floors) && p.floors.length && eng() && typeof eng().project.floorOf === 'function');
+  /** Id of the floor shown in the editor (null for a project without floors). */
+  function activeFloorId() { const p = proj(); return hasFloors(p) ? eng().project.activeFloorId(p) : null; }
+  /** Every floor with its content, lowest first: [{id, name, level, ceiling, active, plan, goal}] (one entry without
+   *  floors). */
+  function plans() {
+    const p = proj();
+    if (!p || !p.plan) return [];
+    if (!hasFloors(p)) return [{ id: null, name: '', level: 0, ceiling: null, active: true, plan: p.plan, goal: p.goal || null }];
+    const out = [];
+    for (const f of p.floors) {
+      const v = eng().project.floorOf(p, f.id);
+      if (v && v.plan) out.push(v);
+    }
+    return out.sort((a, b) => a.level - b.level);
+  }
+  /** The room does not count toward the flat's area (balcony...: goal.excluded of its floor). */
+  function excludedIds(f) { const ex = f && f.goal && f.goal.excluded; return Array.isArray(ex) ? ex : []; }
+  const isExcluded = (f, r) => excludedIds(f).includes(r.roomId);
+  /** A marker / object of floor `id` is drawn on the active floor (true when there are no floors or no id). */
+  function onActiveFloor(id) { const a = activeFloorId(); return !a || !id || id === a; }
   function mpp() { const p = proj(); const v = p && p.scale && p.scale.mpp; return v > 0 ? v : 0.012; }
   function find(id, pl) {
     pl = pl || plan();
@@ -426,13 +451,8 @@
     return commit('editor.undo.edit', (p) => { const o = find(id, p); if (!o) return false; return fn(o, p); });
   }
 
-  function setMpp(v) {
-    if (!(v > 0)) return false;
-    const val = Number(Math.min(0.2, Math.max(0.0005, v)).toPrecision(10));
-    const ok = WH.store.commit('editor.undo.scale', (p) => { p.scale.mpp = val; }, ['scale']);
-    if (ok) WH.ui.toast(t('editor.scale.done', { px: WH.util.fmt(1 / val, 0) }), { kind: 'ok' });
-    return ok;
-  }
+  /** Set (and verify) the scale from a plain mpp (kept for callers outside the scale card; see 45-scale.js). */
+  function setMpp(v, method, ref) { return ED.scaling.apply(v, method || 'width', ref || null); }
 
   function autoWallsAll() {
     const pl = plan();
@@ -517,7 +537,7 @@
 
   Object.assign(ED, {
     W, H, MAX, LIST, KINDS, PRESETS, S, on, emit, req, renderAll, t, eng, r6, c01, P, dpx,
-    pref, setPref, bgAlpha, proj, plan, mpp, find, ptsOf, bboxOf, numOf, cut50, fmtM, fmtArea, areaM2, wallLoss, scale,
+    pref, setPref, bgAlpha, proj, plan, mpp, find, hasFloors, activeFloorId, plans, excludedIds, isExcluded, onActiveFloor, ptsOf, bboxOf, numOf, cut50, fmtM, fmtArea, areaM2, wallLoss, scale,
     table, triple, bands, fmtBands, presetLoss,
     snap, constrain45, hitTest, select, flash, commit, wallProps, cleanPoly, wallsAround,
     addRoom, addFurniture, addWall, addDoor, remove, shift, clampDelta, duplicate, edit, setMpp, autoWallsAll, recolor,

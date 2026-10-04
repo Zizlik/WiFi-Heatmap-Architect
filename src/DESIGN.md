@@ -15,7 +15,7 @@ Contents: 1 Build & load order - 2 DOM contract - 3 Layout contract - 4 Tokens -
 node build.mjs            # writes index.cs.html (default cs), index.html (default en), sw.js, manifest.webmanifest
 node build.mjs --check    # + syntax check, i18n completeness (cs/en keys + placeholders), mandatory hint keys,
                           #   no external URLs, template ids, theme-token sync (Deep dark x2 identical, OLED = same
-                          #   properties), size <= 2 MB (no minifier),
+                          #   properties), size <= 2.5 MB (no minifier),
                           #   PWA manifest/icons/service-worker version. Exit code 1 on errors.
 node build.mjs --dry      # do not write the files (with --check: also catches a stale committed sw.js / manifest)
 node build.mjs --out=DIR  # isolated build (HTML + sw.js + manifest + assets/ icons) for QA

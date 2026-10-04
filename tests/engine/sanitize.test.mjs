@@ -82,8 +82,15 @@ test('create(demo): the realistic showcase flat (SPEC 11) in the requested langu
   // round / shaped pieces stay within the exact tracer's vertex budget
   assert.ok(cs.plan.furniture.every((f) => f.points.length <= 12));
   for (const name of ['Záchod', 'Kancelářská židle', 'Balkonový stolek', 'Umyvadlo']) assert.ok(furn(name).points.length > 4, `${name} is not a box`);
-  assert.equal(cs.node.mode, 'none');
-  assert.equal(P.roomAt(cs.plan, cs.node.pos).name, 'Ložnice', 'the (off) second AP waits in the bedroom');
+  // SPEC 14.2: no access point yet; the first one "+ Přidat AP" places goes to the bedroom (the farthest room)
+  assert.deepEqual(cs.nodes, []);
+  assert.equal(P.roomAt(cs.plan, P.newNode(cs).pos).name, 'Ložnice', 'the first AP lands in the bedroom');
+  // SPEC 14.1: designed in metres - a verified scale; one floor (SPEC 14.3)
+  assert.deepEqual(cs.scale, { mpp: 0.0125, verified: true, method: 'width', ref: { metres: 10.5 } });
+  assert.deepEqual(cs.floors.map((f) => [f.id, f.name, f.level, f.plan]), [['floor-1', 'Přízemí', 0, null]]);
+  assert.equal(cs.net.routerFloor, 'floor-1');
+  assert.equal(cs.view.floor, 'floor-1');
+  assert.deepEqual(E.project.scaleIssues(cs), [], 'a correct scale raises no question');
   assert.equal(cs.measurements.length, 0);
   // SPEC 13: the band mode Auto by default (the default router sends 2.4 + 5 GHz)
   assert.equal(cs.view.band, 'auto');
@@ -108,7 +115,10 @@ test('create(blank) / defaults()', () => {
   const d1 = P.defaults();
   d1.model.n = 3;
   assert.equal(P.defaults().model.n, 2.2, 'defaults() returns fresh objects');
-  assert.deepEqual(Object.keys(P.defaults()).sort(), ['goal', 'measurements', 'model', 'net', 'node', 'scale', 'view']);
+  assert.deepEqual(Object.keys(P.defaults()).sort(), ['goal', 'measurements', 'model', 'net', 'nodes', 'scale', 'view']);
+  // SPEC 14.1: a blank plan's scale is not verified yet
+  assert.deepEqual(b.scale, { mpp: 0.012, verified: false, method: 'default', ref: null });
+  assert.deepEqual(E.project.scaleIssues(b), [{ code: 'unverified' }]);
   assert.equal(P.SCHEMA_VERSION, 3);
   assert.equal(P.create({ template: 'nonsense' }).plan.rooms.length, 7, 'unknown template falls back to the demo flat');
 });
@@ -156,7 +166,7 @@ test('sanitize: an optional private real plan (WH_PRIVATE_PLAN) via parseSvgText
     assert.equal(p.view.band, 'auto');
     assert.deepEqual(p.net.routerBands, { '2.4': true, '5': true, '6': false });
     assert.equal(p.goal.room, 'all');
-    assert.equal(p.node.mode, 'none');
+    assert.deepEqual(p.nodes, []);
     assert.equal(p.measurements.length, 0);
   }
   // all markers sit on the floor
@@ -236,7 +246,11 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
     },
   ];
   p.goal = { room: 2, allowedRoom: 4, excluded: [5, 6], mode: 'speed', targetDown: 120, targetUp: 40, reserve: 25, device: 'Laptop' };
-  p.node = { mode: 'mesh_wifi', pos: { x: 0.3, y: 0.3 }, bands: { '2.4': true, '5': false, '6': true }, power: -3, backhaulBand: 6, backhaulThreshold: -70, maxMbps: 300 };
+  p.nodes = [
+    { id: 'node-1', name: 'Mesh', mode: 'mesh_wifi', pos: P.nearestFloor(p.plan, { x: 0.3, y: 0.3 }), bands: { '2.4': true, '5': false, '6': true }, power: -3, backhaulBand: 6, backhaulThreshold: -70, maxMbps: 300, uplink: 'router', enabled: true },
+    { id: 'node-2', name: 'Repeater', mode: 'repeater', pos: P.nearestFloor(p.plan, { x: 0.7, y: 0.6 }), bands: { '2.4': true, '5': true, '6': false }, power: 2, backhaulBand: 2.4, backhaulThreshold: -72, maxMbps: null, uplink: 'node-1', enabled: false },
+  ];
+  p.scale = { mpp: 0.0125, verified: true, method: 'two-points', ref: { a: { x: 0.2, y: 0.3 }, b: { x: 0.4, y: 0.3 }, metres: 2.7 } };
   p.model = { nearSignal: -38, n: 2.6, wallLoss: 10, threshold: -65, rangeThreshold: -58, bandPower: { '2.4': -3, '5': 0, '6': 1.5 }, steer: { six: -68, five: -74 } };
   p.net.routerBands = { '2.4': false, '5': true, '6': true };
   p.net.wanDown = 500;
@@ -246,7 +260,7 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
   p.net.wanLink = 1000;
   p.net.cableCategory = 'cat6';
   p.net.cableLength = 12.5;
-  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, points: false, whatif: false, sourceZones: false, calibrate: false, palette: 'cb' };
+  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, points: false, whatif: false, sourceZones: false, calibrate: false, palette: 'cb', floor: 'floor-1' };
   const s = P.sanitize(p);
   assertValidProject(s, 'v3');
   assert.deepEqual(s, p);
@@ -338,7 +352,11 @@ test('sanitize: clamps values, repairs references, snaps markers onto the floor'
   raw.net.wanPort = 777;
   raw.net.cableLength = 1000;
   raw.net.cableCategory = 'cat9';
-  raw.node = { mode: 'teleport', pos: { x: 0.01, y: 0.99 }, bands: { '5': false, '2.4': false, '6': true }, power: 50, backhaulBand: 5, backhaulThreshold: 0 };
+  raw.nodes = [
+    { mode: 'repeater', pos: { x: 0.01, y: 0.99 }, bands: { '5': false, '2.4': false, '6': true }, power: 50, backhaulBand: 5, backhaulThreshold: 0, uplink: 'nowhere', enabled: 'yes' },
+    { mode: 'teleport', pos: { x: 0.5, y: 0.5 } },
+    null,
+  ];
   raw.goal = { room: 99, allowedRoom: 'kitchen', excluded: [1, 1, 77, 'x'], mode: 'fast', targetDown: 0, targetUp: 1e9, reserve: 200, device: '  '.repeat(5) };
   raw.view = { band: 4, layer: 'x', palette: 'neon', ranges: 'yes' };
   raw.measurements = [{ id: 'a', x: 0.5, y: 0.5, band: '5', value: 0, name: 'x'.repeat(200), download: -5, upload: 1e6, device: 'D'.repeat(100) }, { x: 'a', y: 0, band: 5, value: -50 }, { x: 0.5, y: 0.5, band: 7, value: -50 }, null, 7];
@@ -346,15 +364,19 @@ test('sanitize: clamps values, repairs references, snaps markers onto the floor'
   assertValidProject(s, 'clamped');
   assert.deepEqual(s.model, { nearSignal: -25, n: 4, wallLoss: 20, threshold: -55, rangeThreshold: -60, bandPower: { '2.4': -10, '5': 0, '6': 6 }, steer: { six: -50, five: -72 } });
   assert.deepEqual(s.net.routerBands, { '2.4': true, '5': true, '6': false }, 'a router without any band -> the default');
-  assert.ok(P.floorMaskAt(s.plan, s.net.router) && P.floorMaskAt(s.plan, s.net.baseline) && P.floorMaskAt(s.plan, s.node.pos));
+  assert.ok(P.floorMaskAt(s.plan, s.net.router) && P.floorMaskAt(s.plan, s.net.baseline) && P.floorMaskAt(s.plan, s.nodes[0].pos));
   assert.equal(s.net.wanDown, 10000);
   assert.equal(s.net.wanPort, null);
   assert.equal(s.net.cableLength, null);
   assert.equal(s.net.cableCategory, 'unknown');
-  assert.equal(s.node.mode, 'none');
-  assert.equal(s.node.power, 6);
-  assert.equal(s.node.backhaulThreshold, -55);
-  assert.equal(s.node.backhaulBand, 6, 'backhaul moved to a band the node serves');
+  assert.equal(s.nodes.length, 1, 'an unknown kind of node is dropped');
+  assert.equal(s.nodes[0].mode, 'repeater');
+  assert.equal(s.nodes[0].power, 6);
+  assert.equal(s.nodes[0].backhaulThreshold, -55);
+  assert.equal(s.nodes[0].backhaulBand, 6, 'backhaul moved to a band the node serves');
+  assert.equal(s.nodes[0].uplink, 'router', 'an unknown uplink -> the router');
+  assert.equal(s.nodes[0].enabled, true);
+  assert.equal(s.nodes[0].name, 'AP 2');
   assert.deepEqual(s.goal.excluded, [1]);
   assert.equal(s.goal.room, 'all');
   assert.equal(s.goal.allowedRoom, 'any');

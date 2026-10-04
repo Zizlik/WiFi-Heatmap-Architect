@@ -164,7 +164,7 @@
             el('div', ui().button({ i18n: 'planner.m.showToday', icon: 'undo', size: 'sm', variant: 'ghost', onClick: () => { PL.backToToday(); note.remove(); if (hooks.onLayout) hooks.onLayout(); } }))));
         notes.push(note);
       }
-    } else if (p.node.mode !== 'none') notes.push(el('div.notice.notice--warn.pl-mnote', ui().icon('warning', 18), el('span', t('planner.m.nodeOn'))));
+    } else if (PL.anyNode()) notes.push(el('div.notice.notice--warn.pl-mnote', ui().icon('warning', 18), el('span', t('planner.m.nodeOn'))));
     const where = el('span', room ? room.name : t('planner.tip.outside'));
     const fail = (f, k, focus) => {
       f.setError(t(k));
@@ -788,9 +788,11 @@
     // SPEC 9: the guided "Prvotní měření" from the measuring mode too (28-calib-wizard.js; relabels itself "Pokračovat 3 / 5")
     const calib = PL.calib && PL.calib.entryButton ? PL.calib.entryButton({ size: 'sm', variant: 'soft' }) : null;
     if (calib) calib.classList.add('pl-mm__calib');
+    // SPEC 14.3: in a home with floors the hint bar starts with the floor the new points go to (tap = another floor)
+    const floor = PL.fl.pill();
     // data-toast-avoid: a toast (e.g. the saved one with its band line) never sits on "Prvotní měření" / the hint bar
     const bottom = el('div.stage__slot.pl-mmslot.pl-mmslot--bottom', { 'data-toast-avoid': '' }, calib,
-      el('div.pl-mmbar.pl-mmbar--hint', { role: 'status' }, el('span.pl-mm__ico', ui().icon('pin', 20)), tapTxt, count));
+      el('div.pl-mmbar.pl-mmbar--hint', el('span.pl-mm__ico', ui().icon('pin', 20)), floor, el('span.pl-mm__tap', { role: 'status' }, tapTxt, count)));
     st.el.append(top, bottom);
     bars = { top, bottom, bandSeg, done, count };
     mm.paint();
@@ -812,6 +814,7 @@
     bars.count.textContent = t('planner.mm.count', { n: p.measurements.length });
     BANDS.forEach((b) => { const btn = bars.bandSeg.button(b); const s = btn && btn.querySelector('span'); if (s) s.textContent = PL.band(b); });
     PL.bands.paintCounts(bars.bandSeg);
+    PL.fl.paintPill();
     bars.bottom.classList.toggle('is-covered', !!(PL.S.pending && PL.S.pending.kind === 'sheet'));
   };
   mm.topInset = () => (bars ? bars.top.getBoundingClientRect().bottom - PL.stage.el.getBoundingClientRect().top : 0);
