@@ -3,18 +3,26 @@
  * Captures the README screenshots from the real UI, using the built-in DEMO flat only (never a private floor plan).
  *
  *   npm install --no-save puppeteer-core      (once; package.json stays dependency-free)
- *   node build.mjs && node docs/make-screenshots.mjs [--lang=en|cs] [--out=docs] [--only=wifi,editor,guide,phone,dark]
+ *   node build.mjs && node docs/make-screenshots.mjs [--lang=en|cs] [--out=docs] [--only=wifi,ap,editor,guide,phone,dark]
  *
  * Writes (next to this script unless --out is given):
- *   screenshot-wifi.png    1440x900  Wi-Fi mode, every layer on: heat map in band mode Auto (Wi-Fi 7 router: 2.4 / 5 /
- *                                    6 GHz range lines), room values, walls, furniture, labels, five measured spots and
- *                                    a wired second access point, so every spot shows its predicted change ("→ +12")
+ *   screenshot-wifi.png    1440x900  Wi-Fi mode, the ROUTER ONLY (no second access point), every layer on: heat map in
+ *                                    band mode Auto (Wi-Fi 7 router: 2.4 / 5 / 6 GHz range lines), room values, walls,
+ *                                    furniture, labels, four measured spots; the router moved to the best spot the app
+ *                                    found, so every spot shows its predicted change ("−61 → −48 (+13)") against the
+ *                                    "Today" ghost in the hall - the physics reads at first glance
+ *   screenshot-ap.png      1440x900  the SAME scene (router moved to the best spot) plus a WIRED SECOND ACCESS POINT in the
+ *                                    bedroom corner (SPEC 10.3): range lines around both sources (the AP's on a blue
+ *                                    backing), the "Signal source" layer (one simple border + the hatch over the left third
+ *                                    of the flat - bedroom, bathroom, WC - where AP 2 is stronger), the "AP 2" marker with
+ *                                    its cable link and the predicted change at the spots. (With the router at today's spot
+ *                                    the model hands the far balcony to AP 2 by 5 dB, which a picture cannot explain.)
  *   screenshot-editor.png  1440x900  Floor-plan mode: the showcase flat with a wall selected (its material and losses)
  *   screenshot-phone.png   390x844 viewport (2x pixels)  the measuring mode on a phone: the sheet of a new spot with the
  *                                    band question and "Změřit vše"
  *   screenshot-guide.png   1440x900  the "First measurement" guide: the suggested spots on the map, nothing measured yet
- *   screenshot-dark.png    1440x900  the same Wi-Fi scene as screenshot-wifi.png in the Deep dark theme: Signal view with
- *                                    the predicted change at every measured spot ("−61 → −48 (+13)")
+ *   screenshot-dark.png    1440x900  the same Wi-Fi scene as screenshot-wifi.png (router only) in the Deep dark theme:
+ *                                    Signal view with the predicted change at every measured spot
  *
  * The measured spots are made up for the picture: the model's own prediction at each spot +-2 dB, with plausible speed
  * tests; no network name, BSSID or MAC address appears anywhere.
@@ -93,11 +101,12 @@ async function openDemo(browser, { width, height, dpr = 1, mobile = false, theme
 }
 
 /**
- * The showcase scene: a Wi-Fi 7 router (2.4 + 5 + 6 GHz, band mode Auto), every layer on, measured spots in five rooms
- * (the model's prediction +-2 dB, speeds that fit the signal, the band each one was measured on - confirmed) and,
- * optionally, a wired access point in the bedroom so the dots show what it would change.
+ * The showcase scene: a Wi-Fi 7 router (2.4 + 5 + 6 GHz, band mode Auto), every layer on, measured spots in four rooms
+ * (the model's prediction +-2 dB, speeds that fit the signal, the band each one was measured on - confirmed).
+ * Options: `move` = the router moved to the best spot the optimiser finds (the "Today" ghost stays in the hall, every
+ * spot shows its predicted change); `node` = a wired access point in the bedroom corner as well.
  */
-const showcase = (page, { node = true } = {}) => page.evaluate((node) => {
+const showcase = (page, { node = false, move = false } = {}) => page.evaluate(async ({ node, move }) => {
   const E = WH.engine;
   const P = WH.store.project;
   const roomBy = (k) => P.plan.rooms[k];
@@ -109,7 +118,6 @@ const showcase = (page, { node = true } = {}) => page.evaluate((node) => {
     [2, [-0.4, 1.1], -2, 5],    // study
     [0, [0.2, 1.5], 2, 6],      // living room + kitchen, by the sofa
     [3, [0.1, 0.9], -1, 5],     // bathroom
-    [5, [0.6, -0.5], 0, 6],     // hall, next to the router
   ];
   const mpp = P.scale.mpp;
   const { W, H } = E.CANVAS;   // normalized plan coordinates over the fixed 1080 x 942 canvas
@@ -131,8 +139,8 @@ const showcase = (page, { node = true } = {}) => page.evaluate((node) => {
   });
   WH.store.commit('Showcase', (p) => {
     p.measurements = ms;
-    // every map layer on, incl. "Body měření" + "Předpověď u bodů" (the dots and their "→ +12" labels)
-    Object.assign(p.view, { layer: 'signal', ranges: true, values: true, walls: true, furniture: true, labels: true, points: true, whatif: true });
+    // every map layer on, incl. "Body měření" + "Předpověď u bodů" (the dots and their "→ +12" labels) and "Zdroj signálu"
+    Object.assign(p.view, { layer: 'signal', ranges: true, values: true, walls: true, furniture: true, labels: true, points: true, whatif: true, sourceZones: true });
     if (node) {
       const bed = roomBy(1);
       const lp = E.geom.labelPoint(bed.points);
@@ -140,8 +148,19 @@ const showcase = (page, { node = true } = {}) => page.evaluate((node) => {
       p.node.pos = E.project.nearestFloor(p.plan, WH.planner.insidePoint({ x: lp.x - 0.9 / (W * mpp), y: lp.y - 0.6 / (H * mpp) }, 0.5));
     }
   }, ['measurements', 'view', 'node']);
+  if (move) {
+    // the optimiser's answer (deterministic): the router leaves the hall, the dots show "−61 → −48 (+13)"
+    const p = WH.store.project;
+    const c2 = E.model.createContext(p);
+    const grid = E.raster.grid(c2, { cell: 4 });
+    const r = await E.optimize.find(c2, grid, {
+      band: p.view.band, bands: E.model.routerBandList(p), steer: E.model.steerOf(p), goalRoom: null, allowedRoom: null,
+      threshold: p.model.threshold, excluded: p.goal.excluded, router: { ...p.net.router }, node: null, offsets: { '2.4': 0, 5: 0, 6: 0 },
+    });
+    WH.store.commit('Showcase', (q) => { q.net.router = { x: Math.round(r.pos.x * 1e6) / 1e6, y: Math.round(r.pos.y * 1e6) / 1e6 }; }, ['net']);
+  }
   return ms.length;
-}, node);
+}, { node, move });
 
 const clean = (page) => page.evaluate(() => {
   document.querySelectorAll('#toast-root .toast, .popover, .menu, .tooltip, [role="tooltip"]').forEach((n) => n.remove());
@@ -165,7 +184,7 @@ const allProblems = [];
 try {
   if (want('wifi') || want('editor')) {
     const { page, problems } = await openDemo(browser, { width: 1440, height: 900 });
-    await showcase(page);
+    await showcase(page, { move: true });
     await sleep(1500); // the fine heat map is drawn ~120 ms after the last change; give fonts / raster / labels time
     if (want('wifi')) await shot(page, 'screenshot-wifi.png');
     if (want('editor')) {
@@ -181,6 +200,18 @@ try {
       await sleep(700);
       await shot(page, 'screenshot-editor.png');
     }
+    allProblems.push(...problems);
+    await page.close();
+  }
+  if (want('ap')) {
+    // the router-moved scene + the wired second access point in the bedroom (SPEC 10.3): lines around both sources, the
+    // "Signal source" layer with one simple border (bedroom, bathroom and WC are AP 2's)
+    const { page, problems } = await openDemo(browser, { width: 1440, height: 900 });
+    await showcase(page, { node: true, move: true });
+    const on = await page.evaluate(() => { const S = WH.planner.S; const v = WH.store.project.view; return v.sourceZones && v.ranges && WH.store.project.node.mode === 'ap_cable' && !!(S.cont && S.cont.node && Object.keys(S.cont.node).length); });
+    await sleep(1500);
+    if (!on) throw new Error('ap shot: the second access point with its range lines and the source layer is not on');
+    await shot(page, 'screenshot-ap.png');
     allProblems.push(...problems);
     await page.close();
   }
@@ -201,7 +232,7 @@ try {
   if (want('phone')) {
     // the measuring mode on a phone: earlier spots on the map, the sheet of a new one (band answered, "Změřit vše")
     const { page, problems } = await openDemo(browser, { width: 390, height: 844, dpr: 2, mobile: true });
-    await showcase(page, { node: false });
+    await showcase(page);
     await page.evaluate(() => { WH.planner.bands.choice.set(5); WH.planner.mm.enter(); });
     await sleep(900);
     await page.evaluate(() => {
@@ -220,11 +251,11 @@ try {
     await page.close();
   }
   if (want('dark')) {
-    // Deep dark, the Signal view of the showcase scene: the wired AP's predicted change at every spot ("−61 → −48 (+13)")
+    // Deep dark, the Signal view of the router-only scene: the moved router's predicted change at every spot ("−61 → −48 (+13)")
     const { page, problems } = await openDemo(browser, { width: 1440, height: 900, theme: 'dark' });
-    await showcase(page);
-    const on = await page.evaluate(() => { const v = WH.store.project.view; return v.layer === 'signal' && v.points && v.whatif && WH.planner.wi.active(); });
-    if (!on) throw new Error('dark shot: the Signal view with the predicted change at the points is not on');
+    await showcase(page, { move: true });
+    const on = await page.evaluate(() => { const v = WH.store.project.view; return v.layer === 'signal' && v.points && v.whatif && WH.store.project.node.mode === 'none' && WH.planner.wi.active(); });
+    if (!on) throw new Error('dark shot: the Signal view with the predicted change at the points (router only) is not on');
     await sleep(1500);
     await shot(page, 'screenshot-dark.png');
     allProblems.push(...problems);

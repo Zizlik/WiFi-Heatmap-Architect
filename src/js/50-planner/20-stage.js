@@ -134,9 +134,12 @@
     if (id) b.dataset.id = id;
     const dot = el('span.pl-mk__dot');
     if (kind === 'router') dot.append(el('span.pl-mk__txt', { 'data-i18n': 'planner.mk.routerLetter' }, t('planner.mk.routerLetter')));
-    if (kind === 'node') dot.append(el('span.pl-mk__txt', '2'));
+    // the second node (SPEC 10.3): the type's icon in the disc + a name tag ("AP 2" / "Mesh 2" / "Opakovač"), filled by
+    // place() for the current type and language - as prominent as the router's R
+    if (kind === 'node') { dot.append(el('span.pl-mk__ico')); b._tag = el('span.pl-mk__tag', { 'aria-hidden': 'true' }); }
     if (kind === 'inlet') dot.append(ui().icon('globe', 16));
     b.append(dot);
+    if (kind === 'node') b.append(b._tag);
     if (kind === 'today') b.append(el('span.pl-mk__label', { 'data-i18n': 'planner.mk.todayShort' }, t('planner.mk.todayShort')));
     // the value label (full / short text, see 15-whatif.js) and the numbered badge used when even the short text has
     // no room; the label is placed by layoutLabels() (right, left, above, below)
@@ -321,10 +324,39 @@
     M.today.hidden = !has || !PL.moved();
     M.node.hidden = !has || p.node.mode === 'none';
     M.inlet.hidden = !has;
+    // the node's marker says what it is (SPEC 10.3): the type's icon + the name tag, per type and language
+    const nk = `${p.node.mode}|${WH.i18n.lang}`;
+    if (!M.node.hidden && M.node._nk !== nk) {
+      M.node._nk = nk;
+      M.node.querySelector('.pl-mk__ico').replaceChildren(ui().icon(PL.nodeIcon(p.node.mode), 18));
+      M.node._tag.textContent = PL.nodeLabel(p.node.mode);
+      PL.nodeTagW = 0;
+    }
     pos(M.router, p.net.router);
     pos(M.today, p.net.baseline);
     pos(M.node, p.node.pos);
     pos(M.inlet, p.net.optic);
+    if (!M.node.hidden) PL.nodeTagW = M.node._tag.offsetWidth || PL.nodeTagW || 0;
+    // the link between the node and the router: a "kabel" / "Wi-Fi" chip in the middle of the dashed line (10-core
+    // draws the line); hidden while the two markers stand too close for it
+    const L = st.link;
+    PL.linkRect = null;
+    if (!M.node.hidden && p.node.pos && p.net.router) {
+      const a = vp.toScreen(p.net.router);
+      const b2 = vp.toScreen(p.node.pos);
+      const far = Math.hypot(a.x - b2.x, a.y - b2.y) >= 70;
+      const wl = PL.nodeWireless(p.node.mode);
+      const lk = `${wl}|${WH.i18n.lang}`;
+      if (L._lk !== lk) { L._lk = lk; L.replaceChildren(ui().icon(wl ? 'wifi' : 'cable', 16), el('span', t(wl ? 'planner.mk.linkWifi' : 'planner.mk.linkCable'))); }
+      L.hidden = !far;
+      if (far) {
+        const mx = (a.x + b2.x) / 2;
+        const my = (a.y + b2.y) / 2;
+        L.style.transform = `translate(${snap(mx)}px,${snap(my)}px) translate(-50%,-50%)`;
+        PL.linkW = L.offsetWidth || PL.linkW || 60;
+        PL.linkRect = { l: mx - PL.linkW / 2, t: my - 11, r: mx + PL.linkW / 2, b: my + 11 };
+      }
+    } else L.hidden = true;
     // phones / zoomed out: the inlet disc overlapped today's dashed ring, its "Today" label and the router disc - push
     // it just clear (on screen only, so all of them stay visible and grabbable; the router may stand right at the
     // inlet, a real and common place: the inlet then sits beside it like a cluster)
@@ -453,8 +485,10 @@
       const q = k === 'router' ? PL.P().net.router : k === 'node' ? PL.P().node.pos : k === 'inlet' ? PL.P().net.optic : PL.P().net.baseline;
       const c = st.vp.toScreen(q);
       const r = k === 'router' ? 19 : 16;
-      obst.push({ l: c.x - r, t: c.y - r, r: c.x + r, b: c.y + r + (k === 'today' ? 20 : 0) });
+      // the node's name tag hangs to the right of its disc; today's caption below its ring
+      obst.push({ l: c.x - r, t: c.y - r, r: c.x + r + (k === 'node' ? PL.nodeTagW || 48 : 0), b: c.y + r + (k === 'today' ? 20 : 0) });
     }
+    if (PL.linkRect) obst.push({ ...PL.linkRect });
     // the numbered pins of the "Prvotní měření" guide (28-calib-wizard.js) while it is open
     const cs = PL.calib && PL.calib.isOpen && PL.calib.isOpen() ? PL.calib.state() : null;
     if (cs && cs.step === 'measure') {
@@ -529,7 +563,7 @@
     const room = (q) => (PL.roomAt(q) || {}).name || t('planner.tip.outside');
     st.mk.router.setAttribute('aria-label', t('planner.mk.routerAria', { room: room(p.net.router), v: sig(p.net.router) }));
     st.mk.today.setAttribute('aria-label', t('planner.mk.todayAria', { room: room(p.net.baseline) }));
-    st.mk.node.setAttribute('aria-label', t('planner.mk.nodeAria', { room: room(p.node.pos) }));
+    st.mk.node.setAttribute('aria-label', t('planner.mk.nodeAria', { lbl: PL.nodeLabel(), room: room(p.node.pos) }));
     st.mk.inlet.setAttribute('aria-label', t('planner.mk.inletAria'));
   }
 
@@ -587,7 +621,14 @@
     // what the walls on the way cost on this band (2.4 GHz gets through more easily, SPEC 7.1)
     const wl = PL.pathLoss(pr.net.router, p, auto ? d.band : pr.view.band);
     if (Number.isFinite(wl) && wl >= 0.5) out.push(line({ class: 'text-muted' }, t('planner.tip.walls', { d: WH.util.fmt(wl, 0) })));
-    if (nodeOn && d.node !== null) out.push(line({ class: 'text-muted' }, t(d.bestSource === 'node' ? 'planner.tip.fromNode' : 'planner.tip.fromRouter')));
+    // SPEC 10.3: who is the stronger source here, with both numbers ("Silnější zdroj: AP 2 (−48 dBm) · router (−71 dBm)")
+    if (nodeOn && d.node !== null && Number.isFinite(d.router)) {
+      const nodeBest = d.bestSource === 'node';
+      const names = [PL.nodeLabel(), t('planner.tip.routerName')];
+      const vals = [WH.util.dbm(d.node), WH.util.dbm(d.router)];
+      const i = nodeBest ? 0 : 1;
+      out.push(line({ class: 'text-muted pl-tip__src' }, el('i.pl-sw', { style: { background: nodeBest ? 'var(--pl-node)' : 'var(--danger)' } }), el('span', t('planner.tip.source', { a: names[i], va: vals[i], b: names[1 - i], vb: vals[1 - i] }))));
+    }
     if (d.weakBackhaul) out.push(line({ class: 'pl-tip__warn' }, t('planner.tip.weakBackhaul')));
     if (S.sp) {
       const sp = S.sp;
@@ -613,7 +654,8 @@
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
     if (kind !== 'meas') {
-      showTipAt([el('div.pl-tip__title', t(`planner.mk.${kind}`)), line({ class: 'text-muted' }, t(`planner.mk.${kind}Tip`))], cx, cy);
+      const title = kind === 'node' ? `${PL.nodeLabel()} · ${t('planner.mk.node')}` : t(`planner.mk.${kind}`);
+      showTipAt([el('div.pl-tip__title', title), line({ class: 'text-muted' }, t(`planner.mk.${kind}Tip`))], cx, cy);
       tipOwner = b;
       return;
     }
@@ -838,7 +880,8 @@
     const L = legendSpec();
     const p = PL.P();
     const rb = WH.engine.model.routerBandList(p);
-    const key = JSON.stringify(L) + p.view.ranges + p.model.rangeThreshold + WH.i18n.lang + JSON.stringify(zoneShare()) + rb.join(',');
+    const nodeOn = p.node.mode !== 'none';
+    const key = JSON.stringify(L) + p.view.ranges + p.view.sourceZones + p.model.rangeThreshold + WH.i18n.lang + JSON.stringify(zoneShare()) + rb.join(',') + p.node.mode + S.mode + !!S.hatch;
     if (key === legendKey) return;
     legendKey = key;
     const box = st.legend;
@@ -861,7 +904,21 @@
         zs.map(([b, v]) => el('span.pl-zone', el('i.pl-zone__sw', { style: { background: `var(${PL.BAND_VAR[b]})` } }), `${PL.band(b)}${WH.util.NBSP}${t('planner.ghz')} ${WH.util.fmtPct(v)}`)), ui().hint('steer')));
     }
     if (p.view.ranges && S.mode !== 'speed') {
-      parts.push(el('div.pl-legend__extra.pl-legend__ranges', rb.map((b) => el('span', el(`i.pl-dash.pl-dash--b${String(b).replace('.', '')}`, { style: { borderColor: `var(${PL.BAND_VAR[b]})` } }), PL.band(b))), el('span.text-muted', t('planner.legend.rangeAt', { v: WH.util.dbm(p.model.rangeThreshold) })), ui().hint('rangeThreshold')));
+      const row = el('div.pl-legend__extra.pl-legend__ranges', rb.map((b) => el('span', el(`i.pl-dash.pl-dash--b${String(b).replace('.', '')}`, { style: { borderColor: `var(${PL.BAND_VAR[b]})` } }), PL.band(b))), el('span.text-muted', t('planner.legend.rangeAt', { v: WH.util.dbm(p.model.rangeThreshold) })), ui().hint('rangeThreshold'));
+      // SPEC 10.3: lines around both sources - "čáry: router · AP 2", the node's sample on its blue backing
+      if (nodeOn) {
+        row.append(el('span.pl-legend__src', el('span.text-muted', t('planner.legend.lines')),
+          el('i.pl-dash.pl-dash--b5.pl-dash--router'), el('span', t('planner.legend.srcRouter')), el('span.pl-tip__dot', '·'),
+          el('i.pl-dash.pl-dash--b5.pl-dash--node'), el('span', PL.nodeLabel())));
+      }
+      parts.push(row);
+    }
+    // the layer "Zdroj signálu": what the hatch means ("šrafy: tady je silnější AP 2, jinde router"); a wireless node with a
+    // weak uplink is marked by the grey weak-uplink hatch instead of the blue one, and the row says so. Not in the Speed
+    // view (the layer is not drawn there, like the range lines)
+    if (nodeOn && p.view.sourceZones !== false && S.mode !== 'speed') {
+      const weak = !!S.hatch;
+      parts.push(el('div.pl-legend__extra.pl-legend__source', el('span', el(`i.pl-sw.${weak ? 'pl-sw--cap' : 'pl-sw--src'}`), t(weak ? 'planner.legend.sourceWeak' : 'planner.legend.source', { node: PL.nodeLabel() })), ui().hint('layerSource')));
     }
     box.replaceChildren(...parts);
   }
@@ -878,11 +935,12 @@
     st.bands.setDisabled('auto', !autoOk);
     st.bands.setValue(v.band, true);
     PL.bands.paintCounts(st.bands);
-    // a dot on Vrstvy while the map hides a layer it shows by default (SPEC 10.2) - e.g. the measurement dots stay hidden
-    // after a reload; layers switched ON (range lines, dBm numbers) are visible on the map anyway
-    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.points === false || v.whatif === false);
-    if (layersPop) layersPop.sync();
     const p = PL.P();
+    // a dot on Vrstvy while the map hides a layer it shows by default (SPEC 10.2) - e.g. the measurement dots stay hidden
+    // after a reload; layers switched ON (range lines, dBm numbers) are visible on the map anyway. "Zdroj signálu" counts
+    // only while a second node is on (SPEC 10.3)
+    st.layersBtn.classList.toggle('is-on', !v.walls || !v.furniture || !v.labels || v.points === false || v.whatif === false || (p.node.mode !== 'none' && v.sourceZones === false));
+    if (layersPop) layersPop.sync();
     st.noplan.hidden = p.plan.rooms.length > 0;
     paintBanner(p, v);
   }
@@ -951,7 +1009,8 @@
     const bh = (b.maxY - b.minY + 2 * m) * H;
     const scale = Math.max(0.6, Math.min(1.4, 900 / bw));
     const head = 64;
-    const foot = 92;
+    const nodeOn = p.node.mode !== 'none';
+    const foot = 92 + (nodeOn ? 18 : 0);   // SPEC 10.3: one more legend line about the two sources
     const w = Math.round(Math.max(560, bw * scale));
     const h = Math.round(head + bh * scale + foot);
     const dpr = 2;
@@ -963,7 +1022,7 @@
     const ty = head - y0 * scale;
     const col = PL.col;
     const roomLabs = [];
-    PL.drawScene(c, { s: scale, tx, ty, dpr, w, h, z: 1.25, bg: col('--stage-bg'), roomLabs });
+    PL.drawScene(c, { s: scale, tx, ty, dpr, w, h, z: 1.25, bg: col('--stage-bg'), roomLabs, linkText: true });
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     const fam = PL.font();
     const sc = (q) => [q.x * W * scale + tx, q.y * H * scale + ty];
@@ -975,7 +1034,16 @@
     const pts = p.view.points !== false ? p.measurements : [];
     for (const ms of pts) taken.push(box(ms, 8));
     taken.push(box(p.net.router, 16), box(p.net.optic, 10));
-    if (p.node.mode !== 'none') taken.push(box(p.node.pos, 15));
+    const nodeLbl = nodeOn ? PL.nodeLabel() : '';
+    if (nodeOn) {
+      // the node's disc + its name tag, and the "kabel" / "Wi-Fi" text in the middle of the link
+      c.font = `800 11px ${fam}`;
+      const bx = box(p.node.pos, 16);
+      bx.r += c.measureText(nodeLbl).width + 14;
+      taken.push(bx);
+      const [mx, my] = sc({ x: (p.net.router.x + p.node.pos.x) / 2, y: (p.net.router.y + p.node.pos.y) / 2 });
+      taken.push({ l: mx - 22, t: my - 9, r: mx + 22, b: my + 9 });
+    }
     if (PL.moved()) taken.push(box(p.net.baseline, 13));
     const hits = (a) => a.l < 2 || a.t < head || a.r > w - 2 || a.b > h - foot || taken.some((b) => a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t);
     const spot = (txt, x, y) => {
@@ -1035,7 +1103,24 @@
       c.fillStyle = col('--ink-2');
       c.fillText(t('planner.mk.todayShort'), x, y + 24);
     }
-    if (p.node.mode !== 'none') disc(p.node.pos, 14, col('--pl-node'), '2', false, col('--pl-node-ink'));
+    if (nodeOn) {
+      // like on screen (SPEC 10.3): the blue disc with "2" + the name tag "AP 2" / "Mesh 2" / "Opakovač" attached on the right
+      const [x, y] = sc(p.node.pos);
+      c.font = `800 11px ${fam}`;
+      const tw = c.measureText(nodeLbl).width;
+      c.beginPath();
+      if (c.roundRect) c.roundRect(x, y - 11, tw + 30, 22, [0, 11, 11, 0]); else c.rect(x, y - 11, tw + 30, 22);
+      c.fillStyle = col('--pl-node');
+      c.fill();
+      c.lineWidth = 2;
+      c.strokeStyle = col('--map-marker-ring');
+      c.stroke();
+      c.fillStyle = col('--pl-node-ink');
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.fillText(nodeLbl, x + 20, y + 0.5);
+      disc(p.node.pos, 14, col('--pl-node'), '2', false, col('--pl-node-ink'));
+    }
     disc(p.net.router, 15, col('--danger'), t('planner.mk.routerLetter'), false, col('--on-danger'));
     // title + date
     const target = p.goal.room === 'all' ? t('planner.res.all') : PL.roomName(p.goal.room);
@@ -1071,6 +1156,51 @@
     L.words.forEach(([k, pos]) => { c.textAlign = pos <= 0 ? 'left' : pos >= 1 ? 'right' : 'center'; c.fillText(t(k), lx + lw * pos, ly + 26); });
     c.fillStyle = col('--muted');
     L.ticks.forEach(([pos, txt]) => { c.textAlign = pos <= 0 ? 'left' : pos >= 1 ? 'right' : 'center'; c.fillText(txt, lx + pos * lw, ly + 41); });
+    // SPEC 10.3: the two sources - whose range lines are drawn (with the same samples as the screen legend: the node's on
+    // its blue backing) and what the hatch means (its swatch: blue, or the grey weak-uplink hatch)
+    if (nodeOn && S.mode !== 'speed') {
+      let x = lx;
+      const y = ly + 58;
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.font = `600 11px ${fam}`;
+      const text = (s) => { c.fillStyle = col('--ink-2'); c.fillText(s, x, y); x += c.measureText(s).width; };
+      const dash = (nodeSide) => {
+        x += 4;
+        c.save();
+        c.lineCap = 'round';
+        c.beginPath();
+        c.moveTo(x, y);
+        c.lineTo(x + 16, y);
+        if (nodeSide) { c.setLineDash([]); c.strokeStyle = col('--pl-node'); c.lineWidth = 5.5; c.globalAlpha = 0.55; c.stroke(); c.globalAlpha = 1; }
+        c.setLineDash(PL.BAND_DASH[5]);
+        c.strokeStyle = col('--ink-2');
+        c.lineWidth = 2;
+        c.stroke();
+        c.restore();
+        x += 20;
+      };
+      if (p.view.ranges) { text(t('planner.legend.lines')); dash(false); text(t('planner.legend.srcRouter')); text(' · '); dash(true); text(nodeLbl); x += 14; }
+      if (p.view.sourceZones !== false) {
+        const weak = !!S.hatch;
+        const sw = 10;
+        c.save();
+        c.beginPath();
+        c.rect(x, y - sw / 2, sw, sw);
+        c.clip();
+        c.strokeStyle = weak ? col('--map-wall') : col('--pl-node');
+        c.lineWidth = 1.2;
+        c.beginPath();
+        for (let d = -sw; d < sw * 2; d += 4) { c.moveTo(x + d, y + sw / 2); c.lineTo(x + d + sw, y - sw / 2); }
+        c.stroke();
+        c.restore();
+        c.strokeStyle = weak ? col('--line-strong') : col('--pl-node');
+        c.lineWidth = 1;
+        c.strokeRect(x + 0.5, y - sw / 2 + 0.5, sw - 1, sw - 1);
+        x += sw + 5;
+        text(t(weak ? 'planner.legend.sourceWeak' : 'planner.legend.source', { node: nodeLbl }));
+      }
+    }
     return new Promise((res, rej) => cv.toBlob((blob) => (blob ? res(blob) : rej(new Error('toBlob'))), 'image/png'));
   }
 
@@ -1096,34 +1226,43 @@
       sws[prop] = s;
       return s;
     };
-    // why "Předpověď u bodů" is greyed: in its "?" (data-hint-note) and, for screen readers, on the switch itself
+    // why "Předpověď u bodů" / "Zdroj signálu" is greyed: in its "?" (data-hint-note) and, for screen readers, on the
+    // switch itself
     const why = el('span.sr-only', { id: WH.util.uid('pl-why') });
+    const whySrc = el('span.sr-only', { id: WH.util.uid('pl-why') });
     const content = el('div.stack.gap-3.pl-layers',
       el('div.row.fw-700', el('span', t('planner.layers.title')), ui().hint('layers')),
       sw('planner.layers.ranges', 'ranges', 'ranges', 'L'),
+      sw('planner.layers.source', 'sourceZones', 'layerSource'),
       sw('planner.layers.walls', 'walls'),
       sw('planner.layers.furniture', 'furniture'),
       sw('planner.layers.labels', 'labels'),
       sw('planner.layers.values', 'values'),
       sw('planner.layers.points', 'points', 'layerPoints'),
       sw('planner.layers.whatif', 'whatif', 'layerWhatIf', 'P'),
-      why);
+      why, whySrc);
+    const grey = (s, r, note) => {
+      s.input.disabled = !!r;
+      s.classList.toggle('is-disabled', !!r);
+      const hb = s.querySelector('.hint');
+      if (hb) { if (r) hb.dataset.hintNote = `planner.layers.why.${r}`; else delete hb.dataset.hintNote; }
+      note.textContent = r ? t(`planner.layers.why.${r}`) : '';
+      if (r) s.input.setAttribute('aria-describedby', note.id); else s.input.removeAttribute('aria-describedby');
+    };
     const sync = () => {
       const q = PL.P().view;
       for (const [prop, s] of Object.entries(sws)) s.setChecked(!!q[prop]);
-      const r = PL.wi.layerWhy();
-      const w = sws.whatif;
-      w.input.disabled = !!r;
-      w.classList.toggle('is-disabled', !!r);
-      const hb = w.querySelector('.hint');
-      if (hb) { if (r) hb.dataset.hintNote = `planner.layers.why.${r}`; else delete hb.dataset.hintNote; }
-      why.textContent = r ? t(`planner.layers.why.${r}`) : '';
-      if (r) w.input.setAttribute('aria-describedby', why.id); else w.input.removeAttribute('aria-describedby');
+      grey(sws.whatif, PL.wi.layerWhy(), why);
+      // SPEC 10.3: nothing to draw without a second node
+      grey(sws.sourceZones, PL.srcWhy(), whySrc);
     };
     sync();
     const h = ui().popover(btn, content, { placement: 'top', align: 'start', width: 312, onClose: () => { if (layersPop && layersPop.h === h) layersPop = null; } });
     layersPop = { h, sync };
   }
+
+  /** Why the layer "Zdroj signálu" has nothing to show (its switch is greyed): 'noNode' | null. */
+  PL.srcWhy = () => (PL.P().node.mode === 'none' ? 'noNode' : null);
 
   let wiToast = null;
   /** P: the layer "Předpověď u bodů" on / off with a short toast (+ why it has nothing to show right now). */
@@ -1215,8 +1354,10 @@
     root.append(el('div.layout.pl-layout', vstage, side));
 
     const mk = { router: markerEl('router'), today: markerEl('today'), node: markerEl('node'), inlet: markerEl('inlet') };
-    layer.append(mk.inlet, mk.today, mk.node, mk.router);
-    st = { el: vstage, canvas, layer, tl, tr, bottom, tools, legend, tip, views, bands, toolBtns, layersBtn, noplan, sbSlot, sb, sbTitle, sbSteps, sbCount, sbSub, sbAdd, sbBack, prog, progBar, mk, meas: new Map(), place };
+    // the "kabel" / "Wi-Fi" chip on the node's link to the router (SPEC 10.3; decorative - the Second AP card says it)
+    const link = el('div.pl-link', { hidden: true, 'aria-hidden': 'true' });
+    layer.append(link, mk.inlet, mk.today, mk.node, mk.router);
+    st = { el: vstage, canvas, layer, tl, tr, bottom, tools, legend, tip, views, bands, toolBtns, layersBtn, noplan, sbSlot, sb, sbTitle, sbSteps, sbCount, sbSub, sbAdd, sbBack, prog, progBar, mk, link, meas: new Map(), place };
     st.vp = WH.viewport(vstage, { onChange: () => { if (st.vp.panning) userNav = true; hideTip(); PL.requestDraw(); }, fitBox, dblClickFit: false });
     const touches = new Set();
     vstage.addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') { touches.add(e.pointerId); if (touches.size > 1) userNav = true; } });
@@ -1320,7 +1461,7 @@
       else {
         const b = PL.P().view;
         if (a.band !== b.band || a.calibrate !== b.calibrate) PL.invalidate(true);
-        else if (a.layer !== b.layer || a.palette !== b.palette || a.ranges !== b.ranges) PL.derive();
+        else if (a.layer !== b.layer || a.palette !== b.palette || a.ranges !== b.ranges || a.sourceZones !== b.sourceZones) PL.derive();
         else PL.requestDraw();
       }
       paintToolbars();

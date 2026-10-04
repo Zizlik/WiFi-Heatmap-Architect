@@ -35,10 +35,14 @@
    *   params:{today:object, trial:object}, today:Float32Array, trial:Float32Array, diff:Float32Array,
    *   nodeWins:Uint8Array|null, backhaul:number|null, weakBackhaul:boolean, targetRooms:number[]|null,
    *   stats:{today:object, trial:object}, perRoom:{today:Map, trial:Map}, delta:{coverage:number, mean:number},
-   *   bands:{today:Uint8Array|null, trial:Uint8Array|null}, bandShare:{today:object, trial:object}|null}}
+   *   bands:{today:Uint8Array|null, trial:Uint8Array|null}, bandShare:{today:object, trial:object}|null,
+   *   source:Uint8Array|null, sourceEdges:Array<Array<{x,y}>>, sourceShare:{node:number, router:number, perRoom:Map}|null}}
    *   stats objects: {coverage, mean, median, p10, n}; delta = trial - today (percentage points / dB);
    *   targetRooms null = whole flat (all rooms except goal.excluded); bands = the band of every cell in the band mode
    *   Auto (raster.fieldEx; null for one band), bandShare = raster.bandShare of the goal's rooms (null for one band).
+   *   SPEC 10.3 (a second node on): source = the winning source of every cell (1 = the node, 0 = the router; the same
+   *   array as nodeWins), sourceEdges = the border between the two zones (raster.sourceEdges, [] without a node),
+   *   sourceShare = raster.sourceShare of the goal's rooms + every room's node share (null without a node).
    */
   function run(project, opts) {
     const o = opts || {};
@@ -137,6 +141,10 @@
       delta: { coverage: stats.trial.coverage - stats.today.coverage, mean: stats.trial.mean - stats.today.mean },
       bands: { today: todayBands, trial: tr.bands || null },
       bandShare: auto ? { today: raster.bandShare(grid, todayBands, targetRooms, excluded), trial: raster.bandShare(grid, tr.bands, targetRooms, excluded) } : null,
+      // SPEC 10.3: who serves what (the planner's "Zdroj signálu" layer and the Result sentence)
+      source: tr.nodeWins || null,
+      sourceEdges: tr.nodeWins ? raster.sourceEdges(grid, tr.nodeWins) : [],
+      sourceShare: tr.nodeWins ? raster.sourceShare(grid, tr.nodeWins, targetRooms, excluded) : null,
     };
   }
 

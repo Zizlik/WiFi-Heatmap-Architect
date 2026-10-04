@@ -9,6 +9,7 @@
   --pl-range-6: #be185d;
   --pl-node: #2563eb;
   --pl-node-ink: #ffffff;
+  --pl-node-halo: rgba(37, 99, 235, .45);   /* the backing of the second node's range lines (legend sample) */
   --pl-inlet: #b45309;
   --pl-inlet-ink: #ffffff;
   --pl-unknown: rgb(113, 126, 148);
@@ -21,6 +22,7 @@
     --pl-range-6: #f9a8d4;
     --pl-node: #60a5fa;
     --pl-node-ink: #0a0a0b;
+    --pl-node-halo: rgba(96, 165, 250, .5);
     --pl-inlet: #f5b14a;
     --pl-inlet-ink: #1c1305;
     --pl-unknown: rgb(140, 140, 150);
@@ -32,6 +34,7 @@
   --pl-range-6: #f9a8d4;
   --pl-node: #60a5fa;
   --pl-node-ink: #0a0a0b;
+  --pl-node-halo: rgba(96, 165, 250, .5);
   --pl-inlet: #f5b14a;
   --pl-inlet-ink: #1c1305;
   --pl-unknown: rgb(140, 140, 150);
@@ -88,6 +91,13 @@
 .pl-sw { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; }
 .pl-sw--unknown { background: var(--pl-unknown); margin-right: 4px; }
 .pl-sw--cap { margin-right: 4px; border: 1px solid var(--line-strong); background: repeating-linear-gradient(135deg, var(--map-wall) 0 1.2px, transparent 1.2px 4px); }
+/* SPEC 10.3: "čáry: router · AP 2" - the node's sample sits on its blue backing like the lines on the map - and the
+   blue hatch of the "Zdroj signálu" layer */
+.pl-legend__src { gap: 5px !important; margin-left: 4px; padding-left: 10px; border-left: 1px solid var(--line); }
+.pl-dash--router, .pl-dash--node { width: 16px; border-color: var(--ink-2); }
+.pl-dash--node { box-shadow: 0 0 0 2px var(--pl-node-halo); border-radius: 1px; }
+.pl-sw--src { margin-right: 4px; border: 1px solid var(--pl-node); background: repeating-linear-gradient(135deg, var(--pl-node) 0 1.2px, transparent 1.2px 4px); }
+.pl-tip__src .pl-sw { width: 9px; height: 9px; }
 
 /* markers (DOM over the canvas; the 44 px box is centred on the anchor point) */
 .pl-mk {
@@ -114,8 +124,29 @@
 .pl-mk:focus-visible .pl-mk__dot { box-shadow: 0 0 0 3px var(--focus), var(--shadow-2); }
 .pl-mk--router { z-index: 4; }
 .pl-mk--router .pl-mk__dot { width: 34px; height: 34px; background: var(--danger); color: var(--on-danger); }
+/* the second node (SPEC 10.3): a 32 px disc with the type's icon (centred, like the router's R) + a name tag "AP 2" /
+   "Mesh 2" / "Opakovač" attached on the right, behind the disc - together they read as one blue pill */
 .pl-mk--node { z-index: 3; }
-.pl-mk--node .pl-mk__dot { background: var(--pl-node); color: var(--pl-node-ink); }
+.pl-mk--node .pl-mk__dot { position: relative; z-index: 1; width: 32px; height: 32px; background: var(--pl-node); color: var(--pl-node-ink); }
+.pl-mk__ico { display: grid; place-items: center; }
+.pl-mk__tag {
+  position: absolute; left: 50%; top: 50%; z-index: 0; transform: translateY(-50%);
+  display: inline-flex; align-items: center; height: 24px; padding: 0 9px 0 20px;
+  border-radius: 0 12px 12px 0; background: var(--pl-node); color: var(--pl-node-ink);
+  box-shadow: 0 0 0 2px var(--map-marker-ring), var(--shadow-1);
+  font-size: 11.5px; font-weight: 800; line-height: 1; letter-spacing: .01em; white-space: nowrap; pointer-events: none;
+}
+.pl-mk--node:hover .pl-mk__tag { opacity: .92; }
+/* the "kabel" / "Wi-Fi" chip in the middle of the node's dashed link to the router (10-core draws the line) */
+.pl-link {
+  position: absolute; left: 0; top: 0; z-index: 1;
+  display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px 0 5px;
+  border-radius: var(--r-pill); background: var(--surface); color: var(--ink-2);
+  box-shadow: 0 0 0 1.5px var(--map-halo), var(--shadow-1);
+  font-size: 11px; font-weight: 700; line-height: 20px; white-space: nowrap; pointer-events: none;
+}
+.pl-link[hidden] { display: none; }
+.pl-link .icon { color: var(--pl-node); }
 .pl-mk--inlet { z-index: 2; }
 .pl-mk--inlet .pl-mk__dot { width: 26px; height: 26px; border-width: 2.5px; background: var(--pl-inlet); color: var(--pl-inlet-ink); }
 .pl-mk--ghost { z-index: 2; }
@@ -555,7 +586,9 @@ body.pl-has-sheet #toast-root { top: var(--pl-toast-top, calc(var(--header-h, 56
 .pl-moff { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; color: var(--warn); font-size: var(--fs-xs); font-weight: 650; }
 .pl-moff .btn { margin-left: auto; }
 .pl-moffall { padding: 8px 10px; }
-/* Result card: one line about the measured points */
+/* Result card: one line about the measured points; "AP 2 má navrch v …" (SPEC 10.3) sits right under the verdict */
+.pl-srcline { margin-top: 4px !important; }
+.pl-srcline[hidden] { display: none; }
 .pl-wiline { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; color: var(--ink-2); font-size: var(--fs-sm); }
 .pl-wiline > .icon { color: var(--accent); }
 .pl-wiline .btn { margin-left: auto; }

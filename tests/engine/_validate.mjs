@@ -131,7 +131,7 @@ export function assertValidProject(p, label = 'project') {
   }
   const v = p.view;
   if (![2.4, 5, 6, 'auto'].includes(v.band) || !['signal', 'speed', 'diff'].includes(v.layer) || !['default', 'cb'].includes(v.palette)) fail('view');
-  for (const k of ['ranges', 'walls', 'furniture', 'labels', 'values', 'points', 'whatif', 'calibrate']) if (typeof v[k] !== 'boolean') fail(`view.${k}`);
+  for (const k of ['ranges', 'walls', 'furniture', 'labels', 'values', 'points', 'whatif', 'sourceZones', 'calibrate']) if (typeof v[k] !== 'boolean') fail(`view.${k}`);
   // no stray keys at the top level
   assert.deepEqual(Object.keys(p).sort(), ['goal', 'measurements', 'model', 'name', 'net', 'node', 'plan', 'scale', 'v', 'view'], `${label}: top-level keys`);
 }

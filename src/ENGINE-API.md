@@ -84,7 +84,8 @@ Project = {
   view:  { band: 2.4|5|6|'auto' ('auto' with ≥ 2 router bands; §7.9), layer: 'signal|speed|diff', ranges, walls, furniture, labels, values, calibrate: bool,
            points: bool (true; planner layer "Body měření" - the measurement dots + their labels),
            whatif: bool (true; layer "Předpověď u bodů" - the "→ predicted (+Δ)" part of those labels / tooltips / PNG),
-           palette: 'default|cb' }      // a missing / non-boolean points or whatif (older files) ⇒ true; view only, not undoable
+           sourceZones: bool (true; layer "Zdroj signálu", SPEC 10.3 - the border between the router's and the node's zone),
+           palette: 'default|cb' }      // a missing / non-boolean points, whatif or sourceZones (older files) ⇒ true; view only, not undoable
 }
 Room        { id:'room-1', type:'room', roomId:1..250 (unique int), name(≤50), points: Point[3..200], color:'#rrggbb' }
 Wall        { id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|wood|metal|masonry|solid_guess|custom', loss?:0..30 }
@@ -571,6 +572,9 @@ Grid = raster.grid(ctx, { cell = 4 })      // integer 1..64; always covers the w
 | `colorize(grid, field, {palette:'default'|'cb', mode:'signal'|'diff'|'speed', alpha=1, bleed=true, target?}) → {width,height,data}` | one pixel per grid cell, `data` is `Uint8ClampedArray` RGBA → `new ImageData(data,width,height)`. `signal`: dBm field; `diff`: dB difference (≤−10 red, 0 grey/low alpha, ≥+10 green); `speed`: ratio field from `speed.ratioField` (<0 grey = unknown). Off-floor cells transparent. **`bleed:true`** copies the edge colour into the 1-cell rim so that smooth up-scaling stays solid up to the outline — then **clip the image to the room polygons** when drawing (as SPEC §1.8 says); `bleed:false` for a raw image. `target`: reuse a `Uint8ClampedArray(cols*rows*4)` |
 | `signalColor(dbm, palette) → [r,g,b]` | for legends; stops are the SPEC §1.8 palettes (`raster.STOPS`) |
 | `contours(ctx, {band, router, node?, offset?, offsets?, threshold, res=[120,104], soften?, smooth=2, grid?, field?}) → Point[][]` | range lines = iso-lines of "signal = threshold" (marching squares). Chains of normalized points; a closed loop repeats its first point at the end. **Traced on the softened field** (the colours): by default on a grid of cell ≈ `1080/res[0]` px (9 px at res 120, 18 px at res 60; `aa 1`) inside the rooms and up to ~2 cells beyond the outlines (clip to the rooms when drawing); with `grid` + `field` (e.g. `a.grid, a.trial`) exactly on that field, nothing recomputed. `soften:0` (or a plan without rooms) = the old exact lattice of (res[0]+1)×(res[1]+1) nodes over the whole canvas. Node counted as in `field`. **Smoothed**: points closer than half a lattice cell to their predecessor are dropped (marching-squares stubs), then `smooth` Chaikin passes (default 2, 0 = raw polylines, max 4) — closed loops stay closed, open chains keep their end points, every point stays within half a lattice cell of the raw line; the sharpest turn of a range line on a real plan drops from ≈ 70° to ≈ 20°. 3 bands at res 120 ≈ 6–13 ms, at res 60 ≈ 1.5–3 ms |
+| `contours(ctx, {…, source:'router'|'node'|'combined'})` | **SPEC 10.3** (per-source range lines): `'combined'` (default) = the stronger of both sources, as before; `'router'` = the router alone (the node ignored); `'node'` = the second node alone - its position stands in for the router, its `power` is added to the band's offset, only the bands it serves (`[]` when there is no node, it is off, or it does not serve the band; in the band mode Auto only the router bands it serves take part). With a given `grid` + `field` the source is ignored (that field is traced as it is). Same tracing / smoothing; deterministic; the options are not mutated |
+| `sourceEdges(grid, nodeWins, {smooth=2}) → Point[][]` | **SPEC 10.3**: the border between the router's zone and the node's zone - smoothed chains like `contours`, traced midway between cells of different winners of a `nodeWins` mask (`fieldEx` / `analysis.run`); chains may run ~2 cells beyond the outlines (clip to the rooms). `[]` without a mask, with a mask of another grid, or when one source wins everywhere. ≈ 1 ms at cell 4 |
+| `sourceShare(grid, nodeWins, roomIds?, excluded?) → {node, router, perRoom:Map<roomId, %>}` | **SPEC 10.3**: the node's / the router's share (%) of the selected floor (`roomIds` as in `stats`; null = whole flat minus `excluded`) and the node's share of EVERY room with floor cells. Without a mask: `node 0, router 100` |
 | `chaikin(chain, iterations)` | the Chaikin corner cutting used by `contours` (1/4–3/4 points; open chains keep their ends, closed loops stay closed; chains < 3 points untouched) |
 | `blurPlan(ctx, grid)` · `boxRadii(sigmaCells)` | internals of the softening, exported for tests: the cached wall-masked row/column runs (keyed on `ctx.version` + cell) · the 4 decreasing box radii |
 | `cellAreaM2(ctx, grid)` | m² of one cell |
@@ -652,8 +656,13 @@ the router on.
 ```js
 { ctx, grid, band, offsets, threshold, soften, params:{today,trial}, today, trial, diff /* Float32Array */, nodeWins|null,
   backhaul: dBm|null, weakBackhaul: bool, targetRooms: roomId[]|null,
-  stats:{today,trial}, perRoom:{today:Map,trial:Map}, delta:{coverage, mean} /* trial − today */ }
+  stats:{today,trial}, perRoom:{today:Map,trial:Map}, delta:{coverage, mean} /* trial − today */,
+  source: Uint8Array|null, sourceEdges: Point[][], sourceShare: {node, router, perRoom}|null /* SPEC 10.3, see below */ }
 ```
+**SPEC 10.3 (a second node on)**: `source` = the winning source of every trial cell (1 = the node, 0 = the router; the
+same array as `nodeWins`), `sourceEdges` = `raster.sourceEdges(grid, nodeWins)` (the planner's "Zdroj signálu" border;
+`[]` without a node), `sourceShare` = `raster.sourceShare(grid, nodeWins, targetRooms, excluded)` (the Result sentence
+"AP 2 má navrch v místnostech …"; `null` without a node). Deterministic, ≈ 1 ms extra at cell 4 with a node.
 `cell<=4` ⇒ `aa` defaults to 2, otherwise 1. `soften` (metres, default `SOFTEN`) goes into both `params` and is returned;
 offsets that `run` computes itself are calibrated with the same `soften`. `cache` (an object you keep, one per quality)
 makes the unchanged "today" field **and its statistics** free while the router moves: `today`, `stats.today` and
@@ -891,6 +900,8 @@ because it needs an explicit language; they are mirrored into `WH.i18n` as well.
   `CURVE_ORDER`, curve maps everywhere a curve is taken; `analysis.run().bands/bandShare`, `suggestSpots()[i].band`,
   `predictAtMeasurements` entries `bandInferred/bandNew/steered` and `opts.steer`; `project.cleanLinks/cleanRouterBands`,
   `STEER_*`, `ROUTER_BANDS_DEFAULT`, `MAX_LINKS`; `WH.devinfo` `Conn.links`, `linksOf`, `LIMITS.MAX_LINKS`.
+* **SPEC 10.3 (+, node layers)**: `contours(…, {source:'router'|'node'|'combined'})`, `raster.sourceEdges/sourceShare`,
+  `analysis.run().source/sourceEdges/sourceShare`, `view.sourceZones` (sanitized, serialized, default on; `tests/engine/source.test.mjs`).
 * Node test runner: `node --test tests/engine` does not work on Node ≥ 21 (a directory is treated as a module). Use `node tests/engine/run-all.mjs` or `node --test "tests/engine/*.test.mjs"`.
 
 ## 10. Performance

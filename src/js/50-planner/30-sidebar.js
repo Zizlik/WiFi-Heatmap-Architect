@@ -142,6 +142,8 @@
       el('div', el('dt', t('planner.res.avg'), ui().hint('avgSignal')), el('dd.num', avg, ui().hint('quality'))),
       el('div', el('dt', t('planner.res.p10'), ui().hint('p10')), p10));
     const sentence = el('p.pl-sentence');
+    // SPEC 10.3: with a second point on, who covers which rooms ("AP 2 má navrch v místnostech Ložnice a Pracovna, …")
+    const srcLine = el('p.pl-sentence.pl-srcline', { hidden: true });
     // SPEC 10: what the change does at the measured points (+ "Podrobnosti" -> the Measurements card)
     const wiTxt = el('span');
     const wiLine = el('p.pl-wiline', { hidden: true }, ui().icon('pin', 16), wiTxt, ui().button({ i18n: 'planner.wi.details', size: 'sm', variant: 'ghost', onClick: () => {
@@ -158,7 +160,7 @@
     if (fitSec) syncs.push((q) => fitSec.sync(q));
     if (tpSec) syncs.push((q) => tpSec.sync(q));
     const c = ui().card({ id: 'pl-result', i18n: 'planner.res.title', icon: 'gauge', body: [
-      target, el('div.pl-cap', el('span', t('planner.res.coverage')), ui().hint('coverage')), hero, kv, sentence, wiLine, speedLine, fitSec, tpSec,
+      target, el('div.pl-cap', el('span', t('planner.res.coverage')), ui().hint('coverage')), hero, kv, sentence, srcLine, wiLine, speedLine, fitSec, tpSec,
       el('div.pl-subhead', el('span', t('planner.res.rooms')), el('span', t('planner.res.roomsHint'))), rooms, live].filter(Boolean) });
     const rows = new Map();
     let order = '';
@@ -172,6 +174,7 @@
         avg.textContent = '—';
         p10.textContent = '—';
         sentence.textContent = t('planner.res.noplan');
+        srcLine.hidden = true;
         speedLine.hidden = true;
         rooms.replaceChildren();
         rows.clear();
@@ -199,6 +202,20 @@
       if (cmp && dl >= 3) txt += ' ' + t('planner.res.s.better');
       else if (cmp && dl <= -3) txt += ' ' + t('planner.res.s.worse');
       sentence.textContent = txt;
+      // SPEC 10.3: which rooms the second point serves (a room counts as its when it is the stronger source on at least
+      // half of the floor); the drag frames (coarse) carry no shares - the line keeps its last text until the pointer rests
+      if (q !== 'coarse') {
+        const sh = p.node.mode !== 'none' && a.sourceShare ? a.sourceShare : null;
+        srcLine.hidden = !sh;
+        if (sh) {
+          const who = PL.nodeLabel();
+          const counted = p.plan.rooms.filter((r) => { const s2 = a.perRoom.trial.get(r.roomId); return s2 && s2.n; });
+          const names = counted.filter((r) => (sh.perRoom.get(r.roomId) || 0) >= 50).map((r) => r.name);
+          srcLine.textContent = !names.length ? t('planner.res.srcNone', { who })
+            : names.length >= counted.length ? t('planner.res.srcAll', { who })
+              : t(names.length === 1 ? 'planner.res.srcOne' : 'planner.res.srcMany', { who, list: PL.listOf(names) });
+        }
+      }
       const ws = q === 'coarse' ? null : PL.wi.summary();
       if (q !== 'coarse') { wiLine.hidden = !ws; if (ws) wiTxt.textContent = PL.wi.resultLine(ws); }
       const sp = PL.S.sp;

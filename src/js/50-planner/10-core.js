@@ -57,6 +57,14 @@
   PL.m = (n, d = 1) => WH.util.fmt(n, d) + WH.util.NBSP + 'm';
   PL.band = (b) => t(b === 2.4 ? 'planner.band.b24' : 'planner.band.b' + b);
   PL.mbps = (n) => WH.engine.units.formatMbps(n, WH.i18n.lang);
+  // SPEC 10.3: the second node on the map - what it is called by its type ("AP 2" / "Mesh 2" / "Opakovač"), its icon
+  // and whether its link to the router is wireless (the dashed line says "kabel" / "Wi-Fi")
+  PL.nodeOn = () => { const p = PL.P(); return !!(p && p.node && p.node.mode !== 'none'); };
+  PL.nodeLabel = (mode) => { const m = mode || PL.P().node.mode; return t('planner.mk.nodeLbl.' + (m === 'none' || !m ? 'ap_cable' : m)); };
+  PL.nodeIcon = (mode) => { const m = mode || PL.P().node.mode; return m === 'repeater' ? 'repeater' : m === 'mesh_cable' || m === 'mesh_wifi' ? 'mesh' : 'node'; };
+  PL.nodeWireless = (mode) => { const m = mode || PL.P().node.mode; return m === 'mesh_wifi' || m === 'repeater'; };
+  /** "Ložnice, Pracovna a Koupelna" */
+  PL.listOf = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} ${t('planner.res.and')} ${names[names.length - 1]}`);
   /**
    * Obstacle loss (dB) between a and b on a band - softened like the map, band-dependent wall losses (SPEC 7.1);
    * NaN when the engine has no per-band API yet.
@@ -300,23 +308,10 @@
     S.heat = cv;
     S.heatCell = g.cell;
     // hatch where the second node wins but its wireless uplink is weak
-    S.hatch = null;
-    if (a.weakBackhaul && a.nodeWins && mode !== 'speed') {
-      const path = new Path2D();
-      let any = false;
-      const c = g.cell;
-      for (let r = 0; r < g.rows; r++) {
-        let s = -1;
-        for (let k = 0; k <= g.cols; k++) {
-          const on = k < g.cols && a.nodeWins[r * g.cols + k] === 1;
-          if (on && s < 0) s = k;
-          else if (!on && s >= 0) { path.rect(s * c, r * c, (k - s) * c, c); any = true; s = -1; }
-        }
-      }
-      if (any) S.hatch = path;
-    }
-    // range lines: one dashed iso-line per band the router sends (SPEC 13: net.routerBands) at model.rangeThreshold
-    // (lower resolution while dragging)
+    S.hatch = a.weakBackhaul && a.nodeWins && mode !== 'speed' ? cellsPath(g, a.nodeWins) : null;
+    // range lines: one dashed iso-line per band the router sends (SPEC 13: net.routerBands) at model.rangeThreshold,
+    // around EVERY active source (SPEC 10.3) - the router and, on the bands it serves, the second node - so the map
+    // says which source covers what (lower resolution while dragging)
     S.cont = null;
     // (signal and change views only - the speed legend has no range-line key, like before)
     if (v.ranges && mode !== 'speed') {
@@ -325,15 +320,49 @@
       const key = [a.ctx.version, st.router.x, st.router.y, JSON.stringify(st.node), JSON.stringify(S.offs), p.model.rangeThreshold, S.q, rb.join(',')].join('|');
       if (key !== S.contKey) {
         const res = S.q === 'coarse' ? [60, 52] : [120, 104];
-        S.contAll = {};
-        for (const b of rb) S.contAll[b] = E.raster.contours(a.ctx, { band: b, router: st.router, node: st.node, offsets: S.offs, threshold: p.model.rangeThreshold, res });
+        const base = { router: st.router, node: st.node, offsets: S.offs, threshold: p.model.rangeThreshold, res };
+        S.contAll = { router: {}, node: {} };
+        for (const b of rb) {
+          S.contAll.router[b] = E.raster.contours(a.ctx, { ...base, band: b, source: 'router' });
+          if (st.node && E.model.nodeActive(st.node, b)) S.contAll.node[b] = E.raster.contours(a.ctx, { ...base, band: b, source: 'node' });
+        }
         S.contKey = key;
       }
       S.cont = S.contAll;
     }
+    // the layer "Zdroj signálu" (SPEC 10.3): the border between the router's zone and the node's zone + the node's side
+    // (cached per analysis: a layer toggle costs nothing). Signal and change views only, like the range lines: the Speed
+    // view keeps its own cap hatch and its legend never shows a hatch that is not painted
+    S.srcEdges = null;
+    S.srcHatch = null;
+    if (v.sourceZones !== false && a.nodeWins && mode !== 'speed') {
+      if (S.srcA !== a) {
+        S.srcA = a;
+        S.srcEdgesAll = Array.isArray(a.sourceEdges) ? a.sourceEdges : E.raster.sourceEdges(g, a.nodeWins);
+        S.srcHatchAll = cellsPath(g, a.nodeWins);
+      }
+      S.srcEdges = S.srcEdgesAll;
+      S.srcHatch = S.srcHatchAll;
+    }
     if (!noDraw) { PL.draw(); notify('derive'); }
   }
   PL.derive = derive;
+
+  /** A Path2D of the cells where mask[i] === 1 (runs along rows as rectangles, world px), null when there are none. */
+  function cellsPath(g, mask) {
+    const path = new Path2D();
+    let any = false;
+    const c = g.cell;
+    for (let r = 0; r < g.rows; r++) {
+      let s = -1;
+      for (let k = 0; k <= g.cols; k++) {
+        const on = k < g.cols && mask[r * g.cols + k] === 1;
+        if (on && s < 0) s = k;
+        else if (!on && s >= 0) { path.rect(s * c, r * c, (k - s) * c, c); any = true; s = -1; }
+      }
+    }
+    return any ? path : null;
+  }
 
   let raf = 0;
   let fullTimer = 0;
@@ -616,25 +645,58 @@
         c.fillRect(0, 0, o.w * o.dpr, o.h * o.dpr);
         c.restore();
       }
+      // the layer "Zdroj signálu" (SPEC 10.3), part 1: a light blue hatch on the node's side (unless the weak-uplink
+      // hatch or the Speed view's cap hatch already marks it)
+      if (S.srcEdges && S.srcHatch && !S.hatch && S.mode !== 'speed') {
+        c.save();
+        c.clip(S.srcHatch);
+        c.setTransform(1, 0, 0, 1, 0, 0);
+        c.fillStyle = pattern(c, col('--pl-node'), 9, 1.2, o.dpr);
+        c.globalAlpha = 0.28;
+        c.fillRect(0, 0, o.w * o.dpr, o.h * o.dpr);
+        c.restore();
+      }
       if (S.cont) {
         c.lineJoin = 'round';
         c.lineCap = 'round';
-        for (const b of WH.engine.BANDS) {
-          if (!S.cont[b]) continue;
-          const path = new Path2D();
-          for (const ch of S.cont[b]) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
-          c.setLineDash([]);
-          c.strokeStyle = col('--map-halo');
-          c.lineWidth = 4 * px;
-          c.globalAlpha = 0.7;
-          c.stroke(path);
-          c.globalAlpha = 1;
-          c.setLineDash(PL.BAND_DASH[b].map((v) => v * px));
-          c.strokeStyle = col(PL.BAND_VAR[b]);
-          c.lineWidth = 2 * px;
-          c.stroke(path);
+        const fam = font();
+        for (const src of ['router', 'node']) {
+          const set = S.cont[src];
+          if (!set) continue;
+          for (const b of WH.engine.BANDS) {
+            if (!set[b] || !set[b].length) continue;
+            const path = new Path2D();
+            for (const ch of set[b]) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
+            c.setLineDash([]);
+            // the node's lines sit on a blue backing (--pl-node) instead of the plain halo, so the two sources read apart
+            if (src === 'node') { c.strokeStyle = col('--pl-node'); c.lineWidth = 5.5 * px; c.globalAlpha = 0.55; }
+            else { c.strokeStyle = col('--map-halo'); c.lineWidth = 4 * px; c.globalAlpha = 0.7; }
+            c.stroke(path);
+            c.globalAlpha = 1;
+            c.setLineDash(PL.BAND_DASH[b].map((v) => v * px));
+            c.strokeStyle = col(PL.BAND_VAR[b]);
+            c.lineWidth = 2 * px;
+            c.stroke(path);
+            if (src === 'node') { c.setLineDash([]); lineTag(c, set[b], px, fam, p); }
+          }
         }
         c.setLineDash([]);
+      }
+      // "Zdroj signálu", part 2: the border between the two zones, over the range lines
+      if (S.srcEdges && S.srcEdges.length) {
+        const path = new Path2D();
+        for (const ch of S.srcEdges) ch.forEach((q, i) => (i ? path.lineTo(q.x * W, q.y * H) : path.moveTo(q.x * W, q.y * H)));
+        c.setLineDash([]);
+        c.lineJoin = 'round';
+        c.lineCap = 'round';
+        c.strokeStyle = col('--map-halo');
+        c.lineWidth = 5 * px;
+        c.globalAlpha = 0.8;
+        c.stroke(path);
+        c.globalAlpha = 1;
+        c.strokeStyle = col('--pl-node');
+        c.lineWidth = 2.5 * px;
+        c.stroke(path);
       }
       c.restore();
     }
@@ -673,6 +735,45 @@
         c.stroke(shut);
         c.setLineDash([]);
       }
+    }
+    // the second node's link to the router (SPEC 10.3): a dashed line, dotted for a wireless uplink; on screen the
+    // "kabel" / "Wi-Fi" chip is DOM (20-stage place), the PNG export writes it here
+    if (p.node.mode !== 'none' && G.hasRooms && p.node.pos && p.net.router) {
+      const r0 = p.net.router;
+      const q0 = p.node.pos;
+      const wl = PL.nodeWireless(p.node.mode);
+      c.save();
+      c.lineCap = 'round';
+      c.beginPath();
+      c.moveTo(r0.x * W, r0.y * H);
+      c.lineTo(q0.x * W, q0.y * H);
+      c.strokeStyle = col('--map-halo');
+      c.lineWidth = 4.5 * px;
+      c.globalAlpha = 0.8;
+      c.stroke();
+      c.globalAlpha = 1;
+      c.setLineDash((wl ? [0.5, 5] : [7, 4]).map((d) => d * px));
+      c.strokeStyle = col('--pl-node');
+      c.lineWidth = (wl ? 2.4 : 1.8) * px;
+      c.stroke();
+      c.setLineDash([]);
+      if (o.linkText) {
+        c.setTransform(o.dpr, 0, 0, o.dpr, 0, 0);
+        const mx = ((r0.x + q0.x) / 2) * W * s + o.tx;
+        const my = ((r0.y + q0.y) / 2) * H * s + o.ty;
+        const txt = t(wl ? 'planner.mk.linkWifi' : 'planner.mk.linkCable');
+        c.font = `700 11px ${font()}`;
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.lineJoin = 'round';
+        c.lineWidth = 3.5;
+        c.strokeStyle = col('--map-halo');
+        c.strokeText(txt, mx, my);
+        c.fillStyle = col('--map-label');
+        c.fillText(txt, mx, my);
+      }
+      c.restore();
+      c.setTransform(k, 0, 0, k, o.tx * o.dpr, o.ty * o.dpr);
     }
     if ((v.labels || v.values) && G.labels.length) {
       c.setTransform(o.dpr, 0, 0, o.dpr, 0, 0);
@@ -715,17 +816,66 @@
   }
   PL.drawScene = drawScene;
 
+  /** A small "2" on the longest range line of the second node (SPEC 10.3), at a point of it that lies on the floor and
+   *  stands clear of the router disc and of the node's disc + name tag (so it is never taken for a tag of the router). */
+  function lineTag(c, chains, px, fam, p) {
+    let best = null;
+    for (const ch of chains) if (!best || ch.length > best.length) best = ch;
+    if (!best || best.length < 4) return;
+    const F = WH.engine.project;
+    const start = Math.floor(best.length / 2);
+    const r0 = p.net.router;
+    const n0 = p.node.pos;
+    const tagW = (PL.nodeTagW || 48) * px;
+    const clear = (cand) => {
+      const x = cand.x * W;
+      const y = cand.y * H;
+      if (r0 && Math.hypot(x - r0.x * W, y - r0.y * H) < 60 * px) return false;
+      if (n0) {
+        // the node's pill: the disc + the tag to its right
+        const nx = Math.min(Math.max(x, n0.x * W), n0.x * W + tagW);
+        if (Math.hypot(x - nx, y - n0.y * H) < 60 * px) return false;
+      }
+      return true;
+    };
+    let q = null;
+    for (let k = 0; k < best.length && !q; k++) { const cand = best[(start + k) % best.length]; if (F.floorMaskAt(p.plan, cand) && clear(cand)) q = cand; }
+    for (let k = 0; k < best.length && !q; k++) { const cand = best[(start + k) % best.length]; if (F.floorMaskAt(p.plan, cand)) q = cand; }
+    if (!q) return;
+    const x = q.x * W;
+    const y = q.y * H;
+    c.beginPath();
+    c.arc(x, y, 6.5 * px, 0, Math.PI * 2);
+    c.fillStyle = col('--pl-node');
+    c.fill();
+    c.lineWidth = 1.5 * px;
+    c.strokeStyle = col('--map-marker-ring');
+    c.stroke();
+    c.fillStyle = col('--pl-node-ink');
+    c.font = `800 ${9 * px}px ${fam}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.fillText('2', x, y + 0.5 * px);
+  }
+
   /** Screen rectangles (CSS px) of the DOM markers drawn over the map - router, today's ghost (+ its caption), inlet,
-   *  second node, measurement dots and their value labels - so room names can step out of their way. */
+   *  second node (+ its name tag) and its link chip, measurement dots and their value labels - so room names can step
+   *  out of their way. */
   function markerRects(p, s, o) {
     const out = [];
     if (!p.plan.rooms.length) return out;
     const sc = (q) => ({ x: q.x * W * s + o.tx, y: q.y * H * s + o.ty });
-    const disc = (q, r, capH) => { if (!q) return; const c = sc(q); out.push({ l: c.x - r, t: c.y - r, r: c.x + r, b: c.y + r + (capH || 0) }); };
+    const disc = (q, r, capH, right) => { if (!q) return; const c = sc(q); out.push({ l: c.x - r, t: c.y - r, r: c.x + r + (right || 0), b: c.y + r + (capH || 0) }); };
     disc(p.net.router, 20);
     if (PL.moved()) disc(p.net.baseline, 17, 18);
     disc(p.net.optic, 16);
-    if (p.node.mode !== 'none') disc(p.node.pos, 17);
+    if (p.node.mode !== 'none') {
+      disc(p.node.pos, 17, 0, PL.nodeTagW || 48);
+      // the "kabel" / "Wi-Fi" chip in the middle of the link (20-stage place hides it when the two markers are close)
+      const a = sc(p.net.router);
+      const b = sc(p.node.pos);
+      if (Math.hypot(a.x - b.x, a.y - b.y) >= 70) { const w = (PL.linkW || 60) / 2; out.push({ l: (a.x + b.x) / 2 - w, t: (a.y + b.y) / 2 - 11, r: (a.x + b.x) / 2 + w, b: (a.y + b.y) / 2 + 11 }); }
+    }
     const st = PL.stage;
     // layer "Body měření" off: no dots on the map (a dot peeked from the list still counts)
     for (const m of p.measurements) {

@@ -247,7 +247,9 @@ uses `info` (the `gauge` looked like the Speed view's icon).
   Stage 7 (SPEC 13): `bandSteering` - "Wi-Fi 7 a automatické přepínání pásem" (one network for all bands, MLO, never pin a device
   to one band, every measurement records its band, the Auto map); use `WH.ui.hint('bandSteering')` next to the Auto band switch /
   the phone band picker instead of writing your own. `help.band.more` also mentions Auto.
-  Planner map layers (2026-10-04): `layerPoints` ("Body měření"), `layerWhatIf` ("Předpověď u bodů", key `P`) in `50-planner/strings-layers.js`.
+  Planner map layers (2026-10-04): `layerPoints` ("Body měření"), `layerWhatIf` ("Předpověď u bodů", key `P`), `layerSource`
+  ("Zdroj signálu", SPEC 10.3 - greyed with `data-hint-note` `planner.layers.why.noNode` while no second node is on) in
+  `50-planner/strings-layers.js`.
   Need another one? Add `help.<newKey>.t|b|(more)` in **your own** strings file (cs+en); it shows up in the Help panel glossary automatically.
 * **State note in a hint**: `hintButton.dataset.hintNote = 'i18n.key'` adds one highlighted line (`.popover__note`, warn tint) under the
   title, read at show time - use it to say why the control next to the "?" is greyed right now (the planner's layer

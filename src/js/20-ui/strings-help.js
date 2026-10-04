@@ -77,7 +77,7 @@
     'help.diffView.b': 'Barevně ukáže rozdíl mezi zkušební a dnešní polohou routeru: zeleně tam, kde se signál zlepší, červeně kde zhorší, šedě kde zůstane stejný. Rychlý způsob, jak poznat, jestli se přesun vyplatí.',
 
     'help.layers.t': 'Vrstvy mapy',
-    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdi, nábytek, názvy místností, čísla v dBm, body měření a předpověď u nich. Nic z toho nemění výpočet, jen vzhled.',
+    'help.layers.b': 'Zapni nebo vypni, co je na mapě vidět: čáry dosahu, zdroj signálu (kde je silnější druhý bod), zdi, nábytek, názvy místností, čísla v dBm, body měření a předpověď u nich. Nic z toho nemění výpočet, jen vzhled.',
 
     'help.ranges.t': 'Čáry dosahu',
     'help.ranges.b': 'Tenké čáry na mapě spojují místa se stejnou sílou signálu, podobně jako vrstevnice na turistické mapě. Ukazují, kam až signál dosáhne při zvolené hranici. Přepni pásmo: na 2,4 GHz sahají čáry přes zdi dál než na 5 nebo 6 GHz.',
@@ -289,7 +289,7 @@
     'help.diffView.b': 'Shows in colour the difference between the trial and today\'s router position: green where the signal improves, red where it gets worse, grey where it stays the same. A quick way to see whether a move is worth it.',
 
     'help.layers.t': 'Map layers',
-    'help.layers.b': 'Turn on or off what you see on the map: range lines, walls, furniture, room names, dBm numbers, measurement points and the prediction at them. None of it changes the calculation, only the look.',
+    'help.layers.b': 'Turn on or off what you see on the map: range lines, the signal source (where the second point is stronger), walls, furniture, room names, dBm numbers, measurement points and the prediction at them. None of it changes the calculation, only the look.',
 
     'help.ranges.t': 'Range lines',
     'help.ranges.b': 'Thin lines on the map join places with the same signal strength, like contour lines on a hiking map. They show how far the signal reaches at the chosen threshold. Switch the band: at 2.4 GHz the lines reach further through walls than at 5 or 6 GHz.',

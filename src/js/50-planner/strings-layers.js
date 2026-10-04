@@ -1,4 +1,5 @@
-/* Planner strings: the map layers "Body měření" / "Předpověď u bodů" (view.points / view.whatif), cs + en. */
+/* Planner strings: the map layers "Body měření" / "Předpověď u bodů" (view.points / view.whatif) and "Zdroj signálu"
+ * (view.sourceZones, SPEC 10.3) + what the second node is called on the map (marker tag, legend, tooltip, Result), cs + en. */
 (function () {
   'use strict';
   const I = globalThis.WH.i18n;
@@ -19,6 +20,36 @@
     'help.layerWhatIf.t': 'Předpověď u bodů',
     'help.layerWhatIf.b': 'Když posuneš router nebo zapneš druhý bod, ukáže u každé tečky, co by tam bylo, třeba −72 → −58 (+14) nebo ↓120 → ≈310. Vypnutá: tečky ukazují jen to, co jsi naměřil. Klávesa P.',
     'help.layerWhatIf.more': 'Souhrn „Co by se změnilo v tvých bodech“ v kartě Zpřesnit měřením zůstane i tak.',
+
+    // SPEC 10.3: the layer "Zdroj signálu" - where the second point is the stronger source
+    'planner.layers.source': 'Zdroj signálu',
+    'planner.layers.why.noNode': 'Teď není co ukázat: druhý přístupový bod je vypnutý. Zapni ho v kartě Druhý přístupový bod.',
+    'help.layerSource.t': 'Zdroj signálu',
+    'help.layerSource.b': 'Když máš zapnutý druhý přístupový bod, nakreslí čáru mezi částí bytu, kde je silnější router, a částí, kde je silnější druhý bod (ta je jemně šrafovaná modře). Hned vidíš, kdo pokrývá kterou místnost.',
+    'help.layerSource.more': 'Čáry dosahu se kreslí kolem obou zdrojů: ty od druhého bodu mají modrý podklad a malou dvojku na začátku. U bezdrátového bodu se slabým spojením k routeru je šrafování šedé. V pohledu Rychlost se vrstva nekreslí.',
+    // the legend's range-line row ("čáry: router · AP 2") and the source row (what the hatch means; the grey weak-uplink
+    // hatch of a wireless node replaces the blue one)
+    'planner.legend.lines': 'čáry:',
+    'planner.legend.srcRouter': 'router',
+    'planner.legend.source': 'šrafy: tady je silnější {node}, jinde router',
+    'planner.legend.sourceWeak': 'šrafy: tady je silnější {node}, ale má slabé spojení s routerem',
+    // the hover tooltip: "Silnější zdroj: AP 2 (−48 dBm) · router (−71 dBm)"
+    'planner.tip.source': 'Silnější zdroj: {a} ({va}) · {b} ({vb})',
+    'planner.tip.routerName': 'router',
+    // what the second point is called by its type (the marker tag, the legend, the sentences)
+    'planner.mk.nodeLbl.ap_cable': 'AP 2',
+    'planner.mk.nodeLbl.mesh_cable': 'Mesh 2',
+    'planner.mk.nodeLbl.mesh_wifi': 'Mesh 2',
+    'planner.mk.nodeLbl.repeater': 'Opakovač',
+    // the link to the router (dashed line between the two markers)
+    'planner.mk.linkCable': 'kabel',
+    'planner.mk.linkWifi': 'Wi-Fi',
+    // the Result card: which rooms the second point covers
+    'planner.res.srcOne': '{who} má navrch v místnosti {list}, jinde je silnější router.',
+    'planner.res.srcMany': '{who} má navrch v místnostech {list}, jinde je silnější router.',
+    'planner.res.srcAll': '{who} je silnější než router v celém bytě.',
+    'planner.res.srcNone': '{who} není nikde silnější než router – zkus ho posunout dál od routeru.',
+    'planner.res.and': 'a',
   });
 
   I.add('en', {
@@ -36,5 +67,28 @@
     'help.layerWhatIf.t': 'Predicted change at points',
     'help.layerWhatIf.b': 'When you move the router or switch on a second point, every dot shows what it would get there, for example −72 → −58 (+14) or ↓120 → ≈310. Off: the dots show only what you measured. Key P.',
     'help.layerWhatIf.more': 'The “What would change at your points” summary in the Improve with measurements card stays either way.',
+
+    'planner.layers.source': 'Signal source',
+    'planner.layers.why.noNode': 'Nothing to show now: the second access point is off. Switch it on in the Second access point card.',
+    'help.layerSource.t': 'Signal source',
+    'help.layerSource.b': 'With a second access point on, it draws a line between the part of your home where the router is stronger and the part where the second point is stronger (that one gets a light blue hatch). You see at a glance who covers which room.',
+    'help.layerSource.more': 'Range lines are drawn around both sources: those of the second point have a blue backing and a small 2 at their start. With a wireless point whose link to the router is weak, the hatch is grey. The Speed view does not draw this layer.',
+    'planner.legend.lines': 'lines:',
+    'planner.legend.srcRouter': 'router',
+    'planner.legend.source': 'hatched: {node} is stronger here, the router elsewhere',
+    'planner.legend.sourceWeak': 'hatched: {node} is stronger here, but its link to the router is weak',
+    'planner.tip.source': 'Stronger source: {a} ({va}) · {b} ({vb})',
+    'planner.tip.routerName': 'router',
+    'planner.mk.nodeLbl.ap_cable': 'AP 2',
+    'planner.mk.nodeLbl.mesh_cable': 'Mesh 2',
+    'planner.mk.nodeLbl.mesh_wifi': 'Mesh 2',
+    'planner.mk.nodeLbl.repeater': 'Repeater',
+    'planner.mk.linkCable': 'cable',
+    'planner.mk.linkWifi': 'Wi-Fi',
+    'planner.res.srcOne': '{who} is the stronger source in {list}; the router elsewhere.',
+    'planner.res.srcMany': '{who} is the stronger source in {list}; the router elsewhere.',
+    'planner.res.srcAll': '{who} is stronger than the router everywhere.',
+    'planner.res.srcNone': '{who} is nowhere stronger than the router – try moving it further from the router.',
+    'planner.res.and': 'and',
   });
 })();

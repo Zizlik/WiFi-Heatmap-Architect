@@ -893,6 +893,72 @@
   }
 
   /**
+   * The border between the router's zone and the second node's zone (SPEC 10.3, the planner layer "Zdroj signálu"):
+   * smoothed chains of normalized points, traced midway between cells of different winners of a nodeWins mask
+   * (fieldEx / analysis.run). [] without a mask or when one source wins everywhere. Like contours, a chain may run
+   * up to ~2 cells beyond the room outlines: clip to the rooms when drawing. Deterministic; ~1 ms at cell 4.
+   * @param {object} g grid()
+   * @param {Uint8Array|null} wins nodeWins (1 = the node is the stronger source)
+   * @param {{smooth?:number}} [opts] Chaikin iterations (default 2, 0..4)
+   * @returns {Array<Array<{x:number,y:number}>>}
+   */
+  function sourceEdges(g, wins, opts) {
+    if (!g || !wins || wins.length !== g.cols * g.rows) return [];
+    const iters = opts && opts.smooth !== undefined ? clamp(Math.floor(Number(opts.smooth)) || 0, 0, 4) : 2;
+    const rank = new Float32Array(wins.length).fill(NaN);
+    let any0 = false;
+    let any1 = false;
+    for (let m = 0; m < g.idx.length; m++) {
+      const i = g.idx[m];
+      if (wins[i]) {
+        rank[i] = 1;
+        any1 = true;
+      } else {
+        rank[i] = 0;
+        any0 = true;
+      }
+    }
+    if (!any0 || !any1) return [];
+    const lat = latticeFromField(g, rank, 0.5);
+    const out = [];
+    for (const ch of march(lat)) out.push(iters ? chaikin(thinChain(ch, 0.5 * lat.spacing), iters) : ch);
+    return out;
+  }
+
+  /**
+   * How much of the floor each source serves (SPEC 10.3: "AP 2 pokrývá ložnici a pracovnu; router zbytek").
+   * @param {object} g grid()
+   * @param {Uint8Array|null} wins nodeWins (null = the router serves everything)
+   * @param {number[]|number|null} [roomIds] the rooms of `node` / `router`; null = whole flat minus `excluded`
+   * @param {number[]} [excluded]
+   * @returns {{node:number, router:number, perRoom:Map<number,number>}} percent of the selected floor cells the node
+   *   wins (`router` = the rest); perRoom = the node's share of EVERY room with floor cells (0..100)
+   */
+  function sourceShare(g, wins, roomIds, excluded) {
+    const out = { node: 0, router: 100, perRoom: new Map() };
+    if (!g || !g.roomCells) return out;
+    const ok = !!(wins && wins.length === g.cols * g.rows);
+    const sel = new Set(selectRooms(g, roomIds, excluded));
+    let total = 0;
+    let node = 0;
+    for (const id of g.roomIds) {
+      const cells = g.roomCells.get(id);
+      let n = 0;
+      if (ok) for (let k = 0; k < cells.length; k++) if (wins[cells[k]]) n++;
+      out.perRoom.set(id, cells.length ? (100 * n) / cells.length : 0);
+      if (sel.has(id)) {
+        total += cells.length;
+        node += n;
+      }
+    }
+    if (total) {
+      out.node = (100 * node) / total;
+      out.router = 100 - out.node;
+    }
+    return out;
+  }
+
+  /**
    * nodeWins of a field array computed by field()/fieldEx() with these params (null = the node serves nowhere), or
    * undefined when this array was not (or no longer) computed for them.
    */
@@ -1544,6 +1610,30 @@
   }
 
   /**
+   * contours() options for ONE source (SPEC 10.3): 'router' drops the node; 'node' traces the node alone - it stands
+   * in for the router (its position, its power added to the band's offset) on the bands it serves. null = the node
+   * source has nothing to draw (no node, or none of the requested bands is served).
+   */
+  function sourceOpts(opts, source) {
+    if (source === 'router') return { ...opts, node: null };
+    const node = opts.node;
+    if (!node || node.mode === 'none' || !node.pos || !node.bands) return null;
+    const power = isNum(node.power) ? node.power : 0;
+    if (model.isAuto(opts)) {
+      const bands = model.routerBandList(opts.bands).filter((b) => model.nodeActive(node, b));
+      if (!bands.length) return null;
+      const offsets = { '2.4': 0, '5': 0, '6': 0 };
+      for (const b of bands) offsets[units.bandKey(b)] = model.offsetFor(opts.offsets, b) + power;
+      return { ...opts, router: node.pos, node: null, bands, offsets, offset: undefined };
+    }
+    const band = units.normBand(opts.band !== undefined ? opts.band : opts.targetBand);
+    if (band === null) return { ...opts, node: null }; // contours() throws the RangeError
+    if (!model.nodeActive(node, band)) return null;
+    const off = (isNum(opts.offset) ? opts.offset : model.offsetFor(opts.offsets, band)) + power;
+    return { ...opts, router: node.pos, node: null, offset: off };
+  }
+
+  /**
    * Iso-lines of "signal = threshold" (range lines), smoothed.
    * By default they are traced on the SOFTENED field of a grid whose cell is about W/res[0] px (the same field
    * raster.field draws, so the lines follow the colours) - inside the rooms and up to ~2 cells beyond the outlines
@@ -1553,15 +1643,24 @@
    * @param {object} ctx
    * @param {{band:number|'auto', bands?:number[], steer?:object, router:{x,y}, node?:object|null, offset?:number,
    *          offsets?:object, threshold:number, res?:[number,number], soften?:number, smooth?:number, grid?:object,
-   *          field?:Float32Array}} opts band 'auto' (SPEC 13): the range lines of the steered field (bands / steer as
-   *          model.fieldParams puts them; every band with its own offset from offsets)
+   *          field?:Float32Array, source?:'router'|'node'|'combined'}} opts band 'auto' (SPEC 13): the range lines
+   *          of the steered field (bands / steer as model.fieldParams puts them; every band with its own offset from
+   *          offsets)
    *        offset (dB, this band) or offsets map; the node's power is added for the node source. smooth = Chaikin
    *        iterations (default 2, 0 = raw marching-squares polylines, max 4); before smoothing, points closer than
    *        half a lattice cell to their predecessor are dropped (marching-squares stubs). Smoothed lines stay within
    *        half a lattice cell of the raw ones.
+   *        source (SPEC 10.3, default 'combined' = the stronger of both, as before): 'router' = the router alone (the
+   *        node ignored), 'node' = the second node alone (its position, power and bands; [] when it is off or does not
+   *        serve the band). Ignored with a given grid + field (that field is traced as it is).
    * @returns {Array<Array<{x:number,y:number}>>} chains of normalized points; a closed loop repeats its first point at the end
    */
   function contours(ctx, opts) {
+    if ((opts.source === 'router' || opts.source === 'node') && !(opts.grid && opts.field)) {
+      const o = sourceOpts(opts, opts.source);
+      if (!o) return [];
+      opts = o;
+    }
     const auto = model.isAuto(opts);
     const band = auto ? 'auto' : units.normBand(opts.band);
     if (band === null || !opts.router) throw new RangeError('raster.contours: band and router are required');
@@ -1605,6 +1704,8 @@
     bandShare,
     bandZones,
     bandEdges,
+    sourceEdges,
+    sourceShare,
     diff,
     smooth,
     stats,

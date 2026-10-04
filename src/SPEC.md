@@ -576,6 +576,40 @@ measurement points would increase or decrease".
   back on (toast), so a new point never lands out of sight. While a layer that is on by default is hidden (Zdi, Nábytek, Popisky,
   Body měření, Předpověď u bodů) the Vrstvy button carries a small accent dot, so hidden dots are not forgotten after a reload.
 
+### 10.3 The second node must be readable as a source on the map (user, 2026-10-04, looking only at the README picture: "proč je
+ložnice zelená ZA zdí a oranžová tam, kde zeď není? … není potřeba udělat ty vrstvy i od druhého bodu? Takhle to vypadá, že to
+úplně nefunguje")
+- The green bedroom was the wired AP's coverage, but nothing on the map said so: range lines were traced on the COMBINED field
+  (so the node's own reach never appeared as its own ring), the node marker was a small blue dot, and no layer showed which source
+  serves which area. A picture of the planner must explain itself.
+- Engine: `raster.contours(ctx, {…, source:'router'|'node'|'combined'})` (default `combined`, unchanged); `raster.sourceEdges(grid,
+  nodeWins)` = the border between the two zones (marching squares on the winner mask, smoothed like range lines);
+  `raster.sourceShare(grid, nodeWins, roomIds, excluded)`; `analysis.run` exposes `source` (= nodeWins), `sourceEdges`, `sourceShare`.
+  `view.sourceZones` (default on, older files on; sanitized, serialized). Tests `tests/engine/source.test.mjs`.
+- Planner map: (a) **Čáry dosahu** are drawn around EVERY active source - the router's as before (band colour on the halo), the node's
+  on the bands it serves in the same band colours on a blue (`--pl-node`) backing with a small "2" tag on the longest line; the legend
+  row says "čáry: router · AP 2". (b) New layer **Zdroj signálu** (`view.sourceZones`, default on): the border between the router's
+  zone and the node's zone + a light blue hatch on the node's side; the legend row says what the hatch means: "šrafy: tady je
+  silnější AP 2, jinde router" (blue swatch). A wireless node with a weak uplink keeps its grey weak-uplink hatch instead and the row
+  reads "šrafy: tady je silnější Opakovač, ale má slabé spojení s routerem" (grey swatch) - the legend never shows a hatch that is
+  not painted. Like the range lines, the layer is a Signal / Change view thing: the Speed view draws neither the hatch nor the
+  border and has no row for it (its own cap hatch stays). Greyed with the reason in its "?" while no node is on. The hover
+  tooltip says "Silnější zdroj: AP 2 (−48 dBm) · router (−71 dBm)". (c) The node marker is as prominent as the router: a 32 px blue
+  disc with the type's icon (node / mesh / repeater) + a name tag "AP 2" / "Mesh 2" / "Opakovač" (`planner.mk.nodeLbl.*`), a dashed
+  link line to the router (dotted when wireless) with a "kabel" / "Wi-Fi" chip at its middle (hidden when the markers stand close).
+  (d) The Result card adds one sentence while a node is on: "AP 2 má navrch v místnostech Ložnice a Pracovna, jinde je silnější
+  router." (a room counts as the node's when it wins ≥ 50 % of its floor; "v celém bytě" / "není nikde silnější" at the extremes).
+  cs + en, "?" hints, the PNG export draws the same (node lines, zones, pill marker, link text, one legend line WITH the samples:
+  the router's dash, the node's dash on its blue backing, the hatch swatch - a PNG has no tooltip to explain a bare text), keyboard
+  unchanged. The small "2" tag on the node's longest line keeps ≥ 60 px clear of the router disc and of the node's pill, so it is
+  never taken for a tag of the router.
+- README: `screenshot-wifi.png` shows the ROUTER ONLY (all layers, the router moved, 4 measured spots with their what-if), so the
+  physics reads at first glance; `screenshot-ap.png` is the SAME scene (router moved) plus the wired AP 2 in the bedroom corner: the
+  left third of the flat (bedroom, bathroom, WC) is AP 2's behind one simple border, the rest the router's. (With the router at
+  today's spot in the hall the model hands the far balcony to AP 2 by 5 dB on 2.4 GHz - correct, but a reader of a picture cannot
+  see why, which is exactly the reaction this section is about.) `screenshot-dark.png` stays router-only. One-line captions explain
+  each picture.
+
 ## 11. Showcase demo flat + README screenshots (user: "on GitHub I want a better picture of the space — not just squares/rectangles, furniture
    that really matches reality, and all layers switched on")
 - Replace the demo flat (engine 31-demo.js, cs+en names) with a realistic ~65–75 m² flat: non-rectangular outline (L-shaped hall, a bay or
@@ -639,3 +673,59 @@ silently skipped and the measurement saved with the map's band).
     likely band at that point with the steering rule (flag `bandInferred:true`) for calibration and speed curves; the list shows
     "≈ 5 GHz (odhad)". Desktop "Zadat pásmo ručně" also offers "Nevím".
   - Calibration per band stays; inferred-band points count with lower weight. Engine tests for the steering rule and inference.
+
+## 14. Stage 9 (user requests): verified scale, many nodes, multi-floor
+User: (a) "when drawing a floor plan now, what is the unit? Everyone draws it at random without cm or ratio, so the Wi-Fi model thinks the
+flat is 100 m² instead of 58 m² because of a wrong scale"; (b) "with a bigger object I can't add more repeaters / access points";
+(c) "with a two-storey flat I don't know how it would work".
+
+### 14.1 Scale must be verified, never silently assumed
+- Replace the silent default (width 12 m) by a scale state: project.scale = {mpp, verified:boolean, method:'two-points'|'area'|'width'|
+  'import'|'default', ref?:{a,b,metres}|{areaM2}}. Old files: verified=false unless mpp came from a file that carried width (then 'import',
+  verified=true only when the user confirms once after load — a one-time banner "Měřítko z načteného souboru: byt ≈ 58 m². Sedí?" [Sedí] [Upravit]).
+- Editor: a clear "Měřítko" card at the TOP of the inspector: (1) **Dvě místa se známou vzdáleností** (existing S tool, improved: snapping to
+  wall endpoints, live length preview, examples "délka stěny, šířka dveří 80 cm, kóta na plánku"), (2) **Plocha bytu v m²** (from a lease /
+  cadastre: input → mpp from the rooms' total area; shows what each room becomes), (3) **Šířka celého půdorysu v m** (existing). The card
+  always shows the resulting total floor area ("≈ 58,3 m²") and the biggest/smallest room with its m², so a wrong scale is obvious.
+- Live dimensions while drawing/dragging (already partly there): wall length, room W × H and m²; make them always visible and formatted.
+- Sanity checks (plan check + a persistent badge): scale not verified; total area < 15 m² or > 400 m² for a flat; any room < 1.5 m² or
+  > 80 m²; a door narrower than 0.6 m or wider than 1.6 m; a wall thinner than 5 cm — each with a one-click "Nastavit měřítko".
+- Planner: while scale.verified is false the estimate badge reads "Měřítko neověřeno" (amber) with a hint and a button to the editor's scale
+  card; the Getting-started checklist gets the item "Měřítko půdorysu ✓". New blank plan / image import: the first thing the hint line asks
+  is to set the scale (image import: "Označ v obrázku známou vzdálenost nebo zadej plochu").
+- Engine: scale fields sanitized/serialized/round-trip; helper project.scaleFromArea(plan, areaM2) → mpp; tests.
+
+### 14.2 Any number of nodes (AP / mesh / repeater)
+- Replace the single project.node by project.nodes = [ {id, name ('AP 2', editable), mode:'ap_cable'|'mesh_cable'|'mesh_wifi'|'repeater',
+  pos, bands, power, backhaulBand, backhaulThreshold, maxMbps, uplink:'router'|<nodeId>, enabled:true} … ] (max 8). Old files: node →
+  nodes[0] (migration + tests); serialize keeps `node` = nodes[0] for the old app's reader (it ignores extra keys).
+- Engine: combined signal = max over router + all enabled nodes (per band, Auto mode too); backhaul for a wireless node computed to its
+  uplink (router or another node — chained hops multiply the factor); speed caps per node; nodeWins becomes "winner index" per cell;
+  contours per source; what-if, optimizer (optimize the router only, nodes fixed), homeSummary, tooltips ("silnější zdroj: AP 2").
+  Performance: ≤ 8 nodes must keep the drag frame < 10 ms on the real plan (compute node fields lazily / cache per node position).
+- Planner UI: "Druhý přístupový bod" card → "Další přístupové body" list: rows with name, type icon, bands, uplink, backhaul quality,
+  "Kolik zvládne", enable toggle, delete; "+ Přidat AP / mesh / opakovač"; markers on the map labelled by name (prominent, draggable,
+  keyboard-movable), dashed uplink lines labelled kabel / Wi‑Fi; range lines + source zones per node (stage node-layers work); the
+  Result sentence names which node covers which rooms. Agent tools updated (set_wifi_secondary_position → nodes by index/name).
+
+### 14.3 Floors (multi-storey)
+- project.floors = [ {id, name:'Přízemí'|'1. patro'…, plan, nodes:[...], measurements:[...], level:0|1|-1…, ceiling:{material:'concrete'|
+  'reinforced_concrete'|'wood'|'custom', lossDb:number (defaults: concrete 15, reinforced 20, wood 8), heightM:2.7} } ]; the router lives on
+  one floor (net.routerFloor); net.optic has a floor too. Old files → one floor. Serialize: top-level `plan` = the active floor (old app
+  compatibility) + full floors in the v3 block.
+- Engine: a signal source on floor A reaches floor B through the ceiling: distance = 3-D (horizontal + heightM × Δlevels), obstacle loss =
+  ceiling.lossDb × |Δlevels| (+ walls on the target floor along the horizontal path, half-weighted); nodes on the same floor as the point behave as
+  today. Coverage/stats per floor and "celý dům" (area-weighted). Optimizer: router floor fixed, position within it. Tests with synthetic 2-floor
+  plans (router below: upper-floor signal weaker by the ceiling loss; node upstairs restores it).
+- Editor: floor tabs above the stage (add / rename / reorder / delete with confirm; "Duplikovat půdorys do nového patra" for identical
+  layouts; optional ghost of the floor below at 20 % for alignment); plan check works per floor; scale shared across floors (one building).
+- Planner: floor tabs on the stage (keyboard: Ctrl+↑/↓ or Alt+1..9), per-floor map, markers only on their floor (router/nodes on other floors
+  shown as faded ghosts with "na jiném patře"), measurements per floor, what-if across floors, Result card per floor + building total, speed
+  per floor; measuring mode on the phone shows a floor pill. Hints for ceiling material/loss. README: one image of a 2-floor demo (new
+  optional demo template "Dům se dvěma patry").
+- 14.1 addition (user: "if someone knows how many m² the flat has, after drawing it would be nice to just type it in"): as soon as the
+  plan has ≥ 1 room and scale.verified is false, show a friendly NON-blocking prompt (inspector card + hint line, also offered when leaving
+  the editor via "Hotovo → Wi-Fi"): "Víš, kolik má byt m²? Napiš a měřítko se dopočítá." [ 58 ] m² [Použít] · [Raději změřím dvě místa] ·
+  [Teď ne]. Also per-room: selecting a room offers "Tahle místnost má [14] m²" and selecting a wall "Tahle zeď měří [4,2] m" → scale from that
+  object (uniform scaling, keeps proportions). After applying: toast "Byt teď má 58,0 m² · Ložnice 14,0 m² · …" with Undo. Which rooms count
+  toward the flat area is the same list as goal.excluded / balconies (show it next to the input: "počítám bez Balkonu").

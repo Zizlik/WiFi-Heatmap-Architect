@@ -413,7 +413,7 @@
       },
       measurements: [],
       // band mode Auto (SPEC 13) by default: the default router sends two bands and clients steer between them
-      view: { band: 'auto', layer: 'signal', ranges: false, walls: true, furniture: true, labels: true, values: false, points: true, whatif: true, calibrate: true, palette: 'default' },
+      view: { band: 'auto', layer: 'signal', ranges: false, walls: true, furniture: true, labels: true, values: false, points: true, whatif: true, sourceZones: true, calibrate: true, palette: 'default' },
     };
   }
 
@@ -804,6 +804,8 @@
       // planner layers "Body měření" / "Předpověď u bodů" (the dots + their labels / the "→ predicted (+Δ)" part); older files: on
       points: bool(sv.points, true),
       whatif: bool(sv.whatif, true),
+      // planner layer "Zdroj signálu" (SPEC 10.3: the border between the router's and the second node's zone); older files: on
+      sourceZones: bool(sv.sourceZones, true),
       calibrate: bool(sv.calibrate, true),
       palette: PALETTES.includes(sv.palette) ? sv.palette : 'default',
     };

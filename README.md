@@ -11,12 +11,24 @@ can be installed to the home screen and keeps working offline.
 [![CI](https://github.com/Zizlik/WiFi-Heatmap-Architect/actions/workflows/ci.yml/badge.svg)](https://github.com/Zizlik/WiFi-Heatmap-Architect/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
 
-![Wi-Fi mode on the demo flat with every layer on: the Auto band heat map of a Wi-Fi 7 router, range lines for 2.4, 5 and 6 GHz, room values, five measured spots and a wired second access point in the bedroom - every spot shows its predicted change, e.g. −61 → −48 (+13)](docs/screenshot-wifi.png)
+![Wi-Fi mode on the demo flat, router only, every layer on: the Auto band heat map of a Wi-Fi 7 router, range lines for 2.4, 5 and 6 GHz around the router, room values, walls and furniture, four measured spots - the router was moved from the hall ("Today") into the living room, so every spot shows its predicted change, e.g. −58 → −46 (+12)](docs/screenshot-wifi.png)
+
+*One router, moved from the hall ("Today") into the living room: the heat map and the dashed range lines belong to the
+router alone, the far rooms behind the walls stay orange, and every measured spot says what the move would do there.*
+
+![The same scene plus a wired second access point "AP 2" in the bedroom corner: its own range lines on a blue backing, the "Signal source" layer hatching the left third of the flat (bedroom, bathroom, WC) where AP 2 is stronger than the router, the cable link between the two markers, and the predicted change at the measured spots](docs/screenshot-ap.png)
+
+*The same scene plus a wired second access point ("AP 2") in the bedroom: the bedroom is green because of **AP 2**, not
+the router - its own range lines, the blue-hatched part of the flat where it is the stronger source, the cable link and
+the Result card say so.*
 
 <p>
   <img src="docs/screenshot-editor.png" alt="Floor-plan mode: the demo flat with real furniture shapes and a brick load-bearing wall selected - its material takes 7 / 11 / 13 dB at 2.4 / 5 / 6 GHz" width="68%">
   <img src="docs/screenshot-phone.png" alt="Measuring on a phone: the sheet of a new spot asks which band you are on, then Measure everything" width="26%">
 </p>
+
+*Left: the floor-plan editor with a brick wall selected (7 / 11 / 13 dB at 2.4 / 5 / 6 GHz). Right: measuring on a
+phone - tap where you stand, say which band you are on, press Measure everything.*
 
 ## What it does
 
@@ -71,7 +83,11 @@ It is a single self-contained HTML file: no account, no installation, no server.
 - **Built-in speed test** (download, upload, ping, jitter) against Cloudflare's speed-test servers, started only when
   you tap it. With speeds measured in places with clearly different signal the app can also draw a predicted
   **speed map**.
-- **Second access point / mesh**: wired AP, wired or wireless mesh node, or a repeater, with backhaul quality.
+- **Second access point / mesh**: wired AP, wired or wireless mesh node, or a repeater, with backhaul quality. The map
+  makes it a visible source: a labelled marker ("AP 2", "Mesh 2", "Repeater") with its cable / Wi-Fi link to the
+  router, range lines around *both* sources (the second point's on a blue backing) and the *Signal source* layer -
+  a border and a light hatch where the second point is stronger than the router - plus one sentence in the Result
+  card ("AP 2 is the stronger source in Bedroom and Bathroom; the router elsewhere").
 - **Works offline and installs like an app** (PWA) when opened from the web page; the downloaded HTML file also
   works by double-click, with no network at all.
 - **Czech and English**, switchable at any time; three looks - **Light**, **Deep dark** (neutral near-black) and
@@ -83,7 +99,13 @@ It is a single self-contained HTML file: no account, no installation, no server.
 
 ![The "First measurement" guide on the demo flat: five numbered spots to measure, the next one highlighted, and the list of all spots in the side panel](docs/screenshot-guide.png)
 
-![The Deep dark theme: the Signal view of the same flat with the second access point - every measured spot shows its predicted change, e.g. −61 → −48 (+13)](docs/screenshot-dark.png)
+*The "First measurement" guide: the app marks where to measure (next to the router, behind one wall, behind two, the
+farthest room) and tunes the model from what you measure.*
+
+![The Deep dark theme: the Signal view of the router-only scene - the router moved into the living room, every measured spot shows its predicted change, e.g. −58 → −46 (+12)](docs/screenshot-dark.png)
+
+*The Deep dark theme (there is an OLED black one too): the same router-only scene, Signal view, with the predicted
+change at every measured spot.*
 
 ### Keyboard shortcuts
 
@@ -227,6 +249,16 @@ u všeho, co není na první pohled jasné.
 `index.cs.html` se v českém prohlížeči otevře česky také). Funguje na počítači i v telefonu, dá se přidat na plochu
 a funguje i bez internetu.
 
+![Režim Wi-Fi na ukázkovém bytě, jen router: mapa signálu v pásmu Auto, čáry dosahu kolem routeru, hodnoty v místnostech, čtyři změřené body – router přesunutý z předsíně („Today“) do obýváku, každý bod ukazuje odhad změny](docs/screenshot-wifi.png)
+
+*Jeden router přesunutý z předsíně do obýváku: mapa i čárkované čáry dosahu patří jen routeru, vzdálené místnosti za
+zdmi zůstávají oranžové a u každého změřeného bodu je vidět, co by přesun udělal.*
+
+![Stejná scéna plus druhý přístupový bod „AP 2“ po kabelu v rohu ložnice: vlastní čáry dosahu na modrém podkladu, vrstva Zdroj signálu šrafuje levou třetinu bytu (ložnice, koupelna, WC), kde je AP 2 silnější než router, propojení kabelem a odhad změny v bodech](docs/screenshot-ap.png)
+
+*Stejná scéna plus druhý přístupový bod po kabelu („AP 2“) v ložnici: ložnice je zelená díky **AP 2**, ne routeru – říkají
+to jeho vlastní čáry dosahu, modře šrafovaná část bytu, kde je silnější, propojení kabelem i věta ve Výsledku.*
+
 ### Co umí
 
 - **Mapa signálu** pro pásma 2,4, 5 a 6 GHz, pokrytí celého bytu i jednotlivých místností a pohled „Změna proti dnešku“.
@@ -261,7 +293,10 @@ a funguje i bez internetu.
   aplikace označí.
 - **Vestavěný test rychlosti** (stahování, odesílání, odezva) přes servery Cloudflare; spustí se jen, když na něj
   klepneš. Z měření na více místech pak aplikace nakreslí i odhad rychlosti.
-- **Druhý přístupový bod / mesh / opakovač**.
+- **Druhý přístupový bod / mesh / opakovač**. Na mapě je vidět jako zdroj: značka s názvem („AP 2“, „Mesh 2“,
+  „Opakovač“) a propojením k routeru (kabel / Wi-Fi), čáry dosahu kolem *obou* zdrojů (ty od druhého bodu na modrém
+  podkladu) a vrstva *Zdroj signálu* – hranice a jemné šrafování tam, kde je druhý bod silnější než router – plus věta
+  ve Výsledku („AP 2 má navrch v místnostech Ložnice a Koupelna, jinde je silnější router“).
 - **Funguje offline a jde nainstalovat** jako aplikace; stažený HTML soubor funguje i po dvojkliku bez internetu.
 - Čeština i angličtina, tři vzhledy - **Světlý**, **Deep dark** (neutrální téměř černá) a **OLED černá** (čistá černá
   s jemnými linkami) - nebo Automaticky podle systému; klávesové zkratky (tabulka výše, `?` v aplikaci ukáže všechny).

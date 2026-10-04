@@ -246,7 +246,7 @@ test('sanitize: v3 projects are idempotent and keep every slice', () => {
   p.net.wanLink = 1000;
   p.net.cableCategory = 'cat6';
   p.net.cableLength = 12.5;
-  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, points: false, whatif: false, calibrate: false, palette: 'cb' };
+  p.view = { band: 6, layer: 'diff', ranges: true, walls: false, furniture: false, labels: false, values: true, points: false, whatif: false, sourceZones: false, calibrate: false, palette: 'cb' };
   const s = P.sanitize(p);
   assertValidProject(s, 'v3');
   assert.deepEqual(s, p);
@@ -304,6 +304,27 @@ test('view.points / view.whatif (planner layers "Body měření" / "Předpověď
     assert.equal(q.view.points, true, `points ${JSON.stringify(bad)}`);
     assert.equal(q.view.whatif, true, `whatif ${JSON.stringify(bad)}`);
   }
+});
+
+test('view.sourceZones (planner layer "Zdroj signálu", SPEC 10.3): on by default, older files on, kept off through every format', () => {
+  for (const p of [P.create({ template: 'demo', lang: 'cs' }), P.create({ template: 'blank', lang: 'en' })]) assert.equal(p.view.sourceZones, true);
+  assert.equal(P.defaults().view.sourceZones, true);
+  const old = clone(P.create({ template: 'demo', lang: 'en' }));
+  delete old.view.sourceZones;
+  assert.equal(P.sanitize(old).view.sourceZones, true, 'older file: on');
+  assert.equal(P.sanitize({ ...old, view: undefined }).view.sourceZones, true, 'no view at all');
+  assert.equal(P.sanitize(oldDemo()).view.sourceZones, true, 'the old app\'s payload');
+  const p = P.create({ template: 'demo', lang: 'cs' });
+  p.view.sourceZones = false;
+  const s = P.sanitize(p);
+  assertValidProject(s, 'sourceZones off');
+  assert.equal(s.view.sourceZones, false);
+  const json = JSON.parse(P.serialize(s));
+  assert.equal(json.project.view.sourceZones, false, 'serialize writes view.sourceZones');
+  assert.equal(P.sanitize({ ...json.project, plan: json.plan, v: 3 }).view.sourceZones, false, 'localStorage round trip');
+  assert.equal(P.parseSvgText(P.buildSvg(s)).project.view.sourceZones, false, 'SVG round trip');
+  assert.deepEqual(P.sanitize(s), s, 'idempotent');
+  for (const bad of ['false', 0, 1, null, {}, [], 'off']) assert.equal(P.sanitize({ ...clone(old), view: { ...old.view, sourceZones: bad } }).view.sourceZones, true, `sourceZones ${JSON.stringify(bad)}`);
 });
 
 test('sanitize: clamps values, repairs references, snaps markers onto the floor', () => {
