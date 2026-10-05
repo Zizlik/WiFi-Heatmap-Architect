@@ -7,12 +7,36 @@ unit tested (`node tests/engine/run-all.mjs`) and also verified in headless Chro
 * The engine is **DOM-free**, has no side effects and no state except small caches (`raster.grid`). It runs in the browser
   and in Node.
 * Load order = lexical file order: `00-ns, 10-geom, 20-units, 30-project, 31-demo, 35-edit, 40-model, 45-fit, 50-raster,
-  60-speed, 70-optimize, 75-analysis, 99-strings`. `WH.i18n` must exist before `99-strings.js` (it does: `00-core`).
+  60-speed, 70-optimize, 75-analysis, 76-channels, 99-strings`. `WH.i18n` must exist before `99-strings.js` (it does: `00-core`).
 * **Calibration fit (SPEC 9, §7.1b)**: `project.model.fit` (written by `model.fitProject` after the "first measurement"
   wizard) is part of the CONTEXT while `view.calibrate` is on: `createContext` puts the fitted path-loss exponent into
   `ctx.p.n` and multiplies every obstacle loss by `ctx.wf`. So the raster, optimizer, contours, tooltips, calibration
   and speed model use the fitted physics with no extra parameter - one source of truth. Rebuild the context when
   `model` OR `view.calibrate` changes.
+* **Slab openings (stairwells)**: furniture of `kind:'opening'` (stored loss 0, never blocks; sanitize forces both) is a hole in
+  the slab BELOW the floor it is drawn on; drawn on the lowest floor it is a hole in the slab above. Every opening opens exactly one slab. `project.floorSlabs(p, fromId, toId)` -> `[{level, heightM, lossDb, holes:[points[]]}]` from the source
+  floor towards the receiver; `model.slabLoss(V, bandIndex, wallFactor, ax, ay, bx, by)` is the ceiling loss of a path in canvas px
+  (the constant `V.ceil[bi] * wf` when `V.slabs` is absent, else the slabs whose crossing - at t = (j + 0.5) / L of the way - is
+  outside every hole). The context version hashes the holes only when there are any. Raster, optimizer and the point model
+  all go through it.
+* **Fit gate** (`45-fit.js`): the fitted n / wallFactor is discarded when it predicts the left-out points worse than the shape it
+  falls back to (the prior: model.n and walls x1 unless `opts.prior` says otherwise) by more than `FIT.GATE_DB` (0.3 dB, pooled):
+  `fitCalibration` returns `shapeRejected` and `atLimit:{n, wallFactor}` (kept by `project.cleanFit`).
+  `model.suggestCeilings(project, {soften, minPoints=3})` -> `[{floor, levels, currentDb, suggestedDb, deltaDb, count, spread}]`:
+  what points on the floors right above / below the router floor say about the slab between (router strength learnt from the
+  router floor only; the goal device's points only when the strength came from them; paths that meet less than half of the
+  slab loss - a stairwell opening - left out; >= 3 points, |median| >= 3 dB and above noise).
+  `project.scaleCeilings(p, fromId, toId, totalDb)` -> boolean: sets the slabs between two floors to a total (MUTATES; shares kept,
+  at most 40 dB each, a missing level counts with the default; custom material; false = unreachable, nothing changed).
+* **Extra APs**: `optimize.suggestNode(project, {cell=8, band, soften, offsets}, ctl?)` -> Promise<`{floor, pos, roomId, before,
+  after, gain, gainMean}` | null>: the best place of ONE more wired AP (every floor tried; the places that count are those of
+  `analysis.building`: each floor's goal room or whole area); null when the building is full. `optimize.howMany(project, {goal=90,
+  max=4, cell, band, soften, offsets}, ctl?)` -> Promise<`{goal, today, coverage, reached, steps:[{floor, pos, roomId, coverage}]}`>
+  (greedy). `ctl = {signal: AbortSignal}`. Nothing in `project` is changed. `findProject` takes `goalRooms: true` to count each
+  floor's goal room in the 'building' scope.
+* **Channel hint** `WH.engine.channels` (`76-channels.js`): `isDfs(band, channel)` (EU radar-protected 5 GHz ranges, span-derived) and
+  `hint({band, channel, widthMHz})` -> `{key:'dfs'|'off'|'wide', channel}` | null, the one sentence worth saying after a
+  measurement (DFS channel; 2.4 GHz channel other than 1/6/11; 40 MHz on 2.4 GHz). Pure facts, no effect on the map.
 * The Wi-Fi details parser `WH.devinfo` (SPEC 8, `src/js/36-devinfo/`, §12) follows the same rules (pure, Node-tested)
   but lives outside `WH.engine`.
 * **What-if at the measured points + speed through a second node (SPEC 10, stage 7)**: `analysis.predictAtMeasurements`
@@ -143,8 +167,8 @@ ctx.floor (id|null) · ctx.level · model.floorContext(ctx, floorId) → the con
 `d3 = √(horizontal² + heightM²)` (`floorGap`), `walls_B` = the obstacle loss of floor B's walls / doors / furniture along the
 horizontal path (softened like everything else, half-weighted: the signal comes down / up through the slab, it does
 not run along the floor), `ceilingLoss` = Σ `lossDb` of the slabs crossed × `BAND_FACTOR[band]`. Floor A's own walls are
-not traced. **Stairs, open galleries and holes in the slab are not modelled** (a real house is usually a little
-better than the map near the staircase). Same floor = exactly the old physics.
+not traced. **Holes in the slab** (furniture `kind:'opening'`, see the top of this file) remove that slab's loss where the
+path crosses them (`floorSlabs` / `slabLoss`). Stairs themselves and open galleries are not modelled. Same floor = exactly the old physics.
 
 | Function | Change |
 |---|---|
@@ -282,12 +306,12 @@ Project = {
            floor: floorId }             // SPEC 14.3: the active floor (= project.activeFloorId(p); the null-content entry decides)
 }
 Room        { id:'room-1', type:'room', roomId:1..250 (unique int), name(≤50), points: Point[3..200], color:'#rrggbb' }
-Wall        { id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|wood|metal|masonry|solid_guess|custom', loss?:0..30 }
+Wall        { id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|low_e_glass|wood|metal|masonry|solid_guess|custom', loss?:0..30 }
               // `loss` and `material` come as a pair; no loss ⇒ the wall uses model.wallLoss. loss = the 5 GHz value.
               // A preset material stores its table's 5 GHz value (brick 11); sanitize turns the OLD app's preset numbers
               // (brick 8, drywall 3, …) into the new ones, so a legacy preset wall IS that preset (SPEC 7.1)
 Door        { id, type:'door', name, a:Point, b:Point, wallId, loss:0..30 }   // loss 0 = open doorway, ~3 = closed door (5 GHz)
-Furniture   { id, type:'furniture', name, points: Point[3..200], loss:0..30 (5 GHz), kind:'custom|bed|wood|books|appliance|metal', blocksSignal:boolean }
+Furniture   { id, type:'furniture', name, points: Point[3..200], loss:0..30 (5 GHz), kind:'custom|bed|wood|books|appliance|metal|opening', blocksSignal:boolean }
 Measurement { id, x, y, band:2.4|5|6|null (null = "Nevím", inferred by the engine, §7.9), value:-100..-20 (dBm) | null, name(≤50), download:null|0..10000, upload:null|0..10000, device(≤50), t:epoch ms,
               ping?:0..10000 (ms), jitter?:0..10000 (ms), source?:'cloudflare',
               wifi?:{ssid:string(≤64)|null, bssid:'aa:bb:cc:dd:ee:ff'|null, channel:1..233|null, band:2.4|5|6|null,
@@ -312,9 +336,9 @@ excluded` refer to roomIds of the active floor (other floors: their `floors[].go
 floor; a node's backhaul band is one it serves; node ids unique in the building, uplinks existing and acyclic; measurement
 ids unique in the building; all numbers clamped to the ranges above. Constants: `project.WALL_MATERIALS` (the number a preset stores in
 `wall.loss` = the 5 GHz column of `MATERIALS`: drywall 4, wood 5, glass 4, brick 11, masonry 11, solid_guess 15,
-concrete 18, reinforced_concrete 26, metal 30), `project.LEGACY_WALL_MATERIALS` (the OLD app's numbers: drywall 3, brick 8,
+concrete 18, reinforced_concrete 26, low_e_glass 27, metal 30), `project.LEGACY_WALL_MATERIALS` (the OLD app's numbers: drywall 3, brick 8,
 concrete 12, reinforced_concrete 18, glass 3, wood 3, metal 25, masonry 8, solid_guess 12), `project.FURNITURE_KINDS`
-(stored numbers: custom 3, bed 1, wood 3, books 5, appliance 8, metal 12 - unchanged, they equal the 5 GHz column),
+(stored numbers: custom 3, bed 1, wood 3, books 5, appliance 8, metal 12, opening 0 (always 0, never blocks) - they equal the 5 GHz column),
 `project.MATERIALS` / `FURNITURE_BANDS` / `BAND_FACTOR` (= the `model.*` tables of §7.1a), `BAND_POWER_MIN/MAX` (−10 / 6),
 `project.ROOM_COLORS`, `NODE_MODES`, `NODE_MBPS_MIN/MAX` (10 / 10000), `WAN_RATES`, `CABLE_CATEGORIES`, `MAX_ITEMS` (250), `CONN_TYPES`,
 `FIT_METHODS`, `STEER_MIN/MAX` (−90 / −50), `STEER_DEFAULT` (`{six:-70, five:-72}`), `ROUTER_BANDS_DEFAULT`, `MAX_LINKS` (4); SPEC 14:
@@ -663,8 +687,8 @@ loss used at a band:
 ```js
 model.BAND_FACTOR      = {'2.4': 0.65, '5': 1, '6': 1.15}                      // frozen
 model.MATERIALS        = { drywall:{'2.4':3,'5':4,'6':5}, wood:{3,5,6}, glass:{2,4,5}, brick:{7,11,13}, masonry:{7,11,13},
-                           solid_guess:{10,15,18}, concrete:{12,18,21}, reinforced_concrete:{17,26,30}, metal:{25,30,32} }
-model.FURNITURE_KINDS  = { bed:{1,1,1}, wood:{2,3,4}, books:{3,5,6}, appliance:{6,8,9}, metal:{10,12,13}, custom:null }
+                           solid_guess:{10,15,18}, concrete:{12,18,21}, reinforced_concrete:{17,26,30}, low_e_glass:{20,27,29}, metal:{25,30,32} }
+model.FURNITURE_KINDS  = { bed:{1,1,1}, wood:{2,3,4}, books:{3,5,6}, appliance:{6,8,9}, metal:{10,12,13}, opening:{0,0,0}, custom:null }
 model.LEGACY_MATERIALS = { drywall:3, brick:8, concrete:12, reinforced_concrete:18, glass:3, wood:3, metal:25, masonry:8, solid_guess:12 }
 model.obstacleLossFor(obj, band, project) → dB   // what the model uses for that wall / door / furniture at that band
                                                  // (type inferred when missing; unknown band = 5; project only for walls

@@ -453,7 +453,8 @@
         ['guestBed', box(7.3, 5.6, 8.9, 7.6), 'bed'],
         ['tub', box(0.1, 7.15, 1.8, 7.9), 'custom', 5],
         ['washer', box(2.15, 5.5, 2.7, 6.1), 'appliance'],
-        // the stairwell (an opening in the slab: drawn, not modelled - SPEC 14.3)
+        // the stairwell, drawn as a plain non-blocking piece (kind 'opening' would make it a hole in the slab - SPEC 14.3;
+        // the demo keeps the plain piece so its published numbers stay put)
         ['opening', box(4.2, 5.4, 5.3, 7.9), 'custom', 0, false],
       ],
     );

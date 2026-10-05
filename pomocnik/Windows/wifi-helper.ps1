@@ -53,7 +53,8 @@ function Remove-Private([string]$raw) {
   $out = foreach ($l in (($raw -replace "`r", '') -split "`n")) {
     if ($l -match '^\s*([^:]+?)\s*:\s*(\S.*?)\s*$') {
       if ($Matches[2] -match '^\{?[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\}?$') { continue }
-      if ($Matches[1] -notmatch 'BSSID' -and $Matches[2] -match '^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$') { continue }
+      # the access point's address stays (it tells roaming apart); French Windows calls it "Point d'acces d'identificateur SSID"
+      if ($Matches[1] -notmatch 'BSSID|^Point d.acc' -and $Matches[2] -match '^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$') { continue }
     }
     $l.TrimEnd()
   }

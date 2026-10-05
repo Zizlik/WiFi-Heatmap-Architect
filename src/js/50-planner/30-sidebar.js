@@ -578,7 +578,75 @@
     const add = ui().button({ i18n: 'planner.nodes.add', icon: 'plus', variant: 'soft', block: true, onClick: () => N.menu(add) });
     add.setAttribute('aria-haspopup', 'menu');
     const maxNote = el('p.text-xs.text-muted', { hidden: true });
-    const c = ui().card({ id: 'pl-nodes', i18n: 'planner.nodes.title', icon: 'node', hint: 'nodesList', open: false, body: [empty, list, add, maxNote] });
+    // "How many access points do I need, and where?" (engine optimize.howMany): a goal share of the home with good signal
+    let sugGoal = 90;
+    let sugBusy = false;
+    let sugFor = null;   // what the shown result was computed for (sugKey); another key hides it
+    let sugAc = null;
+    let sugRun = null;   // the key a running search started with
+    // everything the suggestion depends on (like the router search's optKey)
+    const sugKey = () => {
+      const q = P();
+      return [q.view.band, sugGoal, JSON.stringify(q.goal), JSON.stringify(q.net), JSON.stringify(PL.allNodes().map((x) => [x.floor, x.node.pos, x.node.enabled, x.node.mode])),
+        JSON.stringify((q.floors || []).map((f) => [f.id, f.level, f.ceiling])), PL.S.planVer, JSON.stringify(PL.S.offs)].join('|');
+    };
+    const sugOut = el('div.pl-nsug.stack', { hidden: true, style: { '--gap': '6px' }, 'aria-live': 'polite' });
+    const sugGoalSeg = ui().segmented([{ value: '80', label: '80 %' }, { value: '90', label: '90 %' }, { value: '95', label: '95 %' }], { value: '90', size: 'sm', aria: 'planner.nodes.suggest.goal', onChange: (v) => { sugGoal = Number(v); sugOut.hidden = true; } });
+    const sugBtn = ui().button({ i18n: 'planner.nodes.suggest', icon: 'sparkles', variant: 'ghost', block: true, onClick: () => runSuggest() });
+    async function runSuggest() {
+      if (sugBusy) return;
+      sugBusy = true;
+      sugBtn.disabled = true;
+      sugOut.hidden = false;
+      sugFor = null;
+      sugOut.replaceChildren(el('p.text-sm.text-muted', t('planner.nodes.suggest.busy')));
+      const key = sugKey();
+      sugRun = key;
+      sugAc = new AbortController();
+      const ac = sugAc;
+      try {
+        const p = P();
+        const r = await WH.engine.optimize.howMany(p, { goal: sugGoal, cell: 8, band: p.view.band, offsets: { ...PL.S.offs } }, { signal: ac.signal });
+        // the project changed while it was thinking: the answer belongs to something else
+        if (ac.signal.aborted || key !== sugKey()) { sugOut.hidden = true; return; }
+        sugFor = key;
+        // the places that count: the target room ("Cíl") or the whole home
+        const target = p.goal.room !== 'all' && PL.roomName(p.goal.room) ? PL.roomName(p.goal.room) : '';
+        const tk = (k) => (target ? k + 'Room' : k);
+        const f = (v) => WH.util.fmt(Math.round(v), 0);
+        const rows = [];
+        if (!r.steps.length && r.reached) {
+          rows.push(el('p.text-sm', t(tk('planner.nodes.suggest.enough'), { c: f(r.today), g: f(r.goal), room: target })));
+        } else if (!r.steps.length) {
+          rows.push(el('p.text-sm', t(tk('planner.nodes.suggest.none'), { c: f(r.today), room: target })));
+        } else {
+          const where = r.steps.map((st) => {
+            const fl = Array.isArray(p.floors) && p.floors.length > 1 ? PL.floorName(st.floor) : '';
+            const pf = st.floor && Array.isArray(p.floors) ? WH.engine.project.atFloor(p, st.floor) : p;
+            const room = WH.engine.project.roomAt(pf.plan, st.pos);
+            return [fl, room ? room.name : ''].filter(Boolean).join(' · ') || t('planner.nodes.suggest.somewhere');
+          });
+          rows.push(el('p.text-sm', t(tk(r.reached ? 'planner.nodes.suggest.need' : 'planner.nodes.suggest.short'), { k: r.steps.length, g: f(r.goal), a: WH.util.fmt(r.today, 1), b: WH.util.fmt(r.coverage, 1), where: where.join('; '), room: target })));
+          const apply = ui().button({ label: t('planner.nodes.suggest.apply', { k: r.steps.length }), icon: 'plus', size: 'sm', variant: 'soft', onClick: () => {
+            if (sugFor !== sugKey()) { sugOut.hidden = true; return; } // stale: never add APs computed for another state
+            PL.nodes.addPlanned(r.steps);
+            sugOut.hidden = true;
+          } });
+          rows.push(apply, el('p.text-xs.text-muted', t('planner.nodes.suggest.note')));
+        }
+        sugOut.replaceChildren(...rows);
+      } catch (e) {
+        if (e && e.name === 'AbortError') { sugOut.hidden = true; return; }
+        PL.report(e, 'nodes.suggest');
+        sugOut.replaceChildren(el('p.text-sm', t('planner.nodes.suggest.fail')));
+      } finally {
+        if (sugAc === ac) sugAc = null;
+        sugBusy = false;
+        sugBtn.disabled = !PL.nodes.canAdd() || !P().plan.rooms.length;
+      }
+    }
+    const sugBox = el('div.pl-nsugbox.stack', { style: { '--gap': '6px' } }, el('div.row.gap-1', sugBtn, sugGoalSeg), sugOut);
+    const c = ui().card({ id: 'pl-nodes', i18n: 'planner.nodes.title', icon: 'node', hint: 'nodesList', open: false, body: [empty, list, add, sugBox, maxNote] });
     nodesCard = c;
     const rows = new Map();
     let order = '';
@@ -588,6 +656,10 @@
       c.setBadge(all.length ? (on === all.length ? all.length : `${on}/${all.length}`) : null);
       empty.hidden = all.length > 0;
       add.disabled = !N.canAdd() || !P().plan.rooms.length;
+      if (!sugBusy) sugBtn.disabled = add.disabled;
+      // a result (or a run) for a state that is gone: hide it / stop it
+      if (sugBusy && sugAc && sugRun !== sugKey()) sugAc.abort();
+      if (!sugBusy && !sugOut.hidden && sugFor !== null && sugFor !== sugKey()) { sugOut.hidden = true; sugFor = null; }
       maxNote.hidden = N.canAdd();
       if (!maxNote.hidden) maxNote.textContent = t('planner.nodes.max', { n: N.max() });
       const ids = all.map((x) => x.node.id);

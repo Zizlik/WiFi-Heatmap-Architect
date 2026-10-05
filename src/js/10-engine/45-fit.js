@@ -16,7 +16,11 @@
  * convex quadratic in (n, wallFactor) once the offsets are profiled out). Points more than 12 dB off the fitted model
  * are rejected one at a time (worst first, at most a quarter of a band) and listed as outliers. The offsets of the
  * result come from model.robustOffset() at the final shape - the very rule model.calibrate() applies live to a fitted
- * context - so the stored fit and the live map agree. Leave-one-out RMS is the honest accuracy number.
+ * context - so the stored fit and the live map agree. Leave-one-out RMS is the honest accuracy number, and it is also a
+ * GATE: if the fitted shape predicts the left-out points worse than the default shape does (by more than GATE_DB, pooled
+ * over the bands that took part), the shape is discarded and only the offsets are kept (result.shapeRejected) - a noisy
+ * handful of points must not make the map worse. result.atLimit says when n / wallFactor sit on the edge of their box
+ * (usually a wrong scale or wrong wall materials, not physics).
  *
  * Pure, deterministic (the order of the measurements does not matter), ~0.1 ms per measurement (the softened loss).
  */
@@ -36,10 +40,11 @@
   const SIG_MAX = 8;
   const TAU_N = 0.6; // prior standard deviation of n
   const TAU_W = 0.35; // prior standard deviation of wallFactor
+  const GATE_DB = 0.3; // dB: the fitted shape must not be worse than the default shape on left-out points by more than this
   const MIN_SHAPE = 4; // points of one band before n / wallFactor are fitted
   const SPAN_D = 3; // spread of 10*log10(distance) (a 2x distance ratio) needed to fit n
   const SPAN_L = 3; // dB spread of the obstacle loss (about one wall) needed to fit wallFactor
-  const FIT = Object.freeze({ SIGMA0, NU0, SIG_MIN, SIG_MAX, TAU_N, TAU_W, MIN_SHAPE, SPAN_D, SPAN_L, OUTLIER_DB: model.OUTLIER_DB });
+  const FIT = Object.freeze({ SIGMA0, NU0, SIG_MIN, SIG_MAX, TAU_N, TAU_W, MIN_SHAPE, SPAN_D, SPAN_L, GATE_DB, OUTLIER_DB: model.OUTLIER_DB });
 
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
@@ -293,70 +298,96 @@
       worst.e.removed++;
       shape = shapeOf();
     }
-    const n = shape.n;
-    const w = shape.w;
-
-    // ---- final per-band numbers: the live rule (robustOffset) at the final shape ----
-    const byBand = {};
-    let count = 0;
-    const shapeFitted = shape.fitN || shape.fitW;
-    const finals = per.map((e) => {
-      const rs = e.pts.map((p) => resid(p, n, w));
-      const r = model.robustOffset(
-        rs,
-        e.pts.map((p) => p.key),
-        e.pts.map((p) => p.w),
-      );
-      const out = new Set(r.outliers);
-      const inl = e.pts.filter((_, i) => !out.has(i));
-      return { e, r, out, inl, shp: measuredOnly(inl) };
-    });
-    const shapeGroups = finals.filter((f) => shapeFitted && f.shp.length >= MIN_SHAPE).map((f) => f.shp);
-    for (const f of finals) {
-      const { e, r, out, inl, shp } = f;
-      const many = e.pts.length >= MIN_SHAPE;
-      const inShape = shapeFitted && shp.length >= MIN_SHAPE;
-      // leave-one-out: refit the shape without the point (same parameters fitted), then predict it
-      const loo = [];
-      if (inl.length >= 2) {
-        for (let j = 0; j < inl.length; j++) {
-          const rest = inl.filter((_, k) => k !== j);
-          let nn = n;
-          let ww = w;
-          if (inShape) {
-            const groups = shapeGroups.map((g) => (g === shp ? measuredOnly(rest) : g)).filter((g) => g.length);
-            const s = solveShape(groups, shape.lam || prior, shape.fitN, shape.fitW);
-            nn = s.n;
-            ww = s.w;
+    const finalize = (n, w, shapeFitted) => {
+      // ---- final per-band numbers: the live rule (robustOffset) at the final shape ----
+      const byBand = {};
+      let count = 0;
+      let pFit = 0;
+      let pBefore = 0;
+      let pN = 0;
+      const finals = per.map((e) => {
+        const rs = e.pts.map((p) => resid(p, n, w));
+        const r = model.robustOffset(
+          rs,
+          e.pts.map((p) => p.key),
+          e.pts.map((p) => p.w),
+        );
+        const out = new Set(r.outliers);
+        const inl = e.pts.filter((_, i) => !out.has(i));
+        return { e, r, out, inl, shp: measuredOnly(inl) };
+      });
+      const shapeGroups = finals.filter((f) => shapeFitted && f.shp.length >= MIN_SHAPE).map((f) => f.shp);
+      for (const f of finals) {
+        const { e, r, out, inl, shp } = f;
+        const many = e.pts.length >= MIN_SHAPE;
+        const inShape = shapeFitted && shp.length >= MIN_SHAPE;
+        // leave-one-out: refit the shape without the point (same parameters fitted), then predict it
+        const loo = [];
+        if (inl.length >= 2) {
+          for (let j = 0; j < inl.length; j++) {
+            const rest = inl.filter((_, k) => k !== j);
+            let nn = n;
+            let ww = w;
+            if (inShape) {
+              const groups = shapeGroups.map((g) => (g === shp ? measuredOnly(rest) : g)).filter((g) => g.length);
+              const s = solveShape(groups, shape.lam || prior, shape.fitN, shape.fitW);
+              nn = s.n;
+              ww = s.w;
+            }
+            const off = centre(
+              rest.map((p) => resid(p, nn, ww)),
+              many,
+            );
+            loo.push(resid(inl[j], nn, ww) - off);
           }
-          const off = centre(
-            rest.map((p) => resid(p, nn, ww)),
-            many,
-          );
-          loo.push(resid(inl[j], nn, ww) - off);
         }
+        // the default model on the same points: n = model.n, walls x 1, plain median offset
+        const n0 = clamp(baseN, N_MIN, N_MAX);
+        const r0 = inl.map((p) => resid(p, n0, 1));
+        const off0 = median(r0);
+        const loo0 = [];
+        if (r0.length >= 2) for (let j = 0; j < r0.length; j++) loo0.push(r0[j] - median(r0.filter((_, k) => k !== j)));
+        // the gate compares with the shape it would fall back to (the prior: model.n and walls x1 unless opts.prior says
+        // otherwise), left out one by one with the same plain median
+        if (inShape && loo.length) {
+          const rp = inl.map((p) => resid(p, prior.n, prior.wallFactor));
+          const looP = [];
+          for (let j = 0; j < rp.length; j++) looP.push(rp[j] - median(rp.filter((_, k) => k !== j)));
+          for (const v of loo) pFit += v * v;
+          for (const v of looP) pBefore += v * v;
+          pN += loo.length;
+        }
+        const entry = {
+          offset: r.offset,
+          rms: r.rms,
+          looRms: rmsOf(loo),
+          count: inl.length,
+          total: e.pts.length,
+          outliers: e.pts.filter((_, i) => out.has(i)).map((p) => p.id),
+          method: inShape ? 'offset+n+walls' : 'offset',
+          fallback: e.fallback,
+          before: { offset: off0, rms: rmsOf(r0.map((v) => v - off0)) || 0, looRms: rmsOf(loo0) },
+        };
+        if (inShape) entry.n = n;
+        byBand[e.key] = entry;
+        count += inl.length;
       }
-      // the default model on the same points: n = model.n, walls x 1, plain median offset
-      const n0 = clamp(baseN, N_MIN, N_MAX);
-      const r0 = inl.map((p) => resid(p, n0, 1));
-      const off0 = median(r0);
-      const loo0 = [];
-      if (r0.length >= 2) for (let j = 0; j < r0.length; j++) loo0.push(r0[j] - median(r0.filter((_, k) => k !== j)));
-      const entry = {
-        offset: r.offset,
-        rms: r.rms,
-        looRms: rmsOf(loo),
-        count: inl.length,
-        total: e.pts.length,
-        outliers: e.pts.filter((_, i) => out.has(i)).map((p) => p.id),
-        method: inShape ? 'offset+n+walls' : 'offset',
-        fallback: e.fallback,
-        before: { offset: off0, rms: rmsOf(r0.map((v) => v - off0)) || 0, looRms: rmsOf(loo0) },
-      };
-      if (inShape) entry.n = n;
-      byBand[e.key] = entry;
-      count += inl.length;
+      return { byBand, count, shapeGroups, pFit, pBefore, pN };
+    };
+    const shapeFitted0 = shape.fitN || shape.fitW;
+    let fin = finalize(shape.n, shape.w, shapeFitted0);
+    let shapeRejected = false;
+    if (shapeFitted0 && fin.pN >= 4 && Math.sqrt(fin.pFit / fin.pN) > Math.sqrt(fin.pBefore / fin.pN) + GATE_DB) {
+      shapeRejected = true;
+      fin = finalize(prior.n, prior.wallFactor, false);
     }
+    const n = shapeRejected ? prior.n : shape.n;
+    const w = shapeRejected ? prior.wallFactor : shape.w;
+    const shapeFitted = shapeFitted0 && !shapeRejected;
+    const { byBand, count, shapeGroups } = fin;
+    const edge = (v, lo, hi) => v <= lo + 1e-6 || v >= hi - 1e-6;
+    const fittedN = shape.fitN && shapeGroups.length > 0;
+    const fittedW = shape.fitW && shapeGroups.length > 0;
     return {
       byBand,
       n,
@@ -364,7 +395,9 @@
       count,
       total,
       method: shapeFitted && shapeGroups.length ? 'offset+n+walls' : 'offset',
-      fitted: { n: shape.fitN && shapeGroups.length > 0, wallFactor: shape.fitW && shapeGroups.length > 0 },
+      fitted: { n: fittedN, wallFactor: fittedW },
+      shapeRejected,
+      atLimit: { n: fittedN && edge(n, N_MIN, N_MAX), wallFactor: fittedW && edge(w, WF_MIN, WF_MAX) },
       prior: priorOut(shape.lam),
     };
   }
@@ -433,5 +466,79 @@
     return fitSignature(fitView(project), bands) !== f.sig;
   }
 
-  Object.assign(model, { fitCalibration, fitProject, fitStale, fitSignature, FIT });
+  /**
+   * Do the points measured on OTHER floors say the ceiling between the floors loses more or less than the plan assumes?
+   * The router strength (offset per band) is learnt from the router floor's points alone, so a wrong ceiling cannot hide
+   * in it; every point of another floor then has a residual that belongs to the ceiling: delta = -residual / (band factor
+   * x wallFactor), in dB at the 5 GHz reference. Per floor with >= 3 such points the median is suggested when it is
+   * clearly more than noise: |median| >= 3 dB and > 1.5 x the scatter / sqrt(n).
+   * Only the floors right above / below the router floor (one slab: the answer is that slab's loss; farther floors would
+   * fight over the shared slabs). A point whose path crosses the slab inside a stairwell opening says (almost) nothing
+   * about the slab: its residual is divided by the share of the slab loss its path really meets, and paths that meet
+   * less than half of it are left out. When the router strength was learnt from the goal device's points only, the
+   * other floors' points of other devices are left out too (a device difference is not a ceiling).
+   * @param {object} project
+   * @param {{soften?:number, minPoints?:number}} [opts]
+   * @returns {Array<{floor:string, levels:number, currentDb:number, suggestedDb:number, deltaDb:number, count:number, spread:number}>}
+   *   currentDb / suggestedDb = the total loss of the slabs between that floor and the router floor (5 GHz reference)
+   */
+  function suggestCeilings(project, opts) {
+    const o = opts || {};
+    const floors = project && Array.isArray(project.floors) ? project.floors.filter((x) => x && typeof x === 'object') : [];
+    const routerFloor = project && project.net ? project.net.routerFloor : null;
+    if (floors.length < 2 || !floors.some((x) => x.id === routerFloor) || (project.view && project.view.calibrate === false)) return [];
+    const minPoints = isNum(o.minPoints) ? o.minPoints : 3;
+    const view = fitView(project, routerFloor);
+    const ctx = model.createContext(view);
+    const bl = view.net.baseline;
+    const device = view.goal && view.goal.device;
+    const wf = ctx.wf || 1;
+    const own = (Array.isArray(view.measurements) ? view.measurements : []).filter((m) => m && isNum(m.value));
+    // the router strength per band from the router floor's own points
+    const offs = {};
+    const devOnly = {};
+    for (const b of E.BANDS) {
+      const r = model.calibrateGroups([{ ctx, list: own, floor: ctx.floor }], b, { baseline: bl, soften: o.soften, device });
+      if (r.n > 0 || r.fitted) offs[units.bandKey(b)] = r.offset;
+      devOnly[units.bandKey(b)] = !!device && r.n > 0 && !r.fallback;
+    }
+    const { W, H } = E.CANVAS;
+    const out = [];
+    for (const fl of floors) {
+      if (fl.id === routerFloor) continue;
+      const gap = E.project.floorGap(project, fl.id, routerFloor);
+      if (gap.levels !== 1) continue;
+      const pf = E.project.atFloor(project, fl.id);
+      const list = (Array.isArray(pf.measurements) ? pf.measurements : []).filter((m) => m && isNum(m.value) && isNum(m.x) && isNum(m.y));
+      const c = model.floorContext(ctx, fl.id);
+      const src = model.asRouter(c, bl);
+      const V = model.vertOf(c, src.floor);
+      const deltas = [];
+      for (const m of list) {
+        const b = units.normBand(m.band);
+        if (b === null || m.bandInferred === true) continue;
+        const key = units.bandKey(b);
+        const off = offs[key];
+        if (!isNum(off)) continue;
+        if (devOnly[key] && model.profileKey(m.device) !== model.profileKey(device)) continue;
+        const bi = model.bandIndex(b);
+        // the share of the slab loss this path meets (stairwell openings cost nothing)
+        const share = V && V.slabs && V.ceil[bi] > 0 ? model.slabLoss(V, bi, 1, src.x * W, src.y * H, m.x * W, m.y * H) / V.ceil[bi] : 1;
+        if (share < 0.5) continue;
+        const pred = model.softRawSignal(c, src, m, b, o.soften);
+        const k = model.BAND_FACTOR[key] * wf * share;
+        if (k > 0 && isNum(pred)) deltas.push(-(m.value - pred - off) / k);
+      }
+      if (deltas.length < minPoints) continue;
+      const med = median(deltas);
+      const spread = 1.4826 * median(deltas.map((d) => Math.abs(d - med)));
+      if (Math.abs(med) < 3 || Math.abs(med) <= (1.5 * spread) / Math.sqrt(deltas.length)) continue;
+      const suggested = clamp(gap.lossDb + med, 0, 40 * gap.levels);
+      if (Math.abs(suggested - gap.lossDb) < 2) continue;
+      out.push({ floor: fl.id, levels: gap.levels, currentDb: gap.lossDb, suggestedDb: Math.round(suggested * 10) / 10, deltaDb: Math.round((suggested - gap.lossDb) * 10) / 10, count: deltas.length, spread: Math.round(spread * 10) / 10 });
+    }
+    return out;
+  }
+
+  Object.assign(model, { fitCalibration, fitProject, fitStale, fitSignature, suggestCeilings, FIT });
 })();

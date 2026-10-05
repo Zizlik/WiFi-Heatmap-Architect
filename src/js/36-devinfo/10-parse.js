@@ -12,6 +12,8 @@
  *               `iw dev <if> link`
  *     helper    the JSON of the local helper (also embedded in its clipboard summary)
  *   WH.devinfo.fromHash('#wifi=<base64url JSON>') / toHash(obj) - the helper's one-shot hand-over (SPEC 8.2)
+ *   WH.devinfo.mergeReads(a, b) -> {roamed, changed:['bssid'|'band'|'channel'], dbm, spread}: two reads of the same connection
+ *       around a measurement - roaming detection and the mW-mean signal
  *   WH.devinfo.toWifi(connected) -> the measurement's `wifi` object {ssid, bssid, channel, band, rxRate, txRate, radio,
  *                                   security, links? (Wi-Fi 7 MLO)}
  *
@@ -179,6 +181,7 @@
     if (!k) return null;
     if (/odpoj|disconn|getrennt|deconn|desconect/.test(k)) return 'disconnected';
     if (/ipojen|^connected|verbunden|^connect|conectado|^associated|^running/.test(k)) return 'connected';
+    if (/^connessa|^connesso/.test(k)) return 'connected';
     return textOf(k, 30);
   }
 
@@ -288,18 +291,19 @@
   // ---------------------------------------------------------------------------------------------------------------
   // Keys after keyOf(); ".{1,4}" stands for a letter with diacritics that may arrive broken through `| clip`.
   const WIN_FIELDS = [
-    ['name', /^(name|n.{1,4}zev|n.{1,4}zov|nom|nombre)$/],
-    ['description', /^(description|popis|beschreibung|descripci.{1,3}n)$/],
-    ['state', /^(state|stav|status|.{1,3}tat|estado)$/],
+    ['name', /^(name|n.{1,4}zev|n.{1,4}zov|nom|nombre|nome)$/],
+    ['description', /^(description|popis|beschreibung|descripci.{1,3}n|descrizione)$/],
+    ['state', /^(state|stav|status|stato|.{1,3}tat|estado)$/],
     ['ssid', /^ssid$/],
-    ['bssid', /bssid/],
+    // French prints the BSSID as "Point d'acces d'identificateur SSID (Service Set Identifier)"
+    ['bssid', /bssid|^point d.acc/],
     ['band', /^(band|p.{1,4}smo|frequenzband|bande|banda)$/],
-    ['channel', /^(channel|kan.{1,4}l|canal)$/],
-    ['rx', /(receive rate|rychlost p.{1,6}jmu|r.{1,3}chlos.{1,3} pr.{1,3}jmu|empfangsrate|vitesse de r.{1,3}ception|velocidad de recepci)/],
-    ['tx', /(transmit rate|rychlost odes|r.{1,3}chlos.{1,3} odos|bertragungsrate|vitesse de transmission|velocidad de transmisi)/],
-    ['radio', /(radio type|typ radi|funktyp|type de radio|tipo de radio)/],
-    ['auth', /^(authentication|ov.{1,4}.ov.{1,4}n.{1,4}|ov.{1,4}ov.{1,4}n.{1,4}|overenie|authentifizierung|authentification|autenticaci.{1,3}n)$/],
-    ['signal', /^(signal|sign.{1,4}l|se.{1,3}al)$/],
+    ['channel', /^(channel|kan.{1,4}l|canal|canale)$/],
+    ['rx', /(receive rate|rychlost p.{1,6}jmu|r.{1,3}chlos.{1,3} pr.{1,3}jmu|empfangsrate|vitesse de r.{1,3}ception|^r.{1,3}ception \(|velocidad de recepci|velocit.{1,3} ricezione)/],
+    ['tx', /(transmit rate|rychlost odes|r.{1,3}chlos.{1,3} odos|bertragungsrate|vitesse de transmission|^transmission \(|velocidad de transmisi|velocit.{1,3} trasmissione)/],
+    ['radio', /(radio type|typ radi|funktyp|type de radio|tipo de radio|tipo frequenza radio)/],
+    ['auth', /^(authentication|ov.{1,4}.ov.{1,4}n.{1,4}|ov.{1,4}ov.{1,4}n.{1,4}|overenie|authentifizierung|authentification|autenticaci.{1,3}n|autenticazione)$/],
+    ['signal', /^(signal|sign.{1,4}l|se.{1,3}al|segnale)$/],
     ['rssi', /^rssi$/],
   ];
   const winField = (key) => {
@@ -552,6 +556,8 @@
   }
 
   const WD_CHANNEL = /^(2|5|6)g(\d+)(?:\/(\d+))?/i;
+  // macOS 12: "144 (40 MHz, DFS)" - no band prefix, the band follows from the channel number
+  const WD_CHANNEL_PLAIN = /^(\d{1,3})\s*\(\s*(\d{2,3})\s*MHz/i;
   function looksWdutil(kv) {
     return kv.some((r) => /^tx rate$/.test(r.key)) && kv.some((r) => /^(op mode|rssi|noise|cca)$/.test(r.key) || WD_CHANNEL.test(r.value));
   }
@@ -568,13 +574,18 @@
     for (const r of kv) {
       const k = r.key;
       const v = r.value;
-      if (k === 'ssid' && first(k)) e.ssid = ssidOf(v, flags);
+      if (k === 'ssid' && first(k)) e.ssid = /^none$/i.test(v) ? null : ssidOf(v, flags);
       else if (k === 'bssid' && first(k)) {
         e.bssid = macOf(v);
         if (!e.bssid && /redacted/i.test(v)) flags.redacted = true;
-      } else if (k === 'rssi' && first(k)) e.rssiDbm = dbm(v);
+      } else if (k === 'rssi' && first(k)) {
+        const d = dbm(v);
+        e.rssiDbm = d === 0 ? null : d; // 0 dBm is what wdutil prints without a link
+      } else if (k === 'op mode' && first(k)) {
+        if (/^none$/i.test(v)) e.state = 'disconnected';
+      }
       else if (k === 'noise' && first(k)) e.noiseDbm = dbm(v);
-      else if (k === 'tx rate' && first(k)) e.txRate = rate(v);
+      else if (k === 'tx rate' && first(k)) e.txRate = rate(v) || null;
       else if (k === 'security' && first(k)) e.security = securityOf(v);
       else if (k === 'phy mode' && first(k)) e.radio = v;
       else if (k === 'interface name' && first(k)) e.name = textOf(v, 20);
@@ -583,9 +594,16 @@
         e.band = m[1] === '2' ? 2.4 : Number(m[1]);
         e.channel = chan(m[2]);
         if (m[3]) e.widthMHz = Number(m[3]);
+      } else if (k === 'channel' && WD_CHANNEL_PLAIN.test(v) && first(k)) {
+        const m = WD_CHANNEL_PLAIN.exec(v);
+        e.channel = chan(m[1]);
+        e.band = bandFromChannel(e.channel);
+        if ([20, 40, 80, 160].includes(Number(m[2]))) e.widthMHz = Number(m[2]);
       } else if (k === 'power' && first(k) && /^off/i.test(v)) e.state = 'disconnected';
     }
     if (e.state === null) e.state = e.ssid || e.bssid || e.rssiDbm !== null ? 'connected' : 'disconnected';
+    // a radio that is on but not associated still prints its scan channel: not a connection, so no band / channel
+    if (e.state === 'disconnected') { e.band = null; e.channel = null; e.widthMHz = null; e.txRate = null; e.rssiDbm = null; e.ssid = null; e.bssid = null; }
     if (flags.redacted) res.warnings.push('devinfo.warn.ssidHidden');
     res.interfaces.push(finish(e));
   }
@@ -1080,8 +1098,40 @@
     return enc.length > HASH_MAX ? null : `#wifi=${enc}`;
   }
 
+  /**
+   * Two reads of the same connection, taken before and after a measurement (the speed test in between takes ~20 s).
+   * {roamed, changed:['bssid'|'band'|'channel'], dbm, spread}: roamed = the device moved to another access point / band /
+   * channel meanwhile (the measurement would mix two places); dbm = the mean of both signals in mW (null when roamed or
+   * a signal is missing; one signal alone is returned as is); spread = |difference| in dB (null when unknown).
+   * A read without a field (null / unknown) never counts as a change. Wi-Fi 7 multi-link (MLO): the same connection
+   * (same MLD BSSID) whose strongest link moved to another band is NOT a roam - read b's link on a's band is compared
+   * and averaged instead (a's band is the band the measurement is saved for).
+   */
+  function mergeReads(a, b) {
+    const out = { roamed: false, changed: [], dbm: null, spread: null };
+    if (!a || typeof a !== 'object' || !b || typeof b !== 'object') return out;
+    const mac = (v) => (typeof v === 'string' && v.trim() ? v.trim().toLowerCase() : null);
+    if (mac(a.bssid) && mac(b.bssid) && mac(a.bssid) !== mac(b.bssid)) out.changed.push('bssid');
+    const multi = (c) => Array.isArray(c.links) && c.links.length > 1;
+    const linkOn = (c, band) => c.links.find((l) => l && l.band === band) || null;
+    const lb = !out.changed.length && multi(a) && multi(b) && isNum(a.band) ? linkOn(b, a.band) : null;
+    const bb = lb ? { band: lb.band, channel: lb.channel, rssiDbm: lb.rssiDbm, signalPct: null } : b;
+    if (isNum(a.band) && isNum(bb.band) && a.band !== bb.band) out.changed.push('band');
+    if (isNum(a.channel) && isNum(bb.channel) && a.channel !== bb.channel) out.changed.push('channel');
+    out.roamed = out.changed.length > 0;
+    const sig = (c) => (isNum(c.rssiDbm) ? c.rssiDbm : isNum(c.signalPct) ? c.signalPct / 2 - 100 : null);
+    const sa = sig(a);
+    const sb = sig(bb);
+    if (sa !== null && sb !== null) {
+      out.spread = Math.abs(sa - sb);
+      if (!out.roamed) out.dbm = 10 * Math.log10((Math.pow(10, sa / 10) + Math.pow(10, sb / 10)) / 2);
+    } else if (!out.roamed) out.dbm = sa !== null ? sa : sb;
+    return out;
+  }
+
   Object.assign(D, {
     parse,
+    mergeReads,
     fromObject,
     fromHash,
     toHash,

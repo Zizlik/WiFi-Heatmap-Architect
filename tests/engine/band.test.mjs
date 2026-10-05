@@ -40,9 +40,10 @@ test('band constants: factor, wall and furniture tables (SPEC 7.1), frozen, shar
     solid_guess: T(10, 15, 18),
     concrete: T(12, 18, 21),
     reinforced_concrete: T(17, 26, 30),
+    low_e_glass: T(20, 27, 29),
     metal: T(25, 30, 32),
   });
-  assert.deepEqual(plain(model.FURNITURE_KINDS), { bed: T(1, 1, 1), wood: T(2, 3, 4), books: T(3, 5, 6), appliance: T(6, 8, 9), metal: T(10, 12, 13), custom: null });
+  assert.deepEqual(plain(model.FURNITURE_KINDS), { bed: T(1, 1, 1), wood: T(2, 3, 4), books: T(3, 5, 6), appliance: T(6, 8, 9), metal: T(10, 12, 13), opening: T(0, 0, 0), custom: null });
   for (const o of [model.BAND_FACTOR, model.MATERIALS, model.MATERIALS.brick, model.FURNITURE_KINDS, model.FURNITURE_KINDS.bed]) assert.ok(Object.isFrozen(o));
   assert.equal(model.MATERIALS, P.MATERIALS);
   // the number a preset stores in wall.loss / furniture.loss is the table's 5 GHz value

@@ -125,6 +125,26 @@
     return id;
   };
 
+  /** Add wired APs at engine-suggested places (optimize.howMany steps: {floor, pos}) as ONE undo step; returns the added ids. */
+  N.addPlanned = (steps) => {
+    const ids = [];
+    if (!Array.isArray(steps) || !steps.length) return ids;
+    store().commit('planner.undo.nodeAdd', (pr) => {
+      for (const s of steps) {
+        const floor = s.floor === null || s.floor === undefined ? undefined : s.floor;
+        const nd = EP().newNode(pr, { mode: 'ap_cable', pos: s.pos, floor, lang: WH.i18n.lang });
+        if (!nd || !EP().addNode(pr, nd, floor)) break;
+        ids.push(nd.id);
+      }
+    }, N.TOPICS);
+    if (ids.length) {
+      N.select(ids[0], { reveal: true });
+      if (PL.side && PL.side.openNodes) PL.side.openNodes();
+      ui().toast({ text: t('planner.nodes.suggest.added', { n: ids.length }), action: { i18n: 'ui.undo', fn: () => { if (store().labels().undo === 'planner.undo.nodeAdd') store().undo(); } } }, { kind: 'ok', ms: 7000 });
+    }
+    return ids;
+  };
+
   N.remove = (id) => {
     const p = PL.P();
     const x = N.ref(p, id);

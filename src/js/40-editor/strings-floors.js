@@ -69,7 +69,7 @@
 
     'help.floors.t': 'Patra',
     'help.floors.b': 'Každé patro má svůj půdorys. Signál z routeru projde stropem do ostatních pater, jen slabší: betonový strop ubere asi 15 dB, železobetonový 20 dB, dřevěný 8 dB.',
-    'help.floors.more': '„Duplikovat půdorys do nového patra“ se hodí, když jsou patra nad sebou stejná. Měřítko platí pro všechna patra najednou. Schodiště a otvory ve stropě model nezná, takže u schodů bývá signál ve skutečnosti o kousek lepší.',
+    'help.floors.more': '„Duplikovat půdorys do nového patra“ se hodí, když jsou patra nad sebou stejná. Měřítko platí pro všechna patra najednou. Schodiště nakresli nástrojem Nábytek jako „Otvor (schodiště)“ do horního patra: tam signál mezi patry projde bez útlumu stropu.',
     'help.ceiling.t': 'Strop mezi patry',
     'help.ceiling.b': 'Strop tlumí signál, který jde do patra nad ním. Běžný betonový strop asi 15 dB, železobetonový 20 dB, dřevěný trámový jen 8 dB. Každé 3 dB navíc zhruba půlí sílu signálu.',
     'help.ceiling.more': 'Výška patra (obvykle 2,7 m) prodlužuje cestu signálu mezi patry. Útlum zadáváš pro 5 GHz; 2,4 GHz projde líp, 6 GHz hůř.',
@@ -139,7 +139,7 @@
 
     'help.floors.t': 'Floors',
     'help.floors.b': 'Every floor has its own plan. The router’s signal gets through the ceiling to the other floors, only weaker: a concrete ceiling takes about 15 dB, reinforced concrete 20 dB, a wooden one 8 dB.',
-    'help.floors.more': '“Copy this plan to a new floor” is handy when the floors are the same. The scale applies to all floors at once. Stairs and openings in the ceiling are not modelled, so near the stairs the real signal is usually a little better.',
+    'help.floors.more': '“Copy this plan to a new floor” is handy when the floors are the same. The scale applies to all floors at once. Draw the stairwell with the Furniture tool as "Opening (stairwell)" on the upper floor: there the signal between the floors passes without the ceiling loss.',
     'help.ceiling.t': 'Ceiling between floors',
     'help.ceiling.b': 'The ceiling weakens the signal going to the floor above. A typical concrete ceiling about 15 dB, reinforced concrete 20 dB, a wooden beam ceiling only 8 dB. Every extra 3 dB roughly halves the signal power.',
     'help.ceiling.more': 'The storey height (usually 2.7 m) lengthens the signal’s path between floors. The loss is entered for 5 GHz; 2.4 GHz gets through better, 6 GHz worse.',

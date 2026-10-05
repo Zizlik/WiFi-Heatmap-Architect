@@ -486,3 +486,62 @@ test('fit cost: 20 measurements fit in well under 100 ms', () => {
   const dt = (performance.now() - t0) / 3;
   assert.ok(dt < 100, `${dt.toFixed(1)} ms`);
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// held-out gate + "at the limit" warning
+// ---------------------------------------------------------------------------------------------------------------------
+
+test('gate: noise around the DEFAULT model must not move the shape - it is discarded when it predicts left-out points worse', () => {
+  const p = demo();
+  const ms = generate(p, { N: 6, truth: { n: 2.2, w: 1, off: 0 }, sigma: 5, seed: 1 });
+  const f = fitOf(p, ms);
+  assert.equal(f.shapeRejected, true);
+  assert.equal(f.method, 'offset');
+  assert.deepEqual(f.fitted, { n: false, wallFactor: false });
+  assert.equal(f.n, M.createContext(p, { fit: false }).p.n);
+  assert.equal(f.wallFactor, 1);
+  assert.equal(f.byBand['5'].n, undefined, 'the band did not take part in a shape fit');
+  assert.equal(f.byBand['5'].method, 'offset');
+  assert.ok(Number.isFinite(f.byBand['5'].looRms) && Number.isFinite(f.byBand['5'].before.looRms));
+  assert.equal(P.cleanFit(f).shapeRejected, true, 'the flag survives sanitising (it is stored with the fit)');
+});
+
+test('gate: a real deviation (25 points, walls x1.3) is NOT rejected and predicts better than the default', () => {
+  const p = demo();
+  const f = fitOf(p, generate(p, { N: 25, truth: { n: 2.8, w: 1.3, off: 4 }, sigma: 2, seed: 3 }));
+  assert.equal(f.shapeRejected, false);
+  assert.equal(f.method, 'offset+n+walls');
+  assert.ok(f.byBand['5'].looRms < f.byBand['5'].before.looRms);
+  assert.equal(f.atLimit.n, false);
+  assert.equal(f.atLimit.wallFactor, false);
+});
+
+test('at the limit: data that wants more than the allowed wall factor reports it (usually a wrong scale or wall materials)', () => {
+  const p = demo();
+  const f = fitOf(p, generate(p, { N: 30, truth: { n: 3.8, w: 2.6, off: 0 }, sigma: 0.5, seed: 4 }));
+  assert.equal(f.shapeRejected, false);
+  assert.equal(f.atLimit.wallFactor, true);
+  assert.equal(f.wallFactor, 2);
+  const stored = P.cleanFit(f);
+  assert.deepEqual(stored.atLimit, { n: false, wallFactor: true });
+});
+
+test('a fit without a shape never reports a limit or a rejection', () => {
+  const p = demo();
+  const f = fitOf(p, generate(p, { N: 3, truth: { n: 2.2, w: 1, off: 2 }, sigma: 0, seed: 2 }));
+  assert.equal(f.method, 'offset');
+  assert.equal(f.shapeRejected, false);
+  assert.deepEqual(f.atLimit, { n: false, wallFactor: false });
+  const stored = P.cleanFit(f);
+  assert.equal(stored.shapeRejected, undefined);
+  assert.equal(stored.atLimit, undefined);
+});
+
+test('gate: compares with the shape it would fall back to (an explicit prior), never trades a good fit for a bad prior', () => {
+  const p = demo();
+  // the truth is the default model (walls x1); the caller's prior says walls x1.8
+  const ms = generate(p, { N: 10, truth: { n: 2.2, w: 1, off: 0 }, sigma: 1, seed: 7 });
+  const f = fitOf(p, ms, { prior: { wallFactor: 1.8 } });
+  assert.equal(f.shapeRejected, false, 'the fitted shape beats the prior it would fall back to');
+  assert.ok(f.wallFactor < 1.8, `walls moved towards the truth (${f.wallFactor})`);
+});

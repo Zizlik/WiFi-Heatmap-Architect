@@ -434,6 +434,22 @@
     }
     if (aborted()) return cancelled();
 
+    // 3b. a second read after the speed test (~20 s later, helper only): average the signal (mW) and notice when the device
+    // roamed to another access point / band meanwhile - such a point mixes two places and the user should know
+    if (src === 'helper' && w && data.speed && o.recheck !== false) {
+      let w2 = null;
+      try { w2 = await PL.helperWifi(signal); } catch (e) { if (aborted()) return cancelled(); }
+      if (w2) {
+        const mr = DI.mergeReads(w, w2);
+        data.reads = mr;
+        if (mr.roamed) { data.roamed = mr.changed; } else if (mr.dbm !== null && fin(data.value)) {
+          data.value = clamp(mr.dbm, -100, -20);
+          if (mr.spread !== null && mr.spread > 6) data.unstable = Math.round(mr.spread);
+        }
+      }
+    }
+    if (aborted()) return cancelled();
+
     // 4. save what was measured
     set('save', 'running', null);
     const sp = data.speed;
@@ -481,7 +497,10 @@
     let switched = '';
     if (o.source !== 'wizard') { try { switched = PL.bands.afterSave(saved); } catch (e) { PL.report(e, 'measure.afterSave', { bug: true }); } }
     out.switched = switched;
-    if (o.toast !== false && o.source !== 'wizard') toastSaved(saved, switched);
+    out.roamed = data.roamed || null;
+    if (o.toast !== false && o.source !== 'wizard') toastSaved(saved, switched, w);
+    if (o.toast !== false && data.roamed) ui().toast({ i18n: 'planner.mall.roamed', action: { i18n: 'ui.undo', fn: () => { if (store().labels().undo === 'planner.undo.measAll' && PL.P().measurements.some((x) => x.id === saved.id)) store().undo(); } } }, { kind: 'warn', ms: 14000 });
+    else if (o.toast !== false && data.unstable) ui().toast({ i18n: 'planner.mall.unstable', params: { d: data.unstable } }, { kind: 'info', ms: 9000 });
     return out;
   };
 
@@ -493,9 +512,12 @@
     return parts.join(' · ');
   };
   /** "Uloženo · Zpět": the saved measurement with an undo. */
-  function toastSaved(m, switched) {
+  function toastSaved(m, switched, wifi) {
+    // one plain sentence about the channel when it is worth knowing (DFS, overlapping 2.4 GHz channel, 40 MHz on 2.4 GHz)
+    let ch = '';
+    try { const h = WH.engine.channels.hint(wifi); if (h) ch = t('planner.mall.ch.' + h.key, { c: h.channel }); } catch (e) { PL.report(e, 'measure.channelHint'); }
     ui().toast({
-      text: [t('planner.mall.saved', { name: m.name, s: PL.bands.line(m) + (fin(m.download) && fin(m.upload) ? ` · ↓ ${PL.mbps(m.download)} / ↑ ${PL.mbps(m.upload)}${WH.util.NBSP}${t('planner.mbps')}` : '') }), switched].filter(Boolean).join(' '),
+      text: [t('planner.mall.saved', { name: m.name, s: PL.bands.line(m) + (fin(m.download) && fin(m.upload) ? ` · ↓ ${PL.mbps(m.download)} / ↑ ${PL.mbps(m.upload)}${WH.util.NBSP}${t('planner.mbps')}` : '') }), switched, ch].filter(Boolean).join(' '),
       action: { i18n: 'ui.undo', fn: () => { if (store().labels().undo === 'planner.undo.measAll' && PL.P().measurements.some((x) => x.id === m.id)) store().undo(); } },
     }, { kind: 'ok' });
   }

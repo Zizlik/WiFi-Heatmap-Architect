@@ -34,6 +34,8 @@
     { key: 'table', icon: 'table', kind: 'custom', loss: 1, size: [1.4, 0.8] },
     { key: 'metal', icon: 'box', kind: 'metal', size: [1, 0.5] },
     { key: 'custom', icon: 'edit', kind: 'custom', loss: 3, size: [1, 1] },
+    // a hole in the slab between two floors (stairwell): the signal passes it without the ceiling loss (engine floorSlabs)
+    { key: 'opening', icon: 'stairs', kind: 'opening', size: [1, 2.5] },
   ];
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -348,9 +350,13 @@
     let id = null;
     commit('editor.undo.addFurniture', (p) => {
       id = eng().project.nextId(p, 'furniture');
-      p.furniture.push({ id, type: 'furniture', name: t(`editor.preset.${pr.key}`), points: clean, loss: presetLoss(pr), kind: pr.kind, blocksSignal: true });
+      p.furniture.push({ id, type: 'furniture', name: t(`editor.preset.${pr.key}`), points: clean, loss: presetLoss(pr), kind: pr.kind, blocksSignal: pr.kind !== 'opening' });
     });
     if (id) select(id);
+    if (id && pr.kind === 'opening') {
+      const nFloors = Array.isArray(proj().floors) ? proj().floors.length : 1;
+      WH.ui.toast({ i18n: nFloors > 1 ? 'editor.msg.opening' : 'editor.msg.openingOne' }, { kind: 'info', ms: 9000 });
+    }
     return id;
   }
 

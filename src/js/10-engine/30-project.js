@@ -49,6 +49,10 @@
     solid_guess: bandRow(10, 15, 18),
     concrete: bandRow(12, 18, 21),
     reinforced_concrete: bandRow(17, 26, 30),
+    // Window with a metallised energy-saving (low-E) coating: the thin conductive film blocks radio far more than plain glass.
+    // An ESTIMATE from one published measurement (about 30 dB at 6.75 GHz, Shakya et al.; modelled by SignalPlan
+    // docs/MODEL.md at 24/30/30 dB) - rounded down a little because coatings differ; plain glass is 2/4/5.
+    low_e_glass: bandRow(20, 27, 29),
     metal: bandRow(25, 30, 32),
   });
   /** Wall presets as the number stored in wall.loss (= the 5 GHz column of MATERIALS). */
@@ -57,9 +61,12 @@
   const LEGACY_WALL_MATERIALS = Object.freeze({ drywall: 3, brick: 8, concrete: 12, reinforced_concrete: 18, glass: 3, wood: 3, metal: 25, masonry: 8, solid_guess: 12 });
   const MATERIAL_KEYS = Object.freeze([...Object.keys(WALL_MATERIALS), 'custom']);
   /** Furniture presets as the number stored in furniture.loss (5 GHz; `custom` = default for a new custom piece). */
-  const FURNITURE_KINDS = Object.freeze({ custom: 3, bed: 1, wood: 3, books: 5, appliance: 8, metal: 12 });
+  // 'opening' = a hole in the slab between two floors (a stairwell, an atrium): never blocks, and the ceiling loss is
+  // skipped where a signal path between the floors crosses it (SPEC 14.3, floorSlabs()). It opens the floor of the storey
+  // it is drawn on (the slab below it); drawn on the lowest floor it opens the slab above (where the stairs go up).
+  const FURNITURE_KINDS = Object.freeze({ custom: 3, bed: 1, wood: 3, books: 5, appliance: 8, metal: 12, opening: 0 });
   /** Furniture presets per band (dB at 2.4 / 5 / 6 GHz); custom pieces scale their stored loss by BAND_FACTOR. */
-  const FURNITURE_BANDS = Object.freeze({ bed: bandRow(1, 1, 1), wood: bandRow(2, 3, 4), books: bandRow(3, 5, 6), appliance: bandRow(6, 8, 9), metal: bandRow(10, 12, 13), custom: null });
+  const FURNITURE_BANDS = Object.freeze({ bed: bandRow(1, 1, 1), wood: bandRow(2, 3, 4), books: bandRow(3, 5, 6), appliance: bandRow(6, 8, 9), metal: bandRow(10, 12, 13), opening: bandRow(0, 0, 0), custom: null });
   const BAND_POWER_MIN = -10;
   const BAND_POWER_MAX = 6;
   const WAN_RATES = Object.freeze([100, 1000, 2500, 5000, 10000]);
@@ -243,6 +250,8 @@
       byBand,
     };
     if (typeof f.sig === 'string' && SIG_RE.test(f.sig)) out.sig = f.sig;
+    if (f.shapeRejected === true) out.shapeRejected = true;
+    if (isObj(f.atLimit) && (f.atLimit.n === true || f.atLimit.wallFactor === true)) out.atLimit = { n: f.atLimit.n === true, wallFactor: f.atLimit.wallFactor === true };
     return out;
   }
 
@@ -603,9 +612,9 @@
         type: 'furniture',
         name: cleanText(f.name, 50) || t('engine.name.furniture', lang),
         points,
-        loss: round(isNum(f.loss) ? clamp(f.loss, 0, 30) : clamp(Number(f.loss) || FURNITURE_KINDS[kind], 0, 30)),
+        loss: kind === 'opening' ? 0 : round(isNum(f.loss) ? clamp(f.loss, 0, 30) : clamp(Number(f.loss) || FURNITURE_KINDS[kind], 0, 30)),
         kind,
-        blocksSignal: f.blocksSignal !== false,
+        blocksSignal: kind === 'opening' ? false : f.blocksSignal !== false,
       });
     });
 
@@ -1765,6 +1774,51 @@
   }
 
   /**
+   * Make the ceilings between two floors lose `targetDb` in total (5 GHz reference): the slabs keep their shares of the
+   * sum (equal shares when it is 0), none goes above 40 dB (the rest goes to the others); a level without a floor keeps the
+   * default it is counted with. Each changed slab becomes a 'custom' ceiling. Returns false (nothing changed) for the same
+   * floor / an unknown floor / a total that cannot be reached.
+   */
+  function scaleCeilings(p, fromId, toId, targetDb) {
+    const list = floorsOf(p);
+    const fa = list.find((f) => f.id === fromId);
+    const fb = list.find((f) => f.id === toId);
+    if (!fa || !fb || fa === fb || !isNum(targetDb)) return false;
+    const lo = Math.min(fa.level, fb.level);
+    const hi = Math.max(fa.level, fb.level);
+    const cur = (f) => (isObj(f.ceiling) && isNum(f.ceiling.lossDb) ? f.ceiling.lossDb : CEILING_DEFAULT.lossDb);
+    const slabs = [];
+    let fixed = 0;
+    for (let L = lo; L < hi; L++) {
+      const f = list.find((x) => x.level === L);
+      if (f) slabs.push(f);
+      else fixed += CEILING_DEFAULT.lossDb;
+    }
+    const rest = targetDb - fixed;
+    if (!slabs.length || rest < 0 || rest > 40 * slabs.length) return false;
+    // proportional fill with a 40 dB cap: a capped slab leaves the pool and the rest is shared again
+    const val = new Map();
+    let open = slabs.slice();
+    let left = rest;
+    while (open.length) {
+      const sum = open.reduce((s, f) => s + cur(f), 0);
+      const share = (f) => (sum > 0 ? cur(f) / sum : 1 / open.length);
+      const over = open.filter((f) => left * share(f) > 40);
+      if (!over.length) {
+        for (const f of open) val.set(f, left * share(f));
+        break;
+      }
+      for (const f of over) {
+        val.set(f, 40);
+        left -= 40;
+      }
+      open = open.filter((f) => !over.includes(f));
+    }
+    for (const f of slabs) setCeiling(p, f.id, { material: 'custom', lossDb: Math.round(clamp(val.get(f), 0, 40) * 10) / 10 });
+    return true;
+  }
+
+  /**
    * The slabs between two floors: levels = |level difference|, heightM = the sum of the storey heights crossed,
    * lossDb = the sum of their ceiling losses (5 GHz reference). A level without a floor (a gap) counts with the defaults.
    * @returns {{levels:number, heightM:number, lossDb:number}}
@@ -1785,6 +1839,44 @@
       lossDb += isNum(c.lossDb) ? c.lossDb : CEILING_DEFAULT.lossDb;
     }
     return { levels: hi - lo, heightM, lossDb };
+  }
+
+  /**
+   * The slabs a signal between two floors crosses, ordered from `fromId` (the source) towards `toId` (the receiver):
+   * [{level, heightM, lossDb (5 GHz ref), holes:[[{x,y}...]]}]. The slab between level L and L+1 is the ceiling of floor
+   * L; its holes are the furniture of kind 'opening' drawn on floor L+1 (a hole in that storey's floor), and, when floor L
+   * is the lowest floor of the building, also those drawn on floor L (the ground floor has no floor below, so its opening
+   * can only mean the ceiling above). Every opening thus opens exactly one slab, also in buildings with 3+ floors. Points
+   * are normalized. [] for the same floor / an unknown floor.
+   */
+  function floorSlabs(p, fromId, toId) {
+    const list = floorsOf(p);
+    const fa = list.find((f) => f.id === fromId);
+    const fb = list.find((f) => f.id === toId);
+    if (!fa || !fb || fa === fb) return [];
+    const lo = Math.min(fa.level, fb.level);
+    const hi = Math.max(fa.level, fb.level);
+    // the floor whose data sits at the top level of a view (plan: null) is the project's own plan
+    const holesOf = (fl) => {
+      if (!fl) return [];
+      const pl = isObj(fl.plan) ? fl.plan : p.plan;
+      const fu = pl && Array.isArray(pl.furniture) ? pl.furniture : [];
+      return fu.filter((x) => isObj(x) && x.kind === 'opening' && Array.isArray(x.points) && x.points.length >= 3).map((x) => x.points);
+    };
+    const lowest = Math.min(...list.map((x) => x.level));
+    const out = [];
+    for (let L = lo; L < hi; L++) {
+      const f = list.find((x) => x.level === L);
+      const up = list.find((x) => x.level === L + 1);
+      const c = f && isObj(f.ceiling) ? f.ceiling : CEILING_DEFAULT;
+      out.push({
+        level: L,
+        heightM: isNum(c.heightM) ? c.heightM : CEILING_DEFAULT.heightM,
+        lossDb: isNum(c.lossDb) ? c.lossDb : CEILING_DEFAULT.lossDb,
+        holes: [...holesOf(up), ...(L === lowest ? holesOf(f) : [])],
+      });
+    }
+    return fa.level > fb.level ? out.reverse() : out;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -2158,6 +2250,8 @@
     setCeiling,
     floorName,
     floorGap,
+    floorSlabs,
+    scaleCeilings,
     cleanCeiling,
     // SPEC 14: nodes
     allNodes,

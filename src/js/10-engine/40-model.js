@@ -454,7 +454,17 @@
         if (fl.id === floorId) continue;
         const g = PJ.floorGap(project, fl.id, floorId);
         const ceil = scaled(g.lossDb);
-        vert.set(fl.id, { levels: g.levels, heightM: g.heightM, lossDb: g.lossDb, dz2: g.heightM * g.heightM, ceil, wallW: CROSS_WALL_WEIGHT });
+        // holes in the slabs between the floors (stairwells): only then does the ceiling loss depend on where the path crosses
+        const sl = PJ.floorSlabs ? PJ.floorSlabs(project, fl.id, floorId) : [];
+        const slabs = sl.some((s) => s.holes.length) ? sl.map((s, j) => ({ ceil: scaled(s.lossDb), t: (j + 0.5) / sl.length, holes: s.holes.map(holePx) })) : null;
+        vert.set(fl.id, { levels: g.levels, heightM: g.heightM, lossDb: g.lossDb, dz2: g.heightM * g.heightM, ceil, wallW: CROSS_WALL_WEIGHT, ...(slabs ? { slabs } : {}) });
+        if (slabs) {
+          hv.add(0x0e5);
+          for (const s of slabs) {
+            hv.add(s.holes.length);
+            for (const h of s.holes) for (const v of h.pts) hv.px(v);
+          }
+        }
         hashText(String(fl.id));
         hv.add(g.levels);
         hv.px(g.heightM * 1000);
@@ -516,6 +526,63 @@
       sib.map.set(floorId, c);
     }
     return c;
+  }
+
+  /** A slab hole (a polygon of normalized points) in canvas px: {pts:[x0,y0,x1,y1,...], minX, minY, maxX, maxY}. */
+  function holePx(points) {
+    const pts = [];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const q of points) {
+      const x = q.x * W;
+      const y = q.y * H;
+      pts.push(x, y);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    return { pts, minX, minY, maxX, maxY };
+  }
+  function inHole(h, x, y) {
+    if (x < h.minX || x > h.maxX || y < h.minY || y > h.maxY) return false;
+    const p = h.pts;
+    let inside = false;
+    for (let i = 0, j = p.length - 2; i < p.length; j = i, i += 2) {
+      const xi = p[i];
+      const yi = p[i + 1];
+      const xj = p[j];
+      const yj = p[j + 1];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+
+  /**
+   * Ceiling loss in dB (band index `bi`, times the fit's wallFactor `wf`) of the slabs between a source on another floor
+   * and a point on this floor, for the straight path (ax,ay) -> (bx,by) in canvas px, `V` = vertOf(). Without holes it is
+   * the constant V.ceil[bi] * wf. With holes (stairwells) a slab costs nothing where the path crosses it inside a hole:
+   * the crossing of slab j of L between the floors is taken at t = (j + 0.5) / L of the way (the slab lies between the
+   * two devices, mounted at about the same height above their floors).
+   */
+  function slabLoss(V, bi, wf, ax, ay, bx, by) {
+    if (!V.slabs) return V.ceil[bi] * wf;
+    let sum = 0;
+    for (const s of V.slabs) {
+      const x = ax + (bx - ax) * s.t;
+      const y = ay + (by - ay) * s.t;
+      let open = false;
+      for (const h of s.holes) {
+        if (inHole(h, x, y)) {
+          open = true;
+          break;
+        }
+      }
+      if (!open) sum += s.ceil[bi];
+    }
+    return sum * wf;
   }
 
   /**
@@ -1036,7 +1103,7 @@
     const L = traceLoss(c, a.x * W, a.y * H, b.x * W, b.y * H);
     // SPEC 14.3: from another floor (a.floor) the walls of this floor count half, plus the ceilings crossed
     const V = vertOf(c, a.floor);
-    return V ? V.wallW * L + V.ceil[bandIndexOf(c)] * c.wf : L;
+    return V ? V.wallW * L + slabLoss(V, bandIndexOf(c), c.wf, a.x * W, a.y * H, b.x * W, b.y * H) : L;
   }
 
   /** 0 / 1 / 2 of the band view of a context (5 GHz for an unknown band). */
@@ -1065,7 +1132,7 @@
       // SPEC 14.3: a source on another floor - 3-D distance, the ceilings crossed, this floor's walls half
       const dh = Math.hypot(bx - ax, by - ay) * c.mpp;
       const dm = Math.sqrt(dh * dh + V.dz2);
-      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * traceLoss(c, ax, ay, bx, by) + V.ceil[bandIndexOf(c)] * c.wf) + extra;
+      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * traceLoss(c, ax, ay, bx, by) + slabLoss(V, bandIndexOf(c), c.wf, ax, ay, bx, by)) + extra;
     }
     const dm = Math.hypot(bx - ax, by - ay) * c.mpp;
     return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - traceLoss(c, ax, ay, bx, by) + extra;
@@ -1101,7 +1168,7 @@
     const c = band === undefined ? ctx : forBand(ctx, band);
     const L = softLossPx(c, a.x * W, a.y * H, b.x * W, b.y * H, softenOf(soften) / c.mpp);
     const V = vertOf(c, a.floor);
-    return V ? V.wallW * L + V.ceil[bandIndexOf(c)] * c.wf : L;
+    return V ? V.wallW * L + slabLoss(V, bandIndexOf(c), c.wf, a.x * W, a.y * H, b.x * W, b.y * H) : L;
   }
 
   /** rawSignal with the softened obstacle loss (uncalibrated, unclamped). */
@@ -1117,7 +1184,7 @@
     const V = vertOf(c, from.floor);
     if (V) {
       const dm = Math.sqrt(dh * dh + V.dz2);
-      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * softLossPx(c, ax, ay, bx, by, s / c.mpp) + V.ceil[bandIndexOf(c)] * c.wf);
+      return bandBase(c, band) - 10 * c.p.n * Math.log10(dm < 1 ? 1 : dm) - (V.wallW * softLossPx(c, ax, ay, bx, by, s / c.mpp) + slabLoss(V, bandIndexOf(c), c.wf, ax, ay, bx, by));
     }
     return bandBase(c, band) - 10 * c.p.n * Math.log10(dh < 1 ? 1 : dh) - softLossPx(c, ax, ay, bx, by, s / c.mpp);
   }
@@ -1879,6 +1946,7 @@
     distance3,
     asRouter,
     vertOf,
+    slabLoss,
     calibrateGroups,
     CROSS_WALL_WEIGHT,
     fieldParams,

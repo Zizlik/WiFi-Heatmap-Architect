@@ -289,6 +289,25 @@
       .sort((a, b) => Math.abs(b.d || 0) - Math.abs(a.d || 0));
   }
 
+  /** What the points on the other floors say about the ceiling between the floors (engine model.suggestCeilings), cached by what it reads. */
+  let ceilKey = '';
+  let ceilVal = [];
+  function ceilSuggestions(p) {
+    const M = WH.engine.model;
+    if (!Array.isArray(p.floors) || p.floors.length < 2 || typeof M.suggestCeilings !== 'function' || p.view.calibrate === false) return [];
+    // everything suggestCeilings reads: every floor's plan (walls, openings), the scale, the model, the devices, the ceilings
+    const ms = (list) => (list || []).map((m) => [m.id, m.band, m.value, m.x, m.y, m.device, m.bandInferred]);
+    const k = hash(JSON.stringify([depKey(p), p.net.routerFloor, p.view.calibrate, p.model.fit ? fitSig(p.model.fit) : '', ms(p.measurements),
+      p.floors.map((f) => [f.id, f.level, f.ceiling, f.plan && [f.plan.rooms, f.plan.walls, f.plan.doors, f.plan.furniture], ms(f.measurements)])]));
+    if (k === ceilKey) return ceilVal;
+    ceilKey = k;
+    try { ceilVal = M.suggestCeilings(p) || []; } catch (e) { PL.report(e, 'calib.ceilings'); ceilVal = []; }
+    return ceilVal;
+  }
+  function applyCeiling(s) {
+    WH.store.commit('planner.undo.ceilFit', (pr) => { WH.engine.project.scaleCeilings(pr, s.floor, pr.net.routerFloor, s.suggestedDb); }, ['floors', 'measurements']);
+  }
+
   /** Plain-language lines for the fit {lines:[{k, text}], next} (k: str | walls | decay | acc | method), or null. */
   function fitText(p) {
     const rows = fitRows(p);
@@ -318,7 +337,12 @@
       lines.push({ k: 'acc', text: pre(r) + (fin(b) && b > a ? t('planner.cw.acc', { a: WH.util.fmt(a, 0), b: WH.util.fmt(b, 0) }) : t('planner.cw.accOnly', { a: WH.util.fmt(a, 0) })) });
     }
     const n = rows.reduce((s, r) => s + r.count, 0);
-    lines.push({ k: 'method', text: t(full ? 'planner.cw.method.full' : 'planner.cw.method.offset', { n }) });
+    // the held-out gate threw the wall / distance fit away (that line replaces "only the router strength so far - measure 4+"),
+    // or the fit sits on the edge of what is allowed (wrong scale / walls?)
+    if (f.shapeRejected) lines.push({ k: 'rejected', text: t('planner.cw.rejected') });
+    else lines.push({ k: 'method', text: t(full ? 'planner.cw.method.full' : 'planner.cw.method.offset', { n }) });
+    if (f.atLimit && f.atLimit.wallFactor) lines.push({ k: 'limit', text: t('planner.cw.limit.walls') });
+    else if (f.atLimit && f.atLimit.n) lines.push({ k: 'limit', text: t('planner.cw.limit.decay') });
     // what to do next
     let next;
     const out = outliers(p);
@@ -326,7 +350,7 @@
     if (p.view.calibrate === false) next = t('planner.cw.next.off');
     else if (out.length) next = t('planner.cw.next.outlier', { name: out[0].m.name, d: fin(out[0].d) ? PL.db(out[0].d) : '> 12' + WH.util.NBSP + 'dB' });
     else if (loo > 6) next = t('planner.cw.next.rough');
-    else if (!full) next = t('planner.cw.next.more', { n: Math.max(1, 4 - Math.max(...rows.map((r) => r.count))) });
+    else if (!full && !f.shapeRejected) next = t('planner.cw.next.more', { n: Math.max(1, 4 - Math.max(...rows.map((r) => r.count))) });
     else next = t('planner.cw.next.good');
     return { lines, next, full };
   }
@@ -437,23 +461,32 @@
       value: P().view.calibrate === false ? 'def' : 'fit', size: 'sm', aria: 'planner.cw.cmp.aria',
       onChange: (v) => { PL.S.geomDirty = true; PL.setView({ calibrate: v === 'fit' }); },
     });
+    const ceilBox = el('div.pl-fit__ceil.stack', { hidden: true, style: { '--gap': '6px' } });
     const reset = ui().button({ i18n: 'planner.cw.reset', icon: 'refresh', size: 'sm', variant: 'ghost', onClick: resetFit });
     const apply = ui().button({ i18n: 'planner.cw.apply', icon: 'sparkles', size: 'sm', variant: 'soft', onClick: applyFit });
     const body = el('div.pl-fit__body', lines, el('div.pl-fit__nextbox', el('span.pl-fit__nextt', t('planner.cw.nextT')), next),
       el('div.pl-fit__cmp', el('span.pl-fit__cmpl', t('planner.cw.cmp')), cmp), el('div.cluster.pl-fit__acts', reset));
     const head = o.inWizard ? null : el('div.pl-cap.pl-fit__cap', el('span', t('planner.cw.sec')), ui().hint('calibration'));
-    const root = el('div.pl-fit' + (o.inWizard ? '.pl-fit--wizard' : ''), head, body, apply);
+    const root = el('div.pl-fit' + (o.inWizard ? '.pl-fit--wizard' : ''), head, body, ceilBox, apply);
     let key = '';
     root.sync = (q) => {
       const p = P();
       const has = !!p.model.fit;
       const canApply = !has && typeof WH.engine.model.fitProject === 'function' && fitBands(p).length > 0;
       if (q === 'coarse' && key) return;
-      const k = [has ? fitSig(p.model.fit) : '', canApply, p.view.calibrate, WH.i18n.lang, PL.S.offsKey].join('|');
+      const cs = ceilSuggestions(p);
+      const k = [has ? fitSig(p.model.fit) : '', canApply, p.view.calibrate, WH.i18n.lang, PL.S.offsKey, JSON.stringify(cs)].join('|');
       if (k === key) return;
       key = k;
       const ft = has ? fitText(p) : null;
-      root.hidden = !ft && !canApply && !o.inWizard;
+      root.hidden = !ft && !canApply && !cs.length && !o.inWizard;
+      ceilBox.hidden = !cs.length;
+      ceilBox.replaceChildren(...cs.map((s) => {
+        const round = (v) => WH.util.fmt(Math.round(v), 0);
+        const txt = t('planner.cw.ceil', { floor: PL.floorName(s.floor), n: s.count, from: round(s.currentDb), to: round(s.suggestedDb) });
+        const btn = ui().button({ label: t('planner.cw.ceilApply', { to: round(s.suggestedDb) }), icon: 'layers', size: 'sm', variant: 'soft', onClick: () => applyCeiling(s) });
+        return el('div.pl-fit__ceilrow.stack', { style: { '--gap': '6px' } }, el('p.text-sm', txt), btn);
+      }));
       body.hidden = !ft;
       apply.hidden = !canApply;
       cmp.setValue(p.view.calibrate === false ? 'def' : 'fit', true);

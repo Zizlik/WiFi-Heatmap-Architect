@@ -253,9 +253,9 @@ Scoring (signal mode): `score = coverage% + 0.2*(mean+100) + 0.2*(p10+100)` per 
 ```
 Point        {x,y}                          // normalized 0..1 (see §2.2)
 Room         {id:'room-1', type:'room', roomId:1..250 (unique int), name, points:Point[3..200], color:'#rrggbb'}
-Wall         {id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|wood|metal|masonry|solid_guess|custom', loss?:0..30}  // loss undefined ⇒ model.wallLoss
+Wall         {id, type:'wall', name, a:Point, b:Point, material?:'drywall|brick|concrete|reinforced_concrete|glass|low_e_glass|wood|metal|masonry|solid_guess|custom', loss?:0..30}  // loss undefined ⇒ model.wallLoss
 Door         {id, type:'door', name, a:Point, b:Point, wallId, loss:0..30}   // a,b lie on the wall; loss 0 = open doorway
-Furniture    {id, type:'furniture', name, points:Point[3..200], loss:0..30, kind:'custom|bed|wood|books|appliance|metal', blocksSignal:boolean}
+Furniture    {id, type:'furniture', name, points:Point[3..200], loss:0..30, kind:'custom|bed|wood|books|appliance|metal|opening', blocksSignal:boolean}
 Plan         {rooms[], walls[], doors[], furniture[], background: dataURL(png|jpeg|webp)|null}      // each array ≤ 250
 Project = {
   v:3, name:'…',
@@ -362,11 +362,11 @@ wifiweave.com, OSTI 1813145 (drywall 3–4 / 3–5, brick/concrete 6–18 / 10�
   whose stored number is the OLD preset value of its material becomes that preset - see the legacy rule below - so its 5 GHz loss moves
   to the new table value, e.g. brick 8 → 11 dB.)
 - Material presets become per-band tables (dB at 2.4 / 5 / 6): drywall 3/4/5, wood 3/5/6, glass 2/4/5, brick 7/11/13, masonry 7/11/13,
-  solid_guess 10/15/18, concrete 12/18/21, reinforced_concrete 17/26/30, metal 25/30/32 (cap 30 in UI where needed). A wall whose `material`
+  solid_guess 10/15/18, concrete 12/18/21, reinforced_concrete 17/26/30, low_e_glass 20/27/29 (an estimate: window with an energy-saving metallised coating), metal 25/30/32 (cap 30 in UI where needed). A wall whose `material`
   is a preset uses the table; walls with material `custom` (or legacy values that differ from the old preset numbers) use their stored loss × k.
   Legacy walls whose stored loss equals the OLD preset value of their material (drywall 3, brick 8, concrete 12, reinforced 18, glass 3, wood 3,
   metal 25, masonry 8, solid_guess 12) are treated as that preset (new table). Furniture kinds get per-band values too (bed 1/1/1, wood 2/3/4,
-  books 3/5/6, appliance 6/8/9, metal 10/12/13).
+  books 3/5/6, appliance 6/8/9, metal 10/12/13, opening 0/0/0 - a hole in a slab, never blocks).
 - Editor shows material options as "Cihla · 7 / 11 / 13 dB" (2,4 / 5 / 6 GHz) with a hint; the custom dB field is labelled "útlum při 5 GHz".
 - Advanced (planner): optional per-band transmit-power difference `model.bandPower = {'2.4': 0, '5': 0, '6': 0}` (−10…+6 dB) with a hint
   ("routery často vysílají na 2,4 GHz o 3 dB slaběji než na 5 GHz; když to nevíš, nech 0"). Hints help.band, band24, band5, band6, wallLoss,
@@ -717,7 +717,8 @@ flat is 100 m² instead of 58 m² because of a wrong scale"; (b) "with a bigger 
   compatibility) + full floors in the v3 block.
 - Engine: a signal source on floor A reaches floor B through the ceiling: distance = 3-D (horizontal + heightM × Δlevels), obstacle loss =
   ceiling.lossDb × |Δlevels| (+ walls on the target floor along the horizontal path, half-weighted); nodes on the same floor as the point behave as
-  today. Coverage/stats per floor and "celý dům" (area-weighted). Optimizer: router floor fixed, position within it. Tests with synthetic 2-floor
+  today. Furniture of kind 'opening' is a hole in the slab below the floor it is drawn on (on the lowest floor: in the slab above); a path that
+  crosses that slab inside the hole does not pay its loss (v3.4). Coverage/stats per floor and "celý dům" (area-weighted). Optimizer: router floor fixed, position within it. Tests with synthetic 2-floor
   plans (router below: upper-floor signal weaker by the ceiling loss; node upstairs restores it).
 - Editor: floor tabs above the stage (add / rename / reorder / delete with confirm; "Duplikovat půdorys do nového patra" for identical
   layouts; optional ghost of the floor below at 20 % for alignment); plan check works per floor; scale shared across floors (one building).

@@ -184,7 +184,7 @@
     const bi = model.bandIndex(band);
     const mk = (pt, o, win) => {
       const V = model.vertOf(ctx, pt.floor);
-      return { x: pt.x * W, y: pt.y * H, off: o, V, ceil: V ? V.ceil[bi] * ctx.wf : 0, wallW: V ? V.wallW : 1, win, floor: pt.floor === undefined ? null : pt.floor };
+      return { x: pt.x * W, y: pt.y * H, off: o, V, ceil: V ? V.ceil[bi] * ctx.wf : 0, wallW: V ? V.wallW : 1, win, floor: pt.floor === undefined ? null : pt.floor, slabs: V && V.slabs ? V.slabs : null, bi, wf: ctx.wf };
     };
     const out = [mk(model.asRouter(ctx, params.router), off, 0)];
     const nodes = model.stateNodes(params);
@@ -217,7 +217,7 @@
     let L = model.traceLoss(ctx, S.x, S.y, x, y);
     if (S.V) {
       dm = Math.sqrt(dm * dm + S.V.dz2);
-      L = S.wallW * L + S.ceil;
+      L = S.wallW * L + (S.slabs ? model.slabLoss(S.V, S.bi, S.wf, S.x, S.y, x, y) : S.ceil);
     }
     const s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - L + S.off;
     return s < -110 ? -110 : s > -20 ? -20 : s;
@@ -655,7 +655,8 @@
       const dy = rowPx[r] - S.y;
       const dh = Math.sqrt(dx * dx + dy * dy) * P.mpp;
       const dm = dz2 ? Math.sqrt(dh * dh + dz2) : dh;
-      let s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - (ww * softA[i] + ceil) + S.off;
+      const cl = S.slabs ? model.slabLoss(S.V, S.bi, S.wf, S.x, S.y, colPx[i - r * cols], rowPx[r]) : ceil;
+      let s = P.base - P.k * Math.log10(dm < 1 ? 1 : dm) - (ww * softA[i] + cl) + S.off;
       s = s < -110 ? -110 : s > -20 ? -20 : s;
       dst[i] = s;
     }

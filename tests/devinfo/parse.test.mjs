@@ -56,7 +56,8 @@ function check(name, text, label = name) {
 }
 
 test('every fixture parses to the expected connection', () => {
-  const files = readdirSync(path.join(here, 'fixtures')).sort();
+  // (the heatmapper/ subfolder holds real captures from another project; real-captures.test.mjs covers it)
+  const files = readdirSync(path.join(here, 'fixtures'), { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name).sort();
   assert.deepEqual(files, Object.keys(EXPECT).sort(), 'every fixture has an expectation');
   for (const f of files) check(f, fx(f));
 });

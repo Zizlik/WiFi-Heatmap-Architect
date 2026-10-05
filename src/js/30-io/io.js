@@ -33,7 +33,7 @@
     constructor(code) { super(`io:${code}`); this.code = code; }
   }
 
-  function toast(msg, opts) { if (WH.ui && WH.ui.toast) WH.ui.toast(msg, opts); else console.warn('[WH.io]', msg); }
+  function toast(msg, opts) { if (WH.ui && WH.ui.toast) return WH.ui.toast(msg, opts); console.warn('[WH.io]', msg); return null; }
   /** An unexpected (non-IoError) failure: kept in the error diary for Help -> Report a problem; the caller shows its own toast. */
   function report(e, context) { try { if (WH.diag) WH.diag.record(e, { kind: 'reported', context, notify: false }); } catch (x) { /* ignore */ } }
 
@@ -513,7 +513,41 @@
   let storedBgs = null;      // Map key -> background string in storage (undefined = something unknown); null = not read yet
   let failedBgs = new Set(); // backgrounds that did not fit (do not retry them on every autosave)
   let warnedQuota = false;
-  let warnedFatal = false;
+  /** 'ok' | 'failed': whether the LAST autosave reached the browser storage. Persistent notice while 'failed'. */
+  let saveState = 'ok';
+  let failToast = null;
+  let failToastAt = 0;
+  const FAIL_REPEAT_MS = 120000;     // a dismissed "not saved" notice comes back after this long while saving keeps failing
+  /** The raw text of an unreadable autosave: kept in memory too, so it can be downloaded even if the copy in storage failed. */
+  let badRaw = null;
+
+  function setSaveState(next, errName) {
+    if (next === saveState && (next === 'ok' || failToast)) return;
+    const was = saveState;
+    saveState = next;
+    if (next === 'ok') {
+      if (failToast) { try { failToast.close(); } catch (e) { /* ignore */ } failToast = null; }
+      failToastAt = 0;
+      if (was === 'failed') toast({ i18n: 'io.ok.saveBack' }, { kind: 'ok' });
+    }
+    try { if (WH.bus) WH.bus.emit('io:savestate', { state: next, error: errName || null }); } catch (e) { /* ignore */ }
+  }
+
+  /** Persistent, actionable notice: the work is NOT being saved in the browser; one click saves it as a file instead. */
+  function notifyFailed(errName) {
+    const now = Date.now();
+    const blocked = errName === 'SecurityError';
+    if (failToast && now - failToastAt < FAIL_REPEAT_MS) return;
+    failToastAt = now;
+    const prev = failToast;
+    failToast = toast({
+      i18n: blocked ? 'io.err.blocked' : 'io.err.quota',
+      actions: [{ i18n: 'file.saveSvg', icon: 'save', primary: true, fn: () => saveProjectSvg() }],
+    }, { kind: 'error', ms: 0 });
+    // the same notice comes back as the same toast (de-duplicated by its text); another text (the language was switched,
+    // quota -> blocked) is a new toast: close the old one, or it would stay after saving works again
+    if (prev && failToast && prev.close !== failToast.close) { try { prev.close(); } catch (e) { /* ignore */ } }
+  }
 
   const bgKey = (floorId) => (!floorId || floorId === 'floor-1' ? BG_KEY : `${BG_KEY}:${String(floorId).slice(0, 60)}`);
   const isBgKey = (k) => k === BG_KEY || (typeof k === 'string' && k.startsWith(BG_KEY + ':'));
@@ -596,16 +630,15 @@
         dropAll();
         localStorage.setItem(LS_KEY, json);
       }
+      setSaveState('ok');
       if (dropped && !warnedQuota) {
         warnedQuota = true;
         toast({ i18n: 'io.warn.quota' }, { kind: 'warn', ms: 12000 });
       }
       return { ok: true, droppedBackground: dropped };
     } catch (e) {
-      if (!warnedFatal) {
-        warnedFatal = true;
-        toast({ i18n: 'io.err.quota' }, { kind: 'error', ms: 12000 });
-      }
+      setSaveState('failed', e && e.name);
+      notifyFailed(e && e.name);
       return { ok: false };
     }
   }
@@ -644,8 +677,9 @@
         return project;
       } catch (e) {
         console.warn('[WH.io] the saved project is unreadable (a copy was kept):', e);
-        try { localStorage.setItem(BAD_KEY, raw); } catch (e2) { /* keep going */ }
-        toast({ i18n: 'io.err.local' }, { kind: 'warn', ms: 10000 });
+        badRaw = raw;
+        try { localStorage.setItem(BAD_KEY, raw); } catch (e2) { /* keep going: badRaw still lets the user download it */ }
+        toast({ i18n: 'io.err.local', actions: [{ i18n: 'io.err.localGet', icon: 'download', fn: () => downloadCorrupt() }] }, { kind: 'warn', ms: 20000 });
         return null;
       }
     }
@@ -661,6 +695,16 @@
       report(e, 'io.migrate');
     }
     return null;
+  }
+
+  /** Download the unreadable autosave as a text file (a person can still dig the plan out of it). Returns false if there is none. */
+  function downloadCorrupt() {
+    const raw = badRaw || getItem(BAD_KEY);
+    if (!raw) return false;
+    try {
+      WH.util.download(raw, 'wifi-heatmap-poskozena-data.json', 'application/json;charset=utf-8');
+      return true;
+    } catch (e) { report(e, 'io.downloadCorrupt'); return false; }
   }
 
   /** Remove every key this app (and its older versions) wrote, except UI preferences. */
@@ -680,6 +724,9 @@
     IoError,
     constants: { LS_KEY, BG_KEY, MAX_FILE, MAX_DATA_URL },
     importFile, openPicker, saveProjectSvg, exportPlanPng, saveLocal, loadLocal, clearLocal, rasterizeBackground,
+    /** 'ok' | 'failed' - did the last autosave reach the browser storage (event: bus 'io:savestate'). */
+    saveState: () => saveState,
+    downloadCorrupt,
     /** For tests/tools: sanitised copy of a foreign SVG as text. */
     sanitizeSvgText: (text) => passiveSvg(parseSvgDocument(text)),
   };

@@ -269,7 +269,8 @@
       const fKind = bandSelect('editor.f.kind', Object.keys(T).map((k) => ({ value: k, label: `${t(`editor.kind.${k}`)} · ${ED.fmtBands(T[k])}` }))
         .concat([{ value: 'custom', label: t('editor.kind.custom') }]), {
         value: kindOf(o),
-        onChange: (v) => ED.edit(id, (f) => { f.kind = v; if (T[v]) f.loss = T[v][1]; }),
+        // an opening never blocks (the project normalisation forces it too); leaving it makes a piece block again
+        onChange: (v) => ED.edit(id, (f) => { const was = f.kind; f.kind = v; if (T[v]) f.loss = T[v][1]; if (v === 'opening') f.blocksSignal = false; else if (was === 'opening') f.blocksSignal = true; }),
       });
       const kind = fKind.sel;
       body.push(fKind);

@@ -725,9 +725,15 @@
     if (PL.routerHere()) {
       const wl = PL.pathLoss(pr.net.router, p, auto ? d.band : pr.view.band);
       if (Number.isFinite(wl) && wl >= 0.5) out.push(line({ class: 'text-muted' }, t('planner.tip.walls', { d: WH.util.fmt(wl, 0) })));
-    } else if (PL.multi()) {
-      const gap = E.project.floorGap(pr, pr.net.routerFloor, PL.floorId());
-      if (gap && gap.levels) out.push(line({ class: 'text-muted' }, t('planner.tip.ceiling', { floor: PL.floorName(pr.net.routerFloor), d: WH.util.fmt(gap.lossDb * PL.bandK(auto ? d.band || 5 : pr.view.band), 0) })));
+    } else if (PL.multi() && S.ctx) {
+      // the model's own ceiling loss of this path (a stairwell opening on the way costs nothing), on the shown band
+      const V = E.model.vertOf(S.ctx, pr.net.routerFloor);
+      if (V && V.levels) {
+        const bi = E.model.bandIndex(auto ? d.band || 5 : pr.view.band);
+        const rt = pr.net.router;
+        const cl = E.model.slabLoss(V, bi < 0 ? 1 : bi, S.ctx.wf || 1, rt.x * E.CANVAS.W, rt.y * E.CANVAS.H, p.x * E.CANVAS.W, p.y * E.CANVAS.H);
+        out.push(line({ class: 'text-muted' }, cl >= 0.5 ? t('planner.tip.ceiling', { floor: PL.floorName(pr.net.routerFloor), d: WH.util.fmt(cl, 0) }) : t('planner.tip.ceilingOpen', { floor: PL.floorName(pr.net.routerFloor) })));
+      }
     }
     // SPEC 10.3 / 14.2: who is the stronger source here, with the numbers of the two strongest ("Silnější zdroj: AP 2
     // (−48 dBm) · router (−71 dBm)")

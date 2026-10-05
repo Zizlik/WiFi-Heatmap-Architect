@@ -11,7 +11,7 @@ const sources = () => engineFiles().map((f) => [f, readFileSync(path.join(ENGINE
 const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1');
 
 test('engine files: expected set, lexical order, every file an IIFE on globalThis', () => {
-  assert.deepEqual(engineFiles(), ['00-ns.js', '10-geom.js', '20-units.js', '30-project.js', '31-demo.js', '35-edit.js', '40-model.js', '45-fit.js', '50-raster.js', '60-speed.js', '70-optimize.js', '75-analysis.js', '99-strings.js']);
+  assert.deepEqual(engineFiles(), ['00-ns.js', '10-geom.js', '20-units.js', '30-project.js', '31-demo.js', '35-edit.js', '40-model.js', '45-fit.js', '50-raster.js', '60-speed.js', '70-optimize.js', '75-analysis.js', '76-channels.js', '99-strings.js']);
   for (const [f, s] of sources()) {
     const body = s.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, ''); // leading header comment
     assert.ok(body.startsWith('(function () {'), `${f} starts with an IIFE`);

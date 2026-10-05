@@ -277,6 +277,7 @@
     'planner.tour.meas.b': 'Změř signál telefonem na pár místech a zapiš ho (M). Mapa se podle toho doladí.',
 
     'planner.undo.router': 'přesun routeru',
+    'planner.undo.ceilFit': 'úprava stropu podle měření',
     'planner.undo.today': 'přesun dnešní polohy',
     'planner.undo.inlet': 'přesun přípojky',
     'planner.undo.node': 'změna přístupového bodu',
@@ -570,6 +571,7 @@
     'planner.tour.meas.b': 'Measure the signal with your phone in a few places and enter it (M). The map adjusts to match.',
 
     'planner.undo.router': 'router move',
+    'planner.undo.ceilFit': 'ceiling adjusted from measurements',
     'planner.undo.today': 'today’s position move',
     'planner.undo.inlet': 'inlet move',
     'planner.undo.node': 'access point change',

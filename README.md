@@ -47,6 +47,9 @@ speed you get in every room.
 
 It is a single self-contained HTML file: no account, no installation, no server. Calculations run in your browser.
 
+**How the signal is calculated** - the formula, the wall-material tables, where the numbers come from and where the model is
+least accurate: [docs/jak-to-pocita.md](docs/jak-to-pocita.md) (Czech).
+
 ## Features
 
 - **Live heat map** of the signal for 2.4, 5 and 6 GHz, with plain-word quality (Excellent ... Unusable), coverage of
@@ -242,6 +245,10 @@ node build.mjs --check    # + checks: syntax, cs/en strings complete, hints, no 
 node tests/engine/run-all.mjs    # all unit tests (node:test): engine (geometry, propagation, calibration fit,
                                  # optimiser, formats ...), speed test, Wi-Fi details parser (tests/devinfo)
 npm test / npm run check / npm run build    # the same through npm
+npm i --no-save --no-package-lock playwright-core axe-core && npx playwright-core install chromium
+node tests/e2e/smoke.mjs         # browser smoke tests of the built app (boot, demo, draw, SVG round trip, phone width,
+                                 # storage failure, axe); with an installed Edge / Chrome skip the Chromium install and
+                                 # run PW_CHANNEL=msedge (or chrome) node tests/e2e/smoke.mjs
 WH_PRIVATE_PLAN=/path/to/plan.svg node tests/engine/run-all.mjs   # + extra checks on a real plan of your own (never committed)
 ```
 
@@ -405,6 +412,9 @@ k potvrzení: „Měřítko z načteného souboru: byt ≈ 58 m². Sedí?“) a 
 
 `node build.mjs` sestaví `index.cs.html`, `index.html`, `sw.js` a `manifest.webmanifest` ze složky `src/`,
 `node build.mjs --check` vše zkontroluje a `node tests/engine/run-all.mjs` spustí testy. Žádné závislosti.
+Prohlížečové smoke testy sestavené aplikace (`tests/e2e/smoke.mjs`) potřebují jednorázově
+`npm i --no-save --no-package-lock playwright-core axe-core` a prohlížeč: `npx playwright-core install chromium`, nebo
+nainstalovaný Edge či Chrome přes `PW_CHANNEL=msedge` / `chrome`. Jak se signál počítá, popisuje [docs/jak-to-pocita.md](docs/jak-to-pocita.md).
 
 Licence [MIT](LICENSE) © 2026 Zizlik. Model šíření signálu vychází z ITU-R P.1238, metoda testu rychlosti z open-source
 měřáku Cloudflare.

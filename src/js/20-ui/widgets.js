@@ -431,7 +431,9 @@
     let gone = false;
     const acts = (Array.isArray(def.actions) ? def.actions : def.action ? [def.action] : []).filter((a) => a && typeof a.fn === 'function');
     const ms = o.ms !== undefined ? o.ms : (acts.length ? 9000 : MS_FOR[kind]);
-    const rec = { text, kind, restart, close, node };
+    // sticky = a toast that stays until it is dismissed (ms 0: "changes are NOT being saved", a new version): newer toasts
+    // push out the oldest ORDINARY one first, never a sticky one while another can go
+    const rec = { text, kind, restart, close, node, sticky: !(ms > 0) };
     function close() {
       if (gone) return;
       gone = true;
@@ -465,7 +467,7 @@
     node.addEventListener('focusout', restart);
 
     live.push(rec);
-    while (live.length > 3) live[0].close();
+    while (live.length > 3) (live.find((x) => !x.sticky) || live[0]).close();
     watchToastRoot(rootEl);
     rootEl.append(node);
     ui.enhance(node);

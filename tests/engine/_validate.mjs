@@ -31,14 +31,14 @@ function checkPlan(plan, fail) {
   }
   for (const f of plan.furniture) {
     if (!f.points.every(isPoint) || !E.geom.validatePolygon(f.points)) fail(`polygon of ${f.id}`);
-    if (!inRange(f.loss, 0, 30) || !['custom', 'bed', 'wood', 'books', 'appliance', 'metal'].includes(f.kind) || typeof f.blocksSignal !== 'boolean') fail(`furniture ${f.id}`);
+    if (!inRange(f.loss, 0, 30) || !['custom', 'bed', 'wood', 'books', 'appliance', 'metal', 'opening'].includes(f.kind) || typeof f.blocksSignal !== 'boolean') fail(`furniture ${f.id}`);
   }
   const wallIds = new Set(plan.walls.map((w) => w.id));
   for (const w of plan.walls) {
     if (!isPoint(w.a) || !isPoint(w.b)) fail(`wall points ${w.id}`);
     if ((w.loss !== undefined) !== (w.material !== undefined)) fail(`wall loss/material pair ${w.id}`);
     if (w.loss !== undefined && !inRange(w.loss, 0, 30)) fail(`wall loss ${w.id}`);
-    if (w.material !== undefined && !['drywall', 'brick', 'concrete', 'reinforced_concrete', 'glass', 'wood', 'metal', 'masonry', 'solid_guess', 'custom'].includes(w.material)) fail(`wall material ${w.id}`);
+    if (w.material !== undefined && !['drywall', 'brick', 'concrete', 'reinforced_concrete', 'glass', 'low_e_glass', 'wood', 'metal', 'masonry', 'solid_guess', 'custom'].includes(w.material)) fail(`wall material ${w.id}`);
   }
   for (const d of plan.doors) {
     if (!isPoint(d.a) || !isPoint(d.b) || !wallIds.has(d.wallId) || !inRange(d.loss, 0, 30)) fail(`door ${d.id}`);

@@ -11,7 +11,7 @@
  */
 'use strict';
 
-const VERSION = '97a046fe3e';
+const VERSION = 'e66242bd94';
 const PREFIX = 'wifi-heatmap-architect-';
 const CACHE = `${PREFIX}${VERSION}`;
 const PRECACHE = ["index.cs.html","index.html","manifest.webmanifest","assets/icon-192.png","assets/icon-512.png","assets/icon-maskable-512.png","assets/apple-touch-icon.png"];

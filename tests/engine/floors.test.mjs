@@ -1,11 +1,12 @@
 // SPEC 14.3: floors - data, migration, helpers, files (the old app opens the active floor), the cross-floor physics
 // (3-D distance, ceiling loss, the target floor's walls half-weighted), per-floor contexts / analysis / what-if /
 // calibration / spots, "Celý dům", the optimizer with the router floor fixed, the two-storey demo house.
-// Not modelled (documented): stairs, open galleries and holes in a slab.
+// Holes in a slab (stairwells = furniture kind opening) skip the ceiling loss where the path crosses them; stairs and open
+// galleries are not modelled (documented).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { E } from './_load.mjs';
-import { n, room, wall, makeProject, mkNode } from './_helpers.mjs';
+import { n, room, wall, makeProject, mkNode, rectPts, rng } from './_helpers.mjs';
 import { assertValidProject } from './_validate.mjs';
 import { legacyLoadSvg } from './_legacy.mjs';
 
@@ -369,4 +370,371 @@ test('the two-storey demo house: valid, verified scale, the mesh upstairs restor
   assert.ok(Math.abs(down.delta.coverage) < 5, 'the ground floor hardly changes');
   const b = A.building(p, { cell: 8 });
   assert.ok(b.delta.coverage > 10, `Celý dům +${b.delta.coverage}`);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// holes in a slab (stairwell): furniture kind 'opening'
+// ---------------------------------------------------------------------------------------------------------------------
+
+const opening = (id, x0, y0, x1, y1) => ({ id, type: 'furniture', name: 'Schodiště', points: rectPts(x0, y0, x1, y1), loss: 0, kind: 'opening', blocksSignal: false });
+/** house() + an opening drawn on `floorId` (the slab between the floors does not care which of the two). */
+function houseWithHole(floorId, box) {
+  const p = house();
+  const plan = floorId === 'floor-1' ? p.plan : p.floors.find((f) => f.id === floorId).plan;
+  plan.furniture.push(opening('op1', ...box));
+  return P.sanitize(p);
+}
+const upCtx = (p) => M.createContext(p, { floor: 'floor-2' });
+
+test('slab opening: no ceiling loss where the path crosses the hole, full loss elsewhere (drawn on either floor)', () => {
+  const none = house();
+  const base = upCtx(none);
+  const st = M.fieldParams(none, 'trial').router; // (300, 450) downstairs
+  const through = at(500, 450); // the path crosses the slab at x = 400: inside the hole
+  const around = at(800, 450); // ... at x = 550: outside
+  for (const floorId of ['floor-2', 'floor-1']) {
+    const p = houseWithHole(floorId, [350, 400, 450, 500]);
+    const c2 = upCtx(p);
+    assert.notEqual(c2.version, base.version, 'a hole changes the context version');
+    close(M.signal(c2, st, through, 5) - M.signal(base, st, through, 5), 15, 1e-6, `${floorId}: 15 dB back through the hole at 5 GHz`);
+    close(M.signal(c2, st, through, 2.4) - M.signal(base, st, through, 2.4), 15 * 0.65, 1e-6, `${floorId}: band-scaled at 2.4 GHz`);
+    close(M.signal(c2, st, through, 6) - M.signal(base, st, through, 6), 15 * 1.15, 1e-6, `${floorId}: band-scaled at 6 GHz`);
+    close(M.signal(c2, st, around, 5), M.signal(base, st, around, 5), 1e-9, `${floorId}: the full ceiling loss outside the hole`);
+    close(M.obstacleLoss(c2, st, through, 5), 0, 1e-9, 'the point model agrees');
+  }
+});
+
+test('slab opening: the other direction (source upstairs, receiver downstairs) sees the same hole', () => {
+  const p = houseWithHole('floor-2', [350, 400, 450, 500]);
+  const none = house();
+  const from = { ...at(500, 450), floor: 'floor-2' }; // the path to (300, 450) crosses the slab at x = 400
+  const down = at(300, 450);
+  const a = M.signal(M.createContext(p), from, down, 5);
+  const b = M.signal(M.createContext(none), from, down, 5);
+  close(a - b, 15, 1e-6, 'mid x = 400 is inside the hole');
+});
+
+test('slab opening: two slabs - a hole in one of them removes only that slab (crossings at 1/4 and 3/4 of the way)', () => {
+  const p = house();
+  const top = P.addFloor(p, { copyFrom: 'floor-2' });
+  const q = P.sanitize(p);
+  const clean = P.sanitize(q);
+  // x = 450 -> the path (300 -> 900, y 450) crosses slab 1 at x = 450 and slab 2 at x = 750
+  q.floors.find((f) => f.id === 'floor-2').plan.furniture.push(opening('op1', 400, 400, 500, 500));
+  const withHole = P.sanitize(q);
+  const topCtx = (pp) => M.createContext(pp, { floor: top });
+  const st = { ...n(300, 450), floor: 'floor-1' };
+  const to = at(900, 450);
+  const d3 = Math.sqrt(6 * 6 + 5.4 * 5.4);
+  const b = M.signal(topCtx(clean), st, to, 5);
+  close(b, M.bandBase(topCtx(clean), 5) - 22 * Math.log10(d3) - 30, 1e-4, 'two ceilings: 30 dB');
+  close(M.signal(topCtx(withHole), st, to, 5) - b, 15, 1e-6, 'one of the two slabs is open');
+});
+
+test('slab opening: the raster (exact and softened) = the point model, cell by cell; houses without a hole keep their version', () => {
+  const p = houseWithHole('floor-2', [350, 400, 450, 500]);
+  const c2 = upCtx(p);
+  const st = M.fieldParams(p, 'trial');
+  const g = R.grid(c2, { cell: 8 });
+  const f = R.field(c2, g, { ...st, ...HARD });
+  let checked = 0;
+  for (const i of g.idx.filter((_, k) => k % 23 === 0)) {
+    close(f[i], M.signal(c2, st.router, { x: g.cx[i], y: g.cy[i] }, 5), 1e-3);
+    checked++;
+  }
+  assert.ok(checked > 10);
+  const fs = R.field(c2, g, st);
+  for (const i of g.idx.filter((_, k) => k % 29 === 0)) close(fs[i], M.softSignal(c2, st.router, { x: g.cx[i], y: g.cy[i] }, 5), 0.5);
+  // the hole shows in the map: the cells above it are 15 dB stronger than without the hole, the others are the same
+  const none = house();
+  const cn = upCtx(none);
+  const fn = R.field(cn, g, { ...M.fieldParams(none, 'trial'), ...HARD });
+  const idx = (x, y) => g.idx.find((i) => Math.abs(g.cx[i] * W - x) < 6 && Math.abs(g.cy[i] * H - y) < 6);
+  close(f[idx(500, 450)] - fn[idx(500, 450)], 15, 0.05, 'stronger through the stairwell');
+  close(f[idx(800, 450)] - fn[idx(800, 450)], 0, 1e-6, 'unchanged outside it');
+  assert.equal(upCtx(house()).version, upCtx(house({})).version);
+});
+
+test('slab opening: the optimizer and the whole-building analysis run with slabs', async () => {
+  const p = houseWithHole('floor-2', [350, 400, 450, 500]);
+  const r = await E.optimize.findProject(p, { cell: 8 });
+  assert.equal(r.scope, 'building');
+  assert.ok(Number.isFinite(r.after.coverage) && r.after.coverage >= r.before.coverage - 0.5);
+  const none = house();
+  const rn = await E.optimize.findProject(none, { cell: 8 });
+  assert.ok(r.before.coverage >= rn.before.coverage, 'the stairwell never makes the building worse');
+});
+
+test('slab opening: sanitize forces a neutral opening; JSON and SVG round trips keep it; floorSlabs reads it from either floor', () => {
+  const p = house();
+  p.plan.furniture.push({ ...opening('op1', 350, 400, 450, 500), loss: 12, blocksSignal: true });
+  const s = P.sanitize(p);
+  const f = s.plan.furniture.find((x) => x.id === 'op1');
+  assert.deepEqual([f.kind, f.loss, f.blocksSignal], ['opening', 0, false]);
+  const again = P.sanitize(P.serialize(s));
+  assert.deepEqual(again.plan.furniture.find((x) => x.id === 'op1'), f);
+  const viaSvg = P.parseSvgText(P.buildSvg(s));
+  assert.ok(viaSvg.hasData);
+  assert.deepEqual(viaSvg.project.plan.furniture.find((x) => x.id === 'op1').kind, 'opening');
+  assertValidProject(s, 'opening');
+  assert.deepEqual(P.floorSlabs(s, 'floor-1', 'floor-2').map((x) => [x.level, x.holes.length]), [[0, 1]]);
+  assert.deepEqual(P.floorSlabs(s, 'floor-2', 'floor-1').map((x) => [x.level, x.holes.length]), [[0, 1]]);
+  assert.deepEqual(P.floorSlabs(s, 'floor-1', 'floor-1'), []);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the ceiling learnt from points on the other floor (model.suggestCeilings) + project.scaleCeilings
+// ---------------------------------------------------------------------------------------------------------------------
+
+const meas = (id, q, band, value) => ({ id, x: q.x, y: q.y, band, value, name: id, download: null, upload: null, device: 'Telefon', t: 1 });
+const SPOTS_DOWN = [at(420, 300), at(600, 600), at(850, 350), at(500, 520)];
+const SPOTS_UP = [at(350, 300), at(520, 450), at(700, 600), at(880, 350), at(450, 640), at(800, 480)];
+
+/** A house with the real ceiling `trueDb`, measured with the router strength +3 dB; the measurements go into a house assuming 15 dB. */
+function measuredHouse(trueDb, { down = true, noise = 0, assumed } = {}) {
+  const truth = house({ ceiling: { material: 'custom', lossDb: trueDb } });
+  const st = { ...n(300, 450), floor: 'floor-1' };
+  const cDown = M.createContext(truth);
+  const cUp = M.createContext(truth, { floor: 'floor-2' });
+  const r = rng(11);
+  const wob = () => (noise ? (r() - 0.5) * 2 * noise : 0);
+  const p = house(assumed ? { ceiling: { material: 'custom', lossDb: assumed } } : {});
+  if (down) p.measurements = SPOTS_DOWN.map((q, i) => meas(`d${i}`, q, 5, M.softRawSignal(cDown, st, q, 5) + 3 + wob()));
+  p.floors.find((f) => f.id === 'floor-2').measurements = SPOTS_UP.map((q, i) => meas(`u${i}`, q, 5, M.softRawSignal(cUp, st, q, 5) + 3 + wob()));
+  return P.sanitize(p);
+}
+
+test('suggestCeilings: points upstairs say the ceiling loses 25 dB, not 15 - the router strength is learnt downstairs', () => {
+  const p = measuredHouse(25);
+  assert.equal(p.measurements.length, 4);
+  const s = M.suggestCeilings(p);
+  assert.equal(s.length, 1);
+  assert.equal(s[0].floor, 'floor-2');
+  assert.equal(s[0].levels, 1);
+  assert.equal(s[0].currentDb, 15);
+  assert.equal(s[0].count, 6);
+  close(s[0].suggestedDb, 25, 1.5, 'suggested');
+  close(s[0].deltaDb, 10, 1.5, 'delta');
+});
+
+test('suggestCeilings: a correct ceiling, a missing router floor survey, a calibration switched off and a single floor suggest nothing', () => {
+  assert.deepEqual(M.suggestCeilings(measuredHouse(15)), [], 'the assumed 15 dB is right');
+  assert.deepEqual(M.suggestCeilings(measuredHouse(25, { down: false })), [], 'without points downstairs the offset and the ceiling cannot be told apart');
+  const off = measuredHouse(25);
+  off.view.calibrate = false;
+  assert.deepEqual(M.suggestCeilings(off), []);
+  assert.deepEqual(M.suggestCeilings(makeProject({ rooms: [room(1, 100, 200, 1000, 700)], router: [300, 450] })), []);
+  // fewer than 3 points upstairs: nothing
+  const few = measuredHouse(25);
+  few.floors.find((f) => f.id === 'floor-2').measurements = few.floors.find((f) => f.id === 'floor-2').measurements.slice(0, 2);
+  assert.deepEqual(M.suggestCeilings(few), []);
+});
+
+test('suggestCeilings: noise of +-4 dB around the right ceiling does not make a suggestion; a ceiling 12 dB off still does', () => {
+  assert.deepEqual(M.suggestCeilings(measuredHouse(15, { noise: 4 })), []);
+  const s = M.suggestCeilings(measuredHouse(27, { noise: 3 }));
+  assert.equal(s.length, 1);
+  close(s[0].suggestedDb, 27, 4, 'noisy but clear');
+});
+
+test('suggestCeilings: a weaker ceiling than assumed is found too, never below 0 dB', () => {
+  const s = M.suggestCeilings(measuredHouse(6, { assumed: 20 }));
+  assert.equal(s.length, 1);
+  assert.equal(s[0].currentDb, 20);
+  close(s[0].suggestedDb, 6, 1.5);
+  assert.ok(s[0].deltaDb < 0);
+});
+
+test('scaleCeilings: the slabs between two floors keep their share of the new total; applying the suggestion makes the map agree', () => {
+  const p = measuredHouse(25);
+  const s = M.suggestCeilings(p)[0];
+  assert.equal(P.scaleCeilings(p, s.floor, 'floor-1', s.suggestedDb), true);
+  const gap = P.floorGap(p, 'floor-2', 'floor-1');
+  close(gap.lossDb, s.suggestedDb, 0.11, 'the slab now loses the suggested dB');
+  assert.equal(p.floors.find((f) => f.id === 'floor-1').ceiling.material, 'custom');
+  assert.deepEqual(M.suggestCeilings(p), [], 'nothing left to suggest');
+  // two slabs: 10 + 20 -> total 60 keeps the 1:2 share
+  const q = house();
+  const top = P.addFloor(q, { copyFrom: 'floor-2' });
+  P.setCeiling(q, 'floor-1', { lossDb: 10 });
+  P.setCeiling(q, 'floor-2', { lossDb: 20 });
+  assert.equal(P.scaleCeilings(q, 'floor-1', top, 60), true);
+  assert.deepEqual([q.floors.find((f) => f.id === 'floor-1').ceiling.lossDb, q.floors.find((f) => f.id === 'floor-2').ceiling.lossDb], [20, 40]);
+  // refused: same floor, unknown floor, a total above 40 per slab, a negative total
+  assert.equal(P.scaleCeilings(q, 'floor-1', 'floor-1', 10), false);
+  assert.equal(P.scaleCeilings(q, 'floor-1', 'nope', 10), false);
+  assert.equal(P.scaleCeilings(q, 'floor-1', 'floor-2', 41), false);
+  assert.equal(P.scaleCeilings(q, 'floor-1', 'floor-2', -1), false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// "where would one more AP help" / "how many APs do I need" (optimize.suggestNode / howMany)
+// ---------------------------------------------------------------------------------------------------------------------
+
+test('suggestNode: in a two-storey house the best extra AP goes upstairs (the weak floor), and it really helps', async () => {
+  const p = house();
+  const s = await E.optimize.suggestNode(p, { cell: 8 });
+  assert.ok(s);
+  assert.equal(s.floor, 'floor-2');
+  assert.ok(P.roomAt(P.floorOf(p, 'floor-2').plan, s.pos), 'inside a room of that floor');
+  assert.ok(s.gain > 5, `coverage gain ${s.gain}`);
+  assert.ok(s.after.coverage > s.before.coverage);
+  // nothing is changed in the project
+  assert.equal(P.allNodes(p).length, 0);
+  assert.equal(JSON.stringify(p), JSON.stringify(house()));
+});
+
+test('suggestNode: a single-floor flat with a weak far room gets an AP there; the router is not moved', async () => {
+  const p = P.create({ template: 'demo', lang: 'cs' });
+  const router0 = { ...p.net.router };
+  const s = await E.optimize.suggestNode(p, { cell: 8 });
+  assert.ok(s && s.floor === 'floor-1');
+  assert.ok(s.gain > 0 && s.after.coverage > s.before.coverage);
+  assert.ok(P.roomAt(p.plan, s.pos));
+  assert.deepEqual(p.net.router, router0);
+});
+
+test('howMany: stops at once when the goal is met, adds as many APs as needed otherwise, and never exceeds max', async () => {
+  const p = house();
+  const done = await E.optimize.howMany(p, { goal: 1, cell: 8 });
+  assert.equal(done.steps.length, 0);
+  assert.equal(done.reached, true);
+  const r = await E.optimize.howMany(p, { goal: 95, cell: 8, max: 3 });
+  assert.ok(r.steps.length >= 1 && r.steps.length <= 3);
+  assert.ok(r.coverage > r.today);
+  assert.equal(r.reached, r.coverage >= 95);
+  assert.equal(r.steps[0].floor, 'floor-2');
+  const capped = await E.optimize.howMany(p, { goal: 100, cell: 8, max: 1 });
+  assert.ok(capped.steps.length <= 1);
+});
+
+test('howMany: applying the steps gives the coverage it promised', async () => {
+  const p = house();
+  const r = await E.optimize.howMany(p, { goal: 90, cell: 8 });
+  const q = P.clone(p);
+  for (const st of r.steps) {
+    const nd = P.newNode(q, { mode: 'ap_cable', pos: st.pos, floor: st.floor });
+    assert.ok(P.addNode(q, nd, st.floor));
+  }
+  const a = A.building(q, { cell: 8 });
+  close(a.total.trial.coverage, r.coverage, 0.01, 'coverage with the added APs');
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// review fixes (v3.4): one slab per opening, the ceiling suggestion's guards, scaleCeilings limits, the AP search's goal room
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Three floors (L0 floor-1, L1 floor-2, L2 top), 15 dB slabs; an opening on `onFloor` at x 700..800 (y 400..500). */
+function tower(onFloor) {
+  const p = house();
+  const top = P.addFloor(p, { copyFrom: 'floor-2' });
+  const q = P.sanitize(p);
+  const plan = onFloor === 'floor-1' ? q.plan : q.floors.find((f) => f.id === (onFloor === 'top' ? top : onFloor)).plan;
+  plan.furniture.push(opening('op1', 700, 400, 800, 500));
+  return { p: P.sanitize(q), top };
+}
+
+test('opening rule: a hole opens the slab BELOW the floor it is drawn on; on the lowest floor the slab above - one slab each', () => {
+  // path floor-1 (300,450) -> top (900,450): slab 0 is crossed at x = 450, slab 1 at x = 750
+  const st = { ...n(300, 450), floor: 'floor-1' };
+  const to = at(900, 450);
+  const clean = (() => { const p = house(); const top = P.addFloor(p, { copyFrom: 'floor-2' }); return { p: P.sanitize(p), top }; })();
+  const sig = (t) => M.signal(M.createContext(t.p, { floor: t.top }), st, to, 5);
+  const ref = sig(clean);
+  // drawn on the middle floor: it is the hole in floor-2's floor (slab 0, crossed at 450): outside -> nothing changes
+  close(sig(tower('floor-2')) - ref, 0, 1e-9, 'middle floor opening does not open the slab above it');
+  // drawn on the top floor: the hole in the top floor's floor (slab 1, crossed at 750): inside -> one slab open
+  close(sig(tower('top')) - ref, 15, 1e-6, 'top floor opening opens slab 1');
+  // drawn on the lowest floor: the ceiling above it (slab 0, crossed at 450): outside -> nothing
+  close(sig(tower('floor-1')) - ref, 0, 1e-9, 'ground floor opening belongs to slab 0 only');
+  // floorSlabs says the same
+  const t = tower('top');
+  assert.deepEqual(P.floorSlabs(t.p, 'floor-1', t.top).map((s) => s.holes.length), [0, 1]);
+  assert.deepEqual(P.floorSlabs(t.p, t.top, 'floor-1').map((s) => s.holes.length), [1, 0], 'from the source: top first');
+});
+
+test('opening: an unrelated piece of furniture does not change the context version; the optimizer reaches upstairs through the hole', async () => {
+  const a = house();
+  const b = house();
+  b.floors.find((f) => f.id === 'floor-2').plan.furniture.push({ id: 'bed', type: 'furniture', name: 'bed', points: rectPts(500, 300, 600, 400), loss: 1, kind: 'bed', blocksSignal: true });
+  // a bed upstairs matters for the upper floor's own context, never for the slab between the floors
+  assert.equal(M.createContext(P.sanitize(a)).version, M.createContext(P.sanitize(b)).version);
+  const withHole = houseWithHole('floor-2', [300, 380, 700, 520]);
+  const none = house();
+  const r1 = await E.optimize.findProject(withHole, { cell: 8 });
+  const r0 = await E.optimize.findProject(none, { cell: 8 });
+  const up1 = r1.perFloor.find((f) => f.id === 'floor-2').after.coverage;
+  const up0 = r0.perFloor.find((f) => f.id === 'floor-2').after.coverage;
+  assert.ok(up1 > up0, `the upper floor gains through the hole (${up0} -> ${up1})`);
+});
+
+test('suggestCeilings: points of another device than the one the router strength was learnt from are not read as a ceiling', () => {
+  const p = measuredHouse(15);
+  // the same upstairs points measured with another phone that reads 8 dB lower
+  const up = p.floors.find((f) => f.id === 'floor-2');
+  up.measurements = up.measurements.map((m) => ({ ...m, device: 'Starý tablet', value: m.value - 8 }));
+  const q = P.sanitize(p);
+  assert.equal(q.goal.device, 'Telefon');
+  assert.deepEqual(M.suggestCeilings(q), [], 'a device difference is not a ceiling');
+});
+
+test('suggestCeilings: points whose path goes through a stairwell opening are left out', () => {
+  const p = measuredHouse(25);
+  // a huge opening right where every upstairs path crosses the slab: no point says anything about the slab
+  p.floors.find((f) => f.id === 'floor-2').plan.furniture.push(opening('op1', 100, 200, 1000, 700));
+  assert.deepEqual(M.suggestCeilings(P.sanitize(p)), []);
+});
+
+test('suggestCeilings: only the floors right next to the router floor', () => {
+  const p = measuredHouse(25);
+  const top = P.addFloor(p, { copyFrom: 'floor-2' });
+  const q = P.sanitize(p);
+  // move the measured points two levels up: nothing (the slabs would be shared with the floor between)
+  const f2 = q.floors.find((f) => f.id === 'floor-2');
+  q.floors.find((f) => f.id === top).measurements = f2.measurements.map((m) => ({ ...m, id: 't' + m.id }));
+  f2.measurements = [];
+  assert.deepEqual(M.suggestCeilings(P.sanitize(q)), []);
+});
+
+test('scaleCeilings: a slab never goes above 40 dB (the rest goes to the others); an unreachable total changes nothing', () => {
+  const q = house();
+  const top = P.addFloor(q, { copyFrom: 'floor-2' });
+  P.setCeiling(q, 'floor-1', { lossDb: 30 });
+  P.setCeiling(q, 'floor-2', { lossDb: 10 });
+  assert.equal(P.scaleCeilings(q, 'floor-1', top, 70), true);
+  assert.deepEqual([q.floors.find((f) => f.id === 'floor-1').ceiling.lossDb, q.floors.find((f) => f.id === 'floor-2').ceiling.lossDb], [40, 30], 'share 3:1 capped at 40, the rest to the other');
+  close(P.floorGap(q, 'floor-1', top).lossDb, 70, 1e-9);
+  const before = JSON.stringify(q.floors);
+  assert.equal(P.scaleCeilings(q, 'floor-1', top, 81), false);
+  assert.equal(JSON.stringify(q.floors), before, 'nothing changed');
+});
+
+test('suggestNode / howMany: the search counts the target room ("Cíl") like the gain does', async () => {
+  // West (big) | Hall with the router | East (small) behind 30 dB walls; the goal is East
+  const p = makeProject({
+    rooms: [room(1, 100, 200, 500, 700, 'West'), room(2, 500, 200, 700, 700, 'Hall'), room(3, 700, 200, 900, 700, 'East')],
+    walls: [wall('w1', 700, 200, 700, 700, 30), wall('w2', 500, 200, 500, 700, 30)],
+    router: [600, 450],
+    goal: { room: 3, excluded: [] },
+    mpp: 0.04, // 4 cm per px: East is 8 m wide, far behind its wall
+  });
+  const s = await E.optimize.suggestNode(p, { cell: 8 });
+  assert.ok(s, 'a suggestion');
+  assert.equal(P.roomAt(p.plan, s.pos).name, 'East', 'the AP goes into the target room');
+  assert.ok(s.gain > 20, `the target room gains (${s.gain})`);
+});
+
+test('howMany: the max cap binds on a building that needs more than one AP', async () => {
+  const tall = makeProject({ rooms: [room(1, 100, 200, 1000, 700)], router: [300, 450], view: { band: 5 } });
+  const f2 = P.addFloor(tall, { copyFrom: 'floor-1' });
+  P.addFloor(tall, { copyFrom: f2 });
+  P.setCeiling(tall, 'floor-1', { lossDb: 40 });
+  P.setCeiling(tall, f2, { lossDb: 40 });
+  const t = P.sanitize(tall);
+  const one = await E.optimize.howMany(t, { goal: 99, cell: 8, max: 1 });
+  assert.equal(one.steps.length, 1);
+  assert.equal(one.reached, false);
+  const more = await E.optimize.howMany(t, { goal: 99, cell: 8, max: 3 });
+  assert.ok(more.steps.length >= 2, `needs at least two (${more.steps.length})`);
+  assert.ok(more.coverage > one.coverage);
 });

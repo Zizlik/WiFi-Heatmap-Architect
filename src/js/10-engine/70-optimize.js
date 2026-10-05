@@ -185,7 +185,7 @@
       let L = model.traceLoss(fc, x, y, SX[j], SY[j]);
       if (V) {
         dm = Math.sqrt(dm * dm + V.dz2);
-        L = V.wallW * L + V.ceil[idxB[q]] * fc.wf;
+        L = V.wallW * L + model.slabLoss(V, idxB[q], fc.wf, x, y, SX[j], SY[j]);
       }
       return clamp(baseB[q] - kk * Math.log10(dm < 1 ? 1 : dm) - L + off, -110, -20);
     };
@@ -245,7 +245,7 @@
           let L = model.traceLoss(nctx, x, y, nxp, nyp);
           if (V) {
             dm = Math.sqrt(dm * dm + V.dz2);
-            L = V.wallW * L + V.ceil[model.bandIndex(bb)] * nctx.wf;
+            L = V.wallW * L + model.slabLoss(V, model.bandIndex(bb), nctx.wf, x, y, nxp, nyp);
           }
           return clamp(model.bandBase(nctx, bb) - kk * Math.log10(dm < 1 ? 1 : dm) - L + model.offsetFor(o.offsets, bb), -110, -20);
         };
@@ -291,7 +291,7 @@
           per.fill(NaN);
           for (let t = 0; t < nB; t++) {
             let L = model.traceLoss(fl.ctxB[t], x, y, SX[j], SY[j]);
-            if (fl.V) L = fl.wallW * L + fl.ceilB[t];
+            if (fl.V) L = fl.wallW * L + (fl.V.slabs ? model.slabLoss(fl.V, idxB[t], fl.ctxB[t].wf, x, y, SX[j], SY[j]) : fl.ceilB[t]);
             let st = baseB[t] - kk * fs - L + offB[t];
             st = st < -110 ? -110 : st > -20 ? -20 : st;
             viaB[idxB[t]] = nodeSigB[t][j] > st ? 1 : 0;
@@ -551,7 +551,8 @@
     const floors = ids.map((id) => {
       const fctx = id === null || id === act ? ctxActive : model.floorContext(ctxActive, id);
       const F = id === null ? { goal: { room: project.goal.room, excluded: project.goal.excluded } } : PJ.floorOf(project, id);
-      return { id, ctx: fctx, grid: raster.grid(fctx, { cell }), goalRoom: scope === 'floor' && F.goal.room !== 'all' ? F.goal.room : null, excluded: F.goal.excluded };
+      // goalRooms: every floor's own goal room also in the 'building' scope (what analysis.building pools)
+      return { id, ctx: fctx, grid: raster.grid(fctx, { cell }), goalRoom: (scope === 'floor' || o.goalRooms) && F.goal.room !== 'all' ? F.goal.room : null, excluded: F.goal.excluded };
     });
     const usable = floors.filter((f) => f.grid.count);
     const res = await find(
@@ -587,5 +588,90 @@
     return { ...res, perFloor, scope };
   }
 
-  E.optimize = { find, findProject, roomAtPx };
+  /**
+   * "Where would ONE MORE access point help most?" (a wired AP: the best case for any extra source; a wireless node can
+   * only be as good). Every floor is tried: the router is turned into an AP where it stands and the router search of
+   * findProject() then finds the best place of a second source on that floor, judged over the places that count (every
+   * floor's goal room, or its whole area minus the excluded rooms - as analysis.building pools them); the floor with the
+   * best coverage gain wins. Nothing is changed in `project`.
+   * @param {object} project
+   * @param {{cell?:number, band?:number|'auto', soften?:number, offsets?:object}} [opts] cell default 8
+   * @param {{signal?:AbortSignal}} [ctl]
+   * @returns {Promise<{floor:string|null, pos:{x,y}, roomId:number, before:object, after:object, gain:number, gainMean:number}|null>}
+   *   before / after = the building's pooled statistics (analysis.building total.trial); null: no room, or the building
+   *   is full (project.MAX_NODES nodes)
+   */
+  async function suggestNode(project, opts, ctl) {
+    const PJ = E.project;
+    const A = E.analysis;
+    const o = opts || {};
+    const cell = isNum(o.cell) ? o.cell : 8;
+    // the calibration of the REAL project, once: the trial copies move the router to other floors and would recompute it
+    const offsets = o.offsets || model.offsets(model.createContext(project), project, { soften: o.soften });
+    const bo = { cell, band: o.band, soften: o.soften, offsets };
+    const base = A.building(project, bo);
+    const rf = project.net && typeof project.net.routerFloor === 'string' ? project.net.routerFloor : undefined;
+    const floorIds = Array.isArray(project.floors) && project.floors.length ? project.floors.map((f) => f.id) : [undefined];
+    let best = null;
+    for (const F of floorIds) {
+      if (ctl && ctl.signal && ctl.signal.aborted) throw abortError();
+      const q = PJ.clone(project);
+      if (q.goal) q.goal.allowedRoom = 'any';
+      const stand = PJ.newNode(q, { mode: 'ap_cable', pos: q.net.router, floor: rf });
+      if (!stand || !PJ.addNode(q, stand, rf)) return null;
+      if (F !== undefined) q.net.routerFloor = F;
+      const seed = PJ.newNode(q, { floor: F });
+      if (seed) q.net.router = { x: seed.pos.x, y: seed.pos.y };
+      let res;
+      try {
+        res = await findProject(q, { cell, band: o.band, scope: 'building', goalRooms: true, offsets, soften: o.soften }, ctl && ctl.signal ? { signal: ctl.signal } : undefined);
+      } catch (e) {
+        if (e && e.name === 'AbortError') throw e;
+        continue;
+      }
+      const q2 = PJ.clone(project);
+      const nd = PJ.newNode(q2, { mode: 'ap_cable', pos: res.pos, floor: F });
+      if (!nd || !PJ.addNode(q2, nd, F)) continue;
+      const aft = A.building(q2, bo);
+      const gain = aft.total.trial.coverage - base.total.trial.coverage;
+      const gainMean = aft.total.trial.mean - base.total.trial.mean;
+      if (!best || gain > best.gain + 1e-9 || (Math.abs(gain - best.gain) <= 1e-9 && gainMean > best.gainMean)) {
+        best = { floor: F === undefined ? null : F, pos: { x: nd.pos.x, y: nd.pos.y }, roomId: res.roomId, before: base.total.trial, after: aft.total.trial, gain, gainMean };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * "How many access points do I need for X % of the home?": add the best extra AP again and again (greedy, each one
+   * judged with the previous ones in place) until the building's coverage reaches `goal` % or `max` APs are added.
+   * @param {object} project
+   * @param {{goal?:number, max?:number, cell?:number, band?, soften?:number, offsets?:object}} [opts] goal default 90 %, max 4
+   * @returns {Promise<{goal:number, today:number, coverage:number, reached:boolean, steps:Array<{floor:string|null, pos:{x,y}, roomId:number, coverage:number}>}>}
+   *   steps = the APs to add, in the order found; coverage = the building's coverage with all of them
+   */
+  async function howMany(project, opts, ctl) {
+    const PJ = E.project;
+    const o = opts || {};
+    const goal = clamp(isNum(o.goal) ? o.goal : 90, 1, 100);
+    const room = PJ.MAX_NODES - PJ.allNodes(project).length;
+    const max = Math.max(0, Math.min(isNum(o.max) ? Math.floor(o.max) : 4, room));
+    const work = PJ.clone(project);
+    const offsets = o.offsets || model.offsets(model.createContext(project), project, { soften: o.soften });
+    const sub = { cell: o.cell, band: o.band, soften: o.soften, offsets };
+    let cov = E.analysis.building(work, { cell: isNum(o.cell) ? o.cell : 8, band: o.band, soften: o.soften, offsets }).total.trial.coverage;
+    const today = cov;
+    const steps = [];
+    while (cov < goal && steps.length < max) {
+      const s = await suggestNode(work, sub, ctl);
+      if (!s || s.gain < 0.05) break;
+      const nd = PJ.newNode(work, { mode: 'ap_cable', pos: s.pos, floor: s.floor === null ? undefined : s.floor });
+      if (!nd || !PJ.addNode(work, nd, s.floor === null ? undefined : s.floor)) break;
+      steps.push({ floor: s.floor, pos: s.pos, roomId: s.roomId, coverage: s.after.coverage });
+      cov = s.after.coverage;
+    }
+    return { goal, today, coverage: cov, reached: cov >= goal, steps };
+  }
+
+  E.optimize = { find, findProject, suggestNode, howMany, roomAtPx };
 })();
